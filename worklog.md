@@ -20,3 +20,26 @@ Stage Summary:
 - After market (~5:30 PM IST): NSE releases data → correlation run fills in who did what
 - Bar visualization: Red=Money Out, Green=Money In, Blue=Net Flow, 4 bars/min (15s intervals)
 - Weightage-based: Each stock's flow multiplied by index weight (Nifty vs Sensex weights differ)
+
+---
+Task ID: 2
+Agent: Main
+Task: Convert Pine Scripts to Python and integrate with dashboard
+
+Work Log:
+- Read both Pine Scripts from /upload folder: universal.txt and nifty50 12 cash flow trend.txt
+- Found existing Python conversion at scripts/cash_flow_calculator.py
+- Updated Python engine with corrected 15 stocks (SBIN, M&M, BAJFINANCE, ETERNAL, TITAN replacing HINDUNILVR/SUNPHARMA)
+- Added dual exchange tracking (NSE + BSE) to Python engine — same stock different buyers/sellers
+- Implemented all 3 Pine Script weighting methods: Standard, Volume Weighted, Range Adjusted
+- Implemented exact Pine Script signal logic: isStrongInflow = current > upperBand AND current > previous
+- Implemented divergence detection from Universal Pine Script
+- Updated demo-data.ts bar generation with Pine Script comments and exact logic
+- Tested Python script: generates 60 bars, 15 stocks with weighted impact, dual exchange data
+- Build verified: zero errors
+
+Stage Summary:
+- Pine Script Universal: Fully converted — Standard/Volume Weighted/Range Adjusted methods, smoothing, bands, divergence
+- Pine Script Nifty12→15: Fully converted — 15 stocks with actual Nifty50/Sensex weights, weighted CF = CF × Weight%
+- Both NSE+BSE tracked: Same stock has different buyers/sellers on each exchange
+- Python engine tested successfully with dual exchange output

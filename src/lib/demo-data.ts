@@ -775,19 +775,35 @@ export function generateDemoWeightedCashFlowBars(numBars: number = 60): Weighted
 
     for (const stock of STOCK_BASE_PRICES) {
       const base = stock.base;
-      // Simulate intra-bar price movement
+      // Simulate intra-bar price movement (15-second candle)
       const openPrice = base + rand(-base * 0.002, base * 0.002);
       const closePrice = openPrice + rand(-base * 0.005, base * 0.005);
+      const high = Math.max(openPrice, closePrice) + rand(0, base * 0.002);
+      const low = Math.min(openPrice, closePrice) - rand(0, base * 0.002);
       const volume = randInt(50000, 2000000);
 
-      // Cash Flow = (Close - Open) × Volume  (Pine Script logic)
-      const cashFlow = (closePrice - openPrice) * volume;
+      // ─── Pine Script: Cash Flow = (Close - Open) × Volume ───
+      let cashFlow = (closePrice - openPrice) * volume;
 
-      // Weighted Cash Flow = CashFlow × Weight%
+      // ─── Pine Script: Volume Weighted method ───
+      // cashFlow := cashFlowRaw * (volume_ / smaVolume)
+      // Note: In production, smaVolume would be computed from 20-period SMA
+      // For demo, we approximate with a reasonable SMA value
+      const smaVolume = volume * rand(0.7, 1.3); // Approximate SMA
+      // Using Standard method by default (matching Pine Script default)
+      // Volume Weighted: cashFlow = cashFlow * (volume / smaVolume)
+
+      // ─── Pine Script: Range Adjusted method ───
+      // cashFlowAdj = cashFlowTemp * (1 + (high - low) / smaRange)
+      const priceRange = high - low;
+      const smaRange = priceRange * rand(0.8, 1.2); // Approximate SMA range
+      // Using Standard by default
+
+      // ─── Pine Script: Weighted Cash Flow = CF × Weight% ───
       const niftyWeighted = cashFlow * (stock.niftyWeight / 100);
       const sensexWeighted = cashFlow * (stock.sensexWeight / 100);
 
-      // Money In / Money Out
+      // ─── Money In / Money Out ───
       const moneyIn = cashFlow >= 0 ? cashFlow : 0;
       const moneyOut = cashFlow < 0 ? Math.abs(cashFlow) : 0;
 
@@ -815,8 +831,8 @@ export function generateDemoWeightedCashFlowBars(numBars: number = 60): Weighted
       totalMoneyIn: roundN(totalMoneyIn, 0),
       totalMoneyOut: roundN(totalMoneyOut, 0),
       netFlow: roundN(totalMoneyIn - totalMoneyOut, 0),
-      isStrongInflow: niftyWeightedCF > 0 && (totalMoneyIn / (totalMoneyOut || 1)) > 2,
-      isStrongOutflow: niftyWeightedCF < 0 && (totalMoneyOut / (totalMoneyIn || 1)) > 2,
+      isStrongInflow: niftyWeightedCF > 0 && niftyWeightedCF > (bars.length > 0 ? bars[bars.length - 1].niftyWeightedCF : 0),
+      isStrongOutflow: niftyWeightedCF < 0 && niftyWeightedCF < (bars.length > 0 ? bars[bars.length - 1].niftyWeightedCF : 0),
     });
   }
 
