@@ -121,15 +121,19 @@ export async function generateSession(requestToken: string): Promise<{
 
 // ─── Instruments ───
 
+// Cache all instruments from ALL exchanges (Kite returns one CSV with NSE+BSE+NFO+BFO+CDS+MCX)
 let instrumentsCache: KiteInstrument[] | null = null;
 let instrumentsCacheTime = 0;
 
 /**
  * Fetch all instruments from Kite (cached for 1 hour)
+ * Kite returns a single CSV with all exchanges: NSE, BSE, NFO, BFO, CDS, MCX
+ * We filter by exchange after caching
  */
-export async function getInstruments(exchange: string = 'NSE'): Promise<KiteInstrument[]> {
+export async function getInstruments(exchange?: string): Promise<KiteInstrument[]> {
+  // Return from cache if fresh
   if (instrumentsCache && Date.now() - instrumentsCacheTime < 3600000) {
-    return instrumentsCache.filter(i => i.exchange === exchange);
+    return exchange ? instrumentsCache.filter(i => i.exchange === exchange) : instrumentsCache;
   }
 
   try {
@@ -159,7 +163,7 @@ export async function getInstruments(exchange: string = 'NSE'): Promise<KiteInst
 
     instrumentsCache = instruments;
     instrumentsCacheTime = Date.now();
-    return instruments.filter(i => i.exchange === exchange);
+    return exchange ? instruments.filter(i => i.exchange === exchange) : instruments;
   } catch (err) {
     console.error('[Kite] instruments fetch failed:', err);
     return [];
@@ -255,27 +259,27 @@ export async function getCandles(
 // ─── Option Chain ───
 
 /**
- * Get option chain for an index
+ * Get option chain for an index or stock
+ * Uses InstrumentSpec for correct exchange, segment, lot size, strike step
  * Returns all CE + PE instruments for the current expiry near ATM
  */
 export async function getOptionInstruments(
-  indexName: string, // e.g. "NIFTY", "BANKNIFTY"
+  symbol: string,
   spotPrice: number,
-  strikesAround: number = 5,
+  strikesAroundOverride?: number,
 ): Promise<KiteInstrument[]> {
-  const instruments = await getInstruments('NSE');
+  const spec = getInstrumentSpec(symbol);
+  if (!spec) return [];
 
-  // Filter options for this index
-  const optSegment = `NFO`;
-  const today = new Date();
-  const currentMonth = today.getMonth();
-  const currentYear = today.getFullYear();
+  // Fetch instruments from the correct exchange (NSE or BSE)
+  const instruments = await getInstruments(spec.exchange);
 
-  // Find current expiry (nearest Thursday for weekly, or last Thu of month for monthly)
+  // Filter options using spec
   const indexOptions = instruments.filter(i =>
-    i.segment === optSegment &&
-    i.instrumentType === (indexName === 'NIFTY' || indexName === 'BANKNIFTY' ? 'OPTIDX' : 'OPTSTK') &&
-    i.name.toUpperCase().includes(indexName.toUpperCase())
+    i.segment === spec.segment &&
+    i.instrumentType === spec.instrumentType &&
+    (i.name.toUpperCase().includes(symbol.toUpperCase()) ||
+     i.tradingSymbol.toUpperCase().includes(symbol.toUpperCase()))
   );
 
   if (indexOptions.length === 0) return [];
@@ -284,16 +288,18 @@ export async function getOptionInstruments(
   const expiries = [...new Set(indexOptions.map(i => i.expiry))].sort();
 
   // Use nearest expiry that's not expired
+  const today = new Date();
   const nearestExpiry = expiries.find(e => new Date(e) >= new Date(today.toDateString())) || expiries[0];
 
   // Filter to nearest expiry
   const expiryOptions = indexOptions.filter(i => i.expiry === nearestExpiry);
 
-  // Round ATM strike
-  const step = indexName === 'NIFTY' ? 50 : indexName === 'BANKNIFTY' ? 100 : 50;
+  // Round ATM strike using the CORRECT strike step for this instrument
+  const step = spec.strikeStep;
   const atmStrike = Math.round(spotPrice / step) * step;
 
-  // Get strikes around ATM
+  // Get strikes around ATM (spec-based)
+  const strikesAround = strikesAroundOverride ?? spec.strikesAround;
   const strikes = Array.from({ length: strikesAround * 2 + 1 }, (_, i) =>
     atmStrike - strikesAround * step + i * step
   );
@@ -303,9 +309,13 @@ export async function getOptionInstruments(
 
 /**
  * Build options flow data from quotes + OI changes
+ * Uses InstrumentSpec for correct lot size and strike step
  */
-export async function getOptionsFlow(indexName: string, spotPrice: number) {
-  const optInstruments = await getOptionInstruments(indexName, spotPrice);
+export async function getOptionsFlow(symbol: string, spotPrice: number) {
+  const spec = getInstrumentSpec(symbol);
+  if (!spec) return null;
+
+  const optInstruments = await getOptionInstruments(symbol, spotPrice);
   if (optInstruments.length === 0) return null;
 
   // Build instrument keys for batch quote
@@ -318,8 +328,8 @@ export async function getOptionsFlow(indexName: string, spotPrice: number) {
   // Group by strike → build flow data
   const strikes = new Map<number, { callBuy: number; putBuy: number; callWrite: number; putWrite: number; callOI: number; putOI: number; callVol: number; putVol: number; }>();
 
-  const step = indexName === 'NIFTY' ? 50 : 100;
-  const atmStrike = Math.round(spotPrice / step) * step;
+  // Use correct strike step from spec
+  const atmStrike = Math.round(spotPrice / spec.strikeStep) * spec.strikeStep;
 
   for (const inst of optInstruments) {
     const key = `${inst.exchange}:${inst.tradingSymbol}`;
@@ -331,14 +341,12 @@ export async function getOptionsFlow(indexName: string, spotPrice: number) {
     }
     const s = strikes.get(inst.strike)!;
 
-    // Approximate flow from volume × avg price
-    const flow = q.volume * q.averagePrice;
-    // Simplified: volume = buying, OI increase = writing
-    const oiChange = q.oi; // Current OI as proxy (need previous OI for actual change)
+    // Flow = volume × lotSize × avgPrice (real money flow)
+    const flow = q.volume * spec.lotSize * q.averagePrice;
 
     if (inst.tradingSymbol.endsWith('CE')) {
-      s.callBuy = flow * 0.6;       // Approximate buy portion
-      s.callWrite = flow * 0.4;      // Approximate write portion
+      s.callBuy = flow * 0.6;
+      s.callWrite = flow * 0.4;
       s.callOI = q.oi;
       s.callVol = q.volume;
     } else if (inst.tradingSymbol.endsWith('PE')) {
@@ -364,7 +372,7 @@ export async function getOptionsFlow(indexName: string, spotPrice: number) {
 
 export const KITE_INDEX_INSTRUMENTS = {
   NIFTY:      'NSE:NIFTY 50',
-  SENSEX:     'NSE:NIFTY 50',       // BSE:SENSEX not directly available, use NSE proxy
+  SENSEX:     'BSE:SENSEX',           // ← BSE, not NSE!
   BANKNIFTY: 'NSE:NIFTY BANK',
   FINNIFTY:   'NSE:NIFTY FIN SERVICE',
 };
@@ -372,9 +380,96 @@ export const KITE_INDEX_INSTRUMENTS = {
 // Nifty 50 instrument token for historical candles
 export const NIFTY50_TOKEN = 256265;
 
-// Stock F&O list (15 major NSE F&O stocks)
-export const KITE_STOCK_FO = [
-  'RELIANCE', 'TCS', 'HDFCBANK', 'INFY', 'ICICIBANK',
-  'HINDUNILVR', 'SBIN', 'BHARTIARTL', 'ITC', 'KOTAKBANK',
-  'LT', 'AXISBANK', 'BAJFINANCE', 'MARUTI', 'TATAMOTORS',
+// ─── Instrument Specifications: Lot Size + Strike Step + Exchanges ───
+// Every index and stock has DIFFERENT lot size and strike step.
+// This is critical for correct options flow calculation.
+
+export interface InstrumentSpec {
+  symbol: string;
+  name: string;
+  exchange: 'NSE' | 'BSE';
+  segment: string;           // NFO = NSE F&O, BFO = BSE F&O
+  instrumentType: string;    // OPTIDX / OPTSTK
+  lotSize: number;
+  strikeStep: number;        // Gap between consecutive strikes
+  strikesAround: number;     // How many strikes around ATM (±N)
+  kiteSymbol: string;        // Kite quote symbol
+}
+
+// ═══ INDEX SPECIFICATIONS ═══
+export const INDEX_SPECS: InstrumentSpec[] = [
+  {
+    symbol: 'NIFTY',
+    name: 'Nifty 50',
+    exchange: 'NSE',
+    segment: 'NFO',
+    instrumentType: 'OPTIDX',
+    lotSize: 25,
+    strikeStep: 50,
+    strikesAround: 5,        // 11 strikes: ATM ±5
+    kiteSymbol: 'NSE:NIFTY 50',
+  },
+  {
+    symbol: 'SENSEX',
+    name: 'Sensex',
+    exchange: 'BSE',
+    segment: 'BFO',          // BSE F&O segment
+    instrumentType: 'OPTIDX',
+    lotSize: 15,
+    strikeStep: 100,
+    strikesAround: 5,
+    kiteSymbol: 'BSE:SENSEX',
+  },
+  {
+    symbol: 'BANKNIFTY',
+    name: 'Bank Nifty',
+    exchange: 'NSE',
+    segment: 'NFO',
+    instrumentType: 'OPTIDX',
+    lotSize: 15,
+    strikeStep: 100,
+    strikesAround: 5,
+    kiteSymbol: 'NSE:NIFTY BANK',
+  },
+  {
+    symbol: 'FINNIFTY',
+    name: 'Fin Nifty',
+    exchange: 'NSE',
+    segment: 'NFO',
+    instrumentType: 'OPTIDX',
+    lotSize: 25,
+    strikeStep: 50,
+    strikesAround: 5,
+    kiteSymbol: 'NSE:NIFTY FIN SERVICE',
+  },
 ];
+
+// ═══ STOCK F&O SPECIFICATIONS ═══
+// 15 major NSE F&O stocks with their lot sizes and strike steps
+// BSE has NO stock options — only NSE
+export const STOCK_SPECS: InstrumentSpec[] = [
+  { symbol: 'RELIANCE',   name: 'Reliance Industries', exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTSTK', lotSize: 250, strikeStep: 20,  strikesAround: 4, kiteSymbol: 'NSE:RELIANCE' },
+  { symbol: 'TCS',        name: 'Tata Consultancy',    exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTSTK', lotSize: 150, strikeStep: 40,  strikesAround: 4, kiteSymbol: 'NSE:TCS' },
+  { symbol: 'HDFCBANK',   name: 'HDFC Bank',           exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTSTK', lotSize: 550, strikeStep: 10,  strikesAround: 4, kiteSymbol: 'NSE:HDFCBANK' },
+  { symbol: 'INFY',       name: 'Infosys',             exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTSTK', lotSize: 300, strikeStep: 20,  strikesAround: 4, kiteSymbol: 'NSE:INFY' },
+  { symbol: 'ICICIBANK',  name: 'ICICI Bank',          exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTSTK', lotSize: 350, strikeStep: 10,  strikesAround: 4, kiteSymbol: 'NSE:ICICIBANK' },
+  { symbol: 'HINDUNILVR', name: 'Hindustan Unilever',  exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTSTK', lotSize: 300, strikeStep: 20,  strikesAround: 4, kiteSymbol: 'NSE:HINDUNILVR' },
+  { symbol: 'SBIN',       name: 'State Bank of India', exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTSTK', lotSize: 750, strikeStep: 5,   strikesAround: 4, kiteSymbol: 'NSE:SBIN' },
+  { symbol: 'BHARTIARTL', name: 'Bharti Airtel',       exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTSTK', lotSize: 1250,strikeStep: 5,   strikesAround: 4, kiteSymbol: 'NSE:BHARTIARTL' },
+  { symbol: 'ITC',        name: 'ITC Limited',          exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTSTK', lotSize: 1600,strikeStep: 2.5, strikesAround: 4, kiteSymbol: 'NSE:ITC' },
+  { symbol: 'KOTAKBANK',  name: 'Kotak Mahindra Bank', exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTSTK', lotSize: 300, strikeStep: 10,  strikesAround: 4, kiteSymbol: 'NSE:KOTAKBANK' },
+  { symbol: 'LT',         name: 'Larsen & Toubro',     exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTSTK', lotSize: 150, strikeStep: 20,  strikesAround: 4, kiteSymbol: 'NSE:LT' },
+  { symbol: 'AXISBANK',   name: 'Axis Bank',            exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTSTK', lotSize: 900, strikeStep: 5,   strikesAround: 4, kiteSymbol: 'NSE:AXISBANK' },
+  { symbol: 'BAJFINANCE', name: 'Bajaj Finance',       exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTSTK', lotSize: 125, strikeStep: 50,  strikesAround: 4, kiteSymbol: 'NSE:BAJFINANCE' },
+  { symbol: 'MARUTI',     name: 'Maruti Suzuki',       exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTSTK', lotSize: 50,  strikeStep: 100, strikesAround: 4, kiteSymbol: 'NSE:MARUTI' },
+  { symbol: 'TATAMOTORS', name: 'Tata Motors',         exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTSTK', lotSize: 275, strikeStep: 10,  strikesAround: 4, kiteSymbol: 'NSE:TATAMOTORS' },
+];
+
+// Helper: get spec by symbol
+export function getInstrumentSpec(symbol: string): InstrumentSpec | undefined {
+  return INDEX_SPECS.find(s => s.symbol === symbol) ||
+         STOCK_SPECS.find(s => s.symbol === symbol);
+}
+
+// Stock F&O list (symbols only, for backwards compat)
+export const KITE_STOCK_FO = STOCK_SPECS.map(s => s.symbol);
