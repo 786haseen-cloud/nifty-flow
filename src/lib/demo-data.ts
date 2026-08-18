@@ -16,6 +16,8 @@ import {
   type NetMoneyFlow,
   type ExchangeStockData,
   type DualExchangeStock,
+  type WeightedCashFlowBar,
+  type CashFlowTrend,
   GLOBAL_INDICES,
   INDICES,
   TOP_STOCKS,
@@ -571,21 +573,21 @@ export interface StockQuickView {
 }
 
 const STOCK_BASE_PRICES = [
-  { symbol: 'RELIANCE', name: 'Reliance Industries', base: 2950 },
-  { symbol: 'TCS', name: 'Tata Consultancy', base: 3900 },
-  { symbol: 'HDFCBANK', name: 'HDFC Bank', base: 1680 },
-  { symbol: 'INFY', name: 'Infosys', base: 1580 },
-  { symbol: 'ICICIBANK', name: 'ICICI Bank', base: 1250 },
-  { symbol: 'HINDUNILVR', name: 'Hindustan Unilever', base: 2520 },
-  { symbol: 'SBIN', name: 'State Bank India', base: 830 },
-  { symbol: 'BHARTIARTL', name: 'Bharti Airtel', base: 1620 },
-  { symbol: 'ITC', name: 'ITC Limited', base: 470 },
-  { symbol: 'KOTAKBANK', name: 'Kotak Bank', base: 1800 },
-  { symbol: 'LT', name: 'Larsen & Toubro', base: 3600 },
-  { symbol: 'AXISBANK', name: 'Axis Bank', base: 1170 },
-  { symbol: 'BAJFINANCE', name: 'Bajaj Finance', base: 7200 },
-  { symbol: 'MARUTI', name: 'Maruti Suzuki', base: 12500 },
-  { symbol: 'TITAN', name: 'Titan Company', base: 3550 },
+  { symbol: 'HDFCBANK',  name: 'HDFC Bank',            base: 1680, niftyWeight: 9.97, sensexWeight: 12.03 },
+  { symbol: 'ICICIBANK', name: 'ICICI Bank',           base: 1250, niftyWeight: 9.09, sensexWeight: 10.96 },
+  { symbol: 'RELIANCE',  name: 'Reliance Industries',  base: 2950, niftyWeight: 7.92, sensexWeight: 9.56 },
+  { symbol: 'BHARTIARTL',name: 'Bharti Airtel',       base: 1620, niftyWeight: 5.55, sensexWeight: 6.70 },
+  { symbol: 'LT',        name: 'Larsen & Toubro',      base: 3600, niftyWeight: 4.25, sensexWeight: 5.13 },
+  { symbol: 'SBIN',      name: 'State Bank India',     base: 830,  niftyWeight: 3.95, sensexWeight: 4.77 },
+  { symbol: 'INFY',      name: 'Infosys',              base: 1580, niftyWeight: 3.67, sensexWeight: 4.43 },
+  { symbol: 'AXISBANK',  name: 'Axis Bank',            base: 1170, niftyWeight: 3.13, sensexWeight: 3.78 },
+  { symbol: 'M&M',       name: 'Mahindra & Mahindra',  base: 2900, niftyWeight: 2.74, sensexWeight: 3.30 },
+  { symbol: 'BAJFINANCE',name: 'Bajaj Finance',        base: 7200, niftyWeight: 2.61, sensexWeight: 3.15 },
+  { symbol: 'KOTAKBANK', name: 'Kotak Bank',           base: 1800, niftyWeight: 2.58, sensexWeight: 3.11 },
+  { symbol: 'ITC',       name: 'ITC Limited',          base: 470,  niftyWeight: 2.40, sensexWeight: 2.90 },
+  { symbol: 'TCS',       name: 'Tata Consultancy',     base: 3900, niftyWeight: 2.16, sensexWeight: 2.60 },
+  { symbol: 'ETERNAL',   name: 'Eternal Ltd',          base: 280,  niftyWeight: 2.06, sensexWeight: 2.49 },
+  { symbol: 'TITAN',     name: 'Titan Company',        base: 3550, niftyWeight: 1.87, sensexWeight: 2.25 },
 ];
 
 export function generateDemoStocks(): StockQuickView[] {
@@ -744,6 +746,98 @@ export function generateDemoDualExchangeStocks(): DualExchangeStock[] {
       totalMoneyOut,
     };
   });
+}
+
+// --- Weighted Cash Flow Bars ---
+// Based on Pine Script: CashFlow = (Close-Open) × Volume × Weight%
+// 4 bars per minute (every 15 seconds)
+export function generateDemoWeightedCashFlowBars(numBars: number = 60): WeightedCashFlowBar[] {
+  const bars: WeightedCashFlowBar[] = [];
+  const now = new Date();
+
+  for (let i = numBars - 1; i >= 0; i--) {
+    const ts = new Date(now.getTime() - i * 15000); // 15-second intervals
+    const istH = ((ts.getUTCHours() + 5) % 24 + 24) % 24;
+    const istM = ts.getUTCMinutes();
+    const istS = ts.getUTCSeconds();
+    const timeLabel = `${String(istH).padStart(2, '0')}:${String(istM).padStart(2, '0')}:${String(istS).padStart(2, '0')}`;
+
+    const stockFlows: WeightedCashFlowBar['stockFlows'] = [];
+    let niftyWeightedCF = 0;
+    let sensexWeightedCF = 0;
+    let totalMoneyIn = 0;
+    let totalMoneyOut = 0;
+
+    for (const stock of STOCK_BASE_PRICES) {
+      const base = stock.base;
+      // Simulate intra-bar price movement
+      const openPrice = base + rand(-base * 0.002, base * 0.002);
+      const closePrice = openPrice + rand(-base * 0.005, base * 0.005);
+      const volume = randInt(50000, 2000000);
+
+      // Cash Flow = (Close - Open) × Volume  (Pine Script logic)
+      const cashFlow = (closePrice - openPrice) * volume;
+
+      // Weighted Cash Flow = CashFlow × Weight%
+      const niftyWeighted = cashFlow * (stock.niftyWeight / 100);
+      const sensexWeighted = cashFlow * (stock.sensexWeight / 100);
+
+      // Money In / Money Out
+      const moneyIn = cashFlow >= 0 ? cashFlow : 0;
+      const moneyOut = cashFlow < 0 ? Math.abs(cashFlow) : 0;
+
+      stockFlows.push({
+        symbol: stock.symbol,
+        cashFlow: roundN(cashFlow, 0),
+        niftyWeighted: roundN(niftyWeighted, 0),
+        sensexWeighted: roundN(sensexWeighted, 0),
+        weight: stock.niftyWeight,
+        moneyIn: roundN(moneyIn, 0),
+        moneyOut: roundN(moneyOut, 0),
+      });
+
+      niftyWeightedCF += niftyWeighted;
+      sensexWeightedCF += sensexWeighted;
+      totalMoneyIn += moneyIn;
+      totalMoneyOut += moneyOut;
+    }
+
+    bars.push({
+      timestamp: timeLabel,
+      stockFlows,
+      niftyWeightedCF: roundN(niftyWeightedCF, 0),
+      sensexWeightedCF: roundN(sensexWeightedCF, 0),
+      totalMoneyIn: roundN(totalMoneyIn, 0),
+      totalMoneyOut: roundN(totalMoneyOut, 0),
+      netFlow: roundN(totalMoneyIn - totalMoneyOut, 0),
+      isStrongInflow: niftyWeightedCF > 0 && (totalMoneyIn / (totalMoneyOut || 1)) > 2,
+      isStrongOutflow: niftyWeightedCF < 0 && (totalMoneyOut / (totalMoneyIn || 1)) > 2,
+    });
+  }
+
+  return bars;
+}
+
+// --- Cash Flow Trend (with smoothing & bands from Pine Script) ---
+export function generateDemoCashFlowTrend(): CashFlowTrend {
+  const value = round2(rand(-5000000, 5000000));
+  const smoothed = round2(value * rand(0.6, 0.9));
+  const volatility = round2(Math.abs(value) * rand(0.1, 0.3));
+
+  return {
+    currentValue: value,
+    smoothed,
+    upperBand: round2(smoothed + volatility * 0.5),
+    lowerBand: round2(smoothed - volatility * 0.5),
+    isStrongInflow: value > smoothed + volatility * 0.5 && value > 0,
+    isStrongOutflow: value < smoothed - volatility * 0.5 && value < 0,
+    isUptrend: value > smoothed,
+    isDowntrend: value < smoothed,
+    momentum: round2(rand(-2000000, 2000000)),
+    signalStrength: round2(value > 0 ? Math.min(100, value / 50000) : Math.max(-100, value / 50000)),
+    bearishDivergence: Math.random() < 0.1,
+    bullishDivergence: Math.random() < 0.1,
+  };
 }
 
 // --- Market Status ---

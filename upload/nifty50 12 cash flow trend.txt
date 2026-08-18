@@ -1,0 +1,237 @@
+//@version=6
+indicator(title="Nifty12 Cash Flow Trend", overlay=true)
+
+// --- 1. Configuration: Top 12 Nifty Stocks with Actual Market Cap Weighting ---
+// Weighting method selection
+useMarketCapWeight = input.bool(true, "Use Market Cap Weighting (Recommended)")
+useEqualWeight = input.bool(false, "Use Equal Weight (Alternative)")
+manualMode = input.bool(false, "Manual Weight Mode (Override All)")
+
+// Actual market cap weights for top 12 Nifty stocks (based on free-float market cap as of 2025)
+manualWeight1 = input.float(13.2, "HDFCBANK Weight %", minval=0, maxval=30, step=0.1)
+manualWeight2 = input.float(9.0, "ICICIBANK Weight %", minval=0, maxval=30, step=0.1)
+manualWeight3 = input.float(8.7, "RELIANCE Weight %", minval=0, maxval=30, step=0.1)
+manualWeight4 = input.float(5.0, "INFY Weight %", minval=0, maxval=30, step=0.1)
+manualWeight5 = input.float(4.6, "BHARTIARTL Weight %", minval=0, maxval=30, step=0.1)
+manualWeight6 = input.float(3.6, "ITC Weight %", minval=0, maxval=30, step=0.1)
+manualWeight7 = input.float(3.5, "LT Weight %", minval=0, maxval=30, step=0.1)
+manualWeight8 = input.float(3.2, "TCS Weight %", minval=0, maxval=30, step=0.1)
+manualWeight9 = input.float(3.1, "AXISBANK Weight %", minval=0, maxval=30, step=0.1)
+manualWeight10 = input.float(3.0, "KOTAKBANK Weight %", minval=0, maxval=30, step=0.1)
+manualWeight11 = input.float(2.8, "HINDUNILVR Weight %", minval=0, maxval=30, step=0.1)
+manualWeight12 = input.float(2.5, "SUNPHARMA Weight %", minval=0, maxval=30, step=0.1)
+
+// --- 2. Helper function to get weight based on symbol ---
+getWeight(symbol) =>
+    weight = 0.0
+    if useMarketCapWeight
+        if symbol == "NSE:HDFCBANK"
+            weight := 13.2
+        else if symbol == "NSE:ICICIBANK"
+            weight := 9.0
+        else if symbol == "NSE:RELIANCE"
+            weight := 8.7
+        else if symbol == "NSE:INFY"
+            weight := 5.0
+        else if symbol == "NSE:BHARTIARTL"
+            weight := 4.6
+        else if symbol == "NSE:ITC"
+            weight := 3.6
+        else if symbol == "NSE:LT"
+            weight := 3.5
+        else if symbol == "NSE:TCS"
+            weight := 3.2
+        else if symbol == "NSE:AXISBANK"
+            weight := 3.1
+        else if symbol == "NSE:KOTAKBANK"
+            weight := 3.0
+        else if symbol == "NSE:HINDUNILVR"
+            weight := 2.8
+        else if symbol == "NSE:SUNPHARMA"
+            weight := 2.5
+        else
+            weight := 0.0
+    else if useEqualWeight
+        weight := 8.3333
+    else
+        weight := 0.0
+    weight
+
+// --- 3. Declare the main variable ---
+var float niftyCashFlowTrend = 0.0
+
+// --- 4. Get weighted cash flow for each stock ---
+// HDFCBANK
+close1 = request.security("NSE:HDFCBANK", timeframe.period, close)
+open1 = request.security("NSE:HDFCBANK", timeframe.period, open)
+volume1 = request.security("NSE:HDFCBANK", timeframe.period, volume)
+cf1 = (close1 - open1) * volume1
+weight1 = manualMode ? manualWeight1 : getWeight("NSE:HDFCBANK")
+weightedCF1 = cf1 * weight1
+
+// ICICIBANK
+close2 = request.security("NSE:ICICIBANK", timeframe.period, close)
+open2 = request.security("NSE:ICICIBANK", timeframe.period, open)
+volume2 = request.security("NSE:ICICIBANK", timeframe.period, volume)
+cf2 = (close2 - open2) * volume2
+weight2 = manualMode ? manualWeight2 : getWeight("NSE:ICICIBANK")
+weightedCF2 = cf2 * weight2
+
+// RELIANCE
+close3 = request.security("NSE:RELIANCE", timeframe.period, close)
+open3 = request.security("NSE:RELIANCE", timeframe.period, open)
+volume3 = request.security("NSE:RELIANCE", timeframe.period, volume)
+cf3 = (close3 - open3) * volume3
+weight3 = manualMode ? manualWeight3 : getWeight("NSE:RELIANCE")
+weightedCF3 = cf3 * weight3
+
+// INFY
+close4 = request.security("NSE:INFY", timeframe.period, close)
+open4 = request.security("NSE:INFY", timeframe.period, open)
+volume4 = request.security("NSE:INFY", timeframe.period, volume)
+cf4 = (close4 - open4) * volume4
+weight4 = manualMode ? manualWeight4 : getWeight("NSE:INFY")
+weightedCF4 = cf4 * weight4
+
+// BHARTIARTL
+close5 = request.security("NSE:BHARTIARTL", timeframe.period, close)
+open5 = request.security("NSE:BHARTIARTL", timeframe.period, open)
+volume5 = request.security("NSE:BHARTIARTL", timeframe.period, volume)
+cf5 = (close5 - open5) * volume5
+weight5 = manualMode ? manualWeight5 : getWeight("NSE:BHARTIARTL")
+weightedCF5 = cf5 * weight5
+
+// ITC
+close6 = request.security("NSE:ITC", timeframe.period, close)
+open6 = request.security("NSE:ITC", timeframe.period, open)
+volume6 = request.security("NSE:ITC", timeframe.period, volume)
+cf6 = (close6 - open6) * volume6
+weight6 = manualMode ? manualWeight6 : getWeight("NSE:ITC")
+weightedCF6 = cf6 * weight6
+
+// LT
+close7 = request.security("NSE:LT", timeframe.period, close)
+open7 = request.security("NSE:LT", timeframe.period, open)
+volume7 = request.security("NSE:LT", timeframe.period, volume)
+cf7 = (close7 - open7) * volume7
+weight7 = manualMode ? manualWeight7 : getWeight("NSE:LT")
+weightedCF7 = cf7 * weight7
+
+// TCS
+close8 = request.security("NSE:TCS", timeframe.period, close)
+open8 = request.security("NSE:TCS", timeframe.period, open)
+volume8 = request.security("NSE:TCS", timeframe.period, volume)
+cf8 = (close8 - open8) * volume8
+weight8 = manualMode ? manualWeight8 : getWeight("NSE:TCS")
+weightedCF8 = cf8 * weight8
+
+// AXISBANK
+close9 = request.security("NSE:AXISBANK", timeframe.period, close)
+open9 = request.security("NSE:AXISBANK", timeframe.period, open)
+volume9 = request.security("NSE:AXISBANK", timeframe.period, volume)
+cf9 = (close9 - open9) * volume9
+weight9 = manualMode ? manualWeight9 : getWeight("NSE:AXISBANK")
+weightedCF9 = cf9 * weight9
+
+// KOTAKBANK
+close10 = request.security("NSE:KOTAKBANK", timeframe.period, close)
+open10 = request.security("NSE:KOTAKBANK", timeframe.period, open)
+volume10 = request.security("NSE:KOTAKBANK", timeframe.period, volume)
+cf10 = (close10 - open10) * volume10
+weight10 = manualMode ? manualWeight10 : getWeight("NSE:KOTAKBANK")
+weightedCF10 = cf10 * weight10
+
+// HINDUNILVR
+close11 = request.security("NSE:HINDUNILVR", timeframe.period, close)
+open11 = request.security("NSE:HINDUNILVR", timeframe.period, open)
+volume11 = request.security("NSE:HINDUNILVR", timeframe.period, volume)
+cf11 = (close11 - open11) * volume11
+weight11 = manualMode ? manualWeight11 : getWeight("NSE:HINDUNILVR")
+weightedCF11 = cf11 * weight11
+
+// SUNPHARMA
+close12 = request.security("NSE:SUNPHARMA", timeframe.period, close)
+open12 = request.security("NSE:SUNPHARMA", timeframe.period, open)
+volume12 = request.security("NSE:SUNPHARMA", timeframe.period, volume)
+cf12 = (close12 - open12) * volume12
+weight12 = manualMode ? manualWeight12 : getWeight("NSE:SUNPHARMA")
+weightedCF12 = cf12 * weight12
+
+// --- 5. Sum all weighted cash flows ---
+totalWeight = 100.0
+totalWeightedCF = weightedCF1 + weightedCF2 + weightedCF3 + weightedCF4 + weightedCF5 + 
+                  weightedCF6 + weightedCF7 + weightedCF8 + weightedCF9 + weightedCF10 +
+                  weightedCF11 + weightedCF12
+
+// --- 6. Calculate final trend line ---
+niftyCashFlowTrend := totalWeightedCF / totalWeight
+
+// --- 7. Smoothing and Bands ---
+smoothLength = input.int(14, "Smoothing Period")
+cfSmooth = ta.sma(niftyCashFlowTrend, smoothLength)
+cfVolatility = ta.stdev(niftyCashFlowTrend, smoothLength)
+
+upperBand = cfSmooth + (cfVolatility * 0.5)
+lowerBand = cfSmooth - (cfVolatility * 0.5)
+
+// --- 8. Trading Signals ---
+isStrongInflow = niftyCashFlowTrend > upperBand and niftyCashFlowTrend > niftyCashFlowTrend[1]
+isStrongOutflow = niftyCashFlowTrend < lowerBand and niftyCashFlowTrend < niftyCashFlowTrend[1]
+
+// --- 9. Plotting ---
+plot(niftyCashFlowTrend, "Combined Cash Flow", color.new(#2962FF, 0), 2)
+
+p1 = plot(upperBand, "Inflow Zone", color.new(#00C853, 70))
+p2 = plot(lowerBand, "Outflow Zone", color.new(#FF1744, 70))
+fill(p1, p2, color.new(#2962FF, 95))
+
+hline(0, "Zero Line", color.new(#888888, 50))
+
+plotshape(isStrongInflow, "INFLOW", shape.triangleup, location.belowbar, 
+         color.new(#00C853, 0), size=size.small, text="IN")
+
+plotshape(isStrongOutflow, "OUTFLOW", shape.triangledown, location.abovebar, 
+         color.new(#FF1744, 0), size=size.small, text="OUT")
+
+bgcolor(isStrongInflow ? color.new(#00C853, 90) : 
+        isStrongOutflow ? color.new(#FF1744, 90) : na)
+
+// --- 10. Dashboard ---
+if barstate.islast
+    var table infoTable = table.new(position.top_right, 2, 7, 
+                                     bgcolor=color.new(#1A1A2E, 90), 
+                                     border_color=color.new(#2962FF, 100), 
+                                     border_width=1)
+    
+    table.cell(infoTable, 0, 0, "NIFTY TOP 12 CASH FLOW", 
+               text_color=color.white, bgcolor=color.new(#2962FF, 100), 
+               text_size=size.small)
+    table.cell(infoTable, 1, 0, "", bgcolor=color.new(#2962FF, 100))
+    
+    statusText = isStrongInflow ? "INFLOW" : (isStrongOutflow ? "OUTFLOW" : "NEUTRAL")
+    statusColor = isStrongInflow ? color.new(#00C853, 100) : 
+                  (isStrongOutflow ? color.new(#FF1744, 100) : color.new(#FFD54F, 100))
+    
+    table.cell(infoTable, 0, 1, "Status:", text_color=color.white, text_size=size.small)
+    table.cell(infoTable, 1, 1, statusText, text_color=statusColor, text_size=size.small)
+    
+    trendText = niftyCashFlowTrend > niftyCashFlowTrend[1] ? "RISING ↑" : "FALLING ↓"
+    trendColor = niftyCashFlowTrend > niftyCashFlowTrend[1] ? color.new(#00C853, 100) : color.new(#FF1744, 100)
+    
+    table.cell(infoTable, 0, 2, "Trend:", text_color=color.white, text_size=size.small)
+    table.cell(infoTable, 1, 2, trendText, text_color=trendColor, text_size=size.small)
+    
+    cfValue = niftyCashFlowTrend / 1000000
+    table.cell(infoTable, 0, 3, "CF Value (M):", text_color=color.white, text_size=size.small)
+    table.cell(infoTable, 1, 3, str.tostring(cfValue, "#.##"), text_color=color.new(#B8F2E6, 100), text_size=size.small)
+    
+    weightText = manualMode ? "Manual" : (useMarketCapWeight ? "Market Cap" : "Equal (8.33%)")
+    table.cell(infoTable, 0, 4, "Weighting:", text_color=color.white, text_size=size.small)
+    table.cell(infoTable, 1, 4, weightText, text_color=color.new(#B8F2E6, 100), text_size=size.small)
+    
+    table.cell(infoTable, 0, 5, "Stocks:", text_color=color.white, text_size=size.small)
+    table.cell(infoTable, 1, 5, "Top 12", text_color=color.new(#00C853, 100), text_size=size.small)
+    
+    // Portfolio coverage info
+    table.cell(infoTable, 0, 6, "Coverage:", text_color=color.white, text_size=size.small)
+    table.cell(infoTable, 1, 6, "~55-60% of Nifty", text_color=color.new(#FFD54F, 100), text_size=size.small)

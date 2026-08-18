@@ -22,6 +22,7 @@ import {
   formatNum,
   formatCr,
 } from '@/lib/demo-data';
+import WeightedCashFlowChart from '@/components/dashboard/weighted-cash-flow';
 
 export default function BigMoneyTab() {
   const [dayComparison, setDayComparison] = useState<DayComparison[]>([]);
@@ -399,6 +400,9 @@ export default function BigMoneyTab() {
           </div>
         </CardContent>
       </Card>
+
+      {/* Weighted Cash Flow Bar Chart — Pine Script Converted */}
+      <WeightedCashFlowChart />
     </div>
   );
 }

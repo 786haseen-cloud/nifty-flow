@@ -1,0 +1,281 @@
+//@version=6
+indicator(title="Universal Cash Flow Trend", overlay=true)
+
+// --- 1. Configuration ---
+weightingMethod = input.string("Standard", "Calculation Method", options=["Standard", "Volume Weighted", "Range Adjusted"])
+customMultiplier = input.float(1.0, "Manual Scale Multiplier", minval=0.1, maxval=10, step=0.1)
+useCloseOpen = input.bool(true, "Use Close-Open (True Cash Flow)")
+smoothLength = input.int(14, "Smoothing Period", minval=1, maxval=50)
+bandMultiplier = input.float(0.5, "Band Multiplier", minval=0.1, maxval=3, step=0.1)
+lookbackPeriod = input.int(20, "Divergence Lookback", minval=10, maxval=100)
+momentumPeriod = input.int(5, "Momentum Period", minval=1, maxval=20)
+
+// --- 2. Calculate Cash Flow ---
+priceClose = close
+priceOpen = open
+pricePrevClose = close[1]
+volume_ = volume
+
+// Cash flow calculation
+cashFlowRaw = 0.0
+if useCloseOpen
+    cashFlowRaw := (priceClose - priceOpen) * volume_
+else
+    cashFlowRaw := (priceClose - pricePrevClose) * volume_
+
+// Apply selected calculation method
+smaVolume = ta.sma(volume, 20)
+smaRange = ta.sma(high - low, 20)
+
+cashFlowTemp = 0.0
+if weightingMethod == "Volume Weighted"
+    cashFlowTemp := cashFlowRaw * (volume_ / smaVolume)
+else
+    cashFlowTemp := cashFlowRaw
+
+cashFlowAdj = 0.0
+if weightingMethod == "Range Adjusted"
+    cashFlowAdj := cashFlowTemp * (1 + (high - low) / smaRange)
+else
+    cashFlowAdj := cashFlowTemp
+
+// Apply manual multiplier
+cashFlowFinal = cashFlowAdj * customMultiplier
+
+// --- 3. Smoothing and Bands ---
+cfSmooth = ta.sma(cashFlowFinal, smoothLength)
+cfVolatility = ta.stdev(cashFlowFinal, smoothLength)
+
+upperBand = cfSmooth + (cfVolatility * bandMultiplier)
+lowerBand = cfSmooth - (cfVolatility * bandMultiplier)
+
+// --- 4. Trading Signals ---
+isStrongInflow = cashFlowFinal > upperBand and cashFlowFinal > cashFlowFinal[1]
+isStrongOutflow = cashFlowFinal < lowerBand and cashFlowFinal < cashFlowFinal[1]
+
+// Divergence detection
+highestPrice = ta.highest(close, lookbackPeriod)
+highestPricePrev = ta.highest(close[1], lookbackPeriod)
+highestCF = ta.highest(cashFlowFinal, lookbackPeriod)
+highestCFPrev = ta.highest(cashFlowFinal[1], lookbackPeriod)
+lowestPrice = ta.lowest(close, lookbackPeriod)
+lowestPricePrev = ta.lowest(close[1], lookbackPeriod)
+lowestCF = ta.lowest(cashFlowFinal, lookbackPeriod)
+lowestCFPrev = ta.lowest(cashFlowFinal[1], lookbackPeriod)
+
+priceHigher = highestPrice > highestPricePrev
+cfHigher = highestCF > highestCFPrev
+priceLower = lowestPrice < lowestPricePrev
+cfLower = lowestCF < lowestCFPrev
+
+bearishDivergence = priceHigher and cfHigher == false
+bullishDivergence = priceLower and cfLower == false
+
+// Trend direction
+isUptrend = cashFlowFinal > cfSmooth and cfSmooth > cfSmooth[1]
+isDowntrend = cashFlowFinal < cfSmooth and cfSmooth < cfSmooth[1]
+
+// Momentum
+momentum = cashFlowFinal - cashFlowFinal[momentumPeriod]
+isMomentumUp = momentum > 0 and momentum > momentum[1]
+isMomentumDown = momentum < 0 and momentum < momentum[1]
+
+// --- 5. Main Plot ---
+// Determine color for cash flow line
+plotColor = color.new(#FF9800, 0)
+if cashFlowFinal > cfSmooth
+    if cashFlowFinal > upperBand
+        plotColor := color.new(#00C853, 0)
+    else
+        plotColor := color.new(#2962FF, 0)
+else
+    if cashFlowFinal < lowerBand
+        plotColor := color.new(#FF1744, 0)
+    else
+        plotColor := color.new(#FF9800, 0)
+
+plot(cashFlowFinal, "Cash Flow", plotColor, 2)
+
+// Zero line
+hline(0, "Zero Line", color.new(#888888, 50))
+
+// Bands with fill
+bandPlot1 = plot(upperBand, "Upper Band", color.new(#00C853, 70), 1)
+bandPlot2 = plot(lowerBand, "Lower Band", color.new(#FF1744, 70), 1)
+fill(bandPlot1, bandPlot2, color.new(#2962FF, 95))
+
+// Smoothed line
+plot(cfSmooth, "Smoothed Cash Flow", color.new(#FFFFFF, 0), 1, plot.style_line)
+
+// --- 6. Signal Plots ---
+plotshape(isStrongInflow, "Strong Inflow", shape.triangleup, location.belowbar, color.new(#00C853, 0), size=size.small, text="IN")
+plotshape(isStrongOutflow, "Strong Outflow", shape.triangledown, location.abovebar, color.new(#FF1744, 0), size=size.small, text="OUT")
+plotshape(bullishDivergence, "Bullish Divergence", shape.diamond, location.belowbar, color.new(#00C853, 100), size=size.small, text="DIV+")
+plotshape(bearishDivergence, "Bearish Divergence", shape.diamond, location.abovebar, color.new(#FF1744, 100), size=size.small, text="DIV-")
+
+// --- 7. Background Color ---
+bgColorValue = color.new(#2962FF, 100)
+if isStrongInflow
+    bgColorValue := color.new(#00C853, 90)
+else if isStrongOutflow
+    bgColorValue := color.new(#FF1744, 90)
+else if bullishDivergence
+    bgColorValue := color.new(#00C853, 85)
+else if bearishDivergence
+    bgColorValue := color.new(#FF1744, 85)
+
+bgcolor(bgColorValue)
+
+// --- 8. Dashboard Table ---
+if barstate.islast
+    var table infoTable = table.new(position.top_right, 2, 9, bgcolor=color.new(#1A1A2E, 90), border_color=color.new(#2962FF, 100), border_width=1)
+    
+    // Header
+    table.cell(infoTable, 0, 0, "CASH FLOW ANALYSIS", text_color=color.white, bgcolor=color.new(#2962FF, 100), text_size=size.small, text_halign=text.align_center)
+    table.cell(infoTable, 1, 0, syminfo.ticker, text_color=color.new(#B8F2E6, 100), bgcolor=color.new(#2962FF, 100), text_size=size.small, text_halign=text.align_center)
+    
+    // Status
+    statusDisplay = ""
+    statusColorDisplay = color.new(#00C853, 100)
+    if isStrongInflow
+        statusDisplay := "STRONG INFLOW"
+        statusColorDisplay := color.new(#00C853, 100)
+    else if isStrongOutflow
+        statusDisplay := "STRONG OUTFLOW"
+        statusColorDisplay := color.new(#FF1744, 100)
+    else if cashFlowFinal > 0
+        statusDisplay := "POSITIVE"
+        statusColorDisplay := color.new(#00C853, 100)
+    else
+        statusDisplay := "NEGATIVE"
+        statusColorDisplay := color.new(#FF1744, 100)
+    
+    table.cell(infoTable, 0, 1, "Status:", text_color=color.white, text_size=size.small)
+    table.cell(infoTable, 1, 1, statusDisplay, text_color=statusColorDisplay, text_size=size.small)
+    
+    // Trend
+    trendDisplay = ""
+    trendColorDisplay = color.new(#FFD54F, 100)
+    if isUptrend
+        trendDisplay := "UPTREND ▲"
+        trendColorDisplay := color.new(#00C853, 100)
+    else if isDowntrend
+        trendDisplay := "DOWNTREND ▼"
+        trendColorDisplay := color.new(#FF1744, 100)
+    else
+        trendDisplay := "NEUTRAL"
+        trendColorDisplay := color.new(#FFD54F, 100)
+    
+    table.cell(infoTable, 0, 2, "Trend:", text_color=color.white, text_size=size.small)
+    table.cell(infoTable, 1, 2, trendDisplay, text_color=trendColorDisplay, text_size=size.small)
+    
+    // Momentum
+    momDisplay = ""
+    momColorDisplay = color.new(#FFD54F, 100)
+    if isMomentumUp
+        momDisplay := "ACCELERATING ↑"
+        momColorDisplay := color.new(#00C853, 100)
+    else if isMomentumDown
+        momDisplay := "DECELERATING ↓"
+        momColorDisplay := color.new(#FF1744, 100)
+    else
+        momDisplay := "NEUTRAL"
+        momColorDisplay := color.new(#FFD54F, 100)
+    
+    table.cell(infoTable, 0, 3, "Momentum:", text_color=color.white, text_size=size.small)
+    table.cell(infoTable, 1, 3, momDisplay, text_color=momColorDisplay, text_size=size.small)
+    
+    // Current Value
+    cfAbs = math.abs(cashFlowFinal)
+    cfDisplayValue = ""
+    if cfAbs >= 1000000000
+        cfDisplayValue := str.tostring(cashFlowFinal / 1000000000, "#.##") + "B"
+    else if cfAbs >= 1000000
+        cfDisplayValue := str.tostring(cashFlowFinal / 1000000, "#.##") + "M"
+    else if cfAbs >= 1000
+        cfDisplayValue := str.tostring(cashFlowFinal / 1000, "#.##") + "K"
+    else
+        cfDisplayValue := str.tostring(cashFlowFinal, "#.##")
+    
+    table.cell(infoTable, 0, 4, "CF Value:", text_color=color.white, text_size=size.small)
+    table.cell(infoTable, 1, 4, cfDisplayValue, text_color=color.new(#B8F2E6, 100), text_size=size.small)
+    
+    // Volatility
+    volPct = (cfVolatility / math.abs(cfSmooth)) * 100
+    volDisplay = str.tostring(volPct, "#.#") + "%"
+    volColorValue = color.new(#00C853, 100)
+    if volPct > 20
+        volColorValue := color.new(#FF1744, 100)
+    else if volPct > 10
+        volColorValue := color.new(#FFD54F, 100)
+    
+    table.cell(infoTable, 0, 5, "Volatility:", text_color=color.white, text_size=size.small)
+    table.cell(infoTable, 1, 5, volDisplay, text_color=volColorValue, text_size=size.small)
+    
+    // Divergence status
+    divDisplay = ""
+    divColorValue = color.new(#888888, 100)
+    if bearishDivergence
+        divDisplay := "BEARISH"
+        divColorValue := color.new(#FF1744, 100)
+    else if bullishDivergence
+        divDisplay := "BULLISH"
+        divColorValue := color.new(#00C853, 100)
+    else
+        divDisplay := "NONE"
+        divColorValue := color.new(#888888, 100)
+    
+    table.cell(infoTable, 0, 6, "Divergence:", text_color=color.white, text_size=size.small)
+    table.cell(infoTable, 1, 6, divDisplay, text_color=divColorValue, text_size=size.small)
+    
+    // Signal strength
+    sigStrength = 0.0
+    if isStrongInflow
+        sigStrength := 100
+    else if isStrongOutflow
+        sigStrength := -100
+    else if cashFlowFinal > upperBand
+        sigStrength := 75
+    else if cashFlowFinal < lowerBand
+        sigStrength := -75
+    else if cashFlowFinal > 0
+        sigStrength := 25
+    else if cashFlowFinal < 0
+        sigStrength := -25
+    
+    strengthDisplay = ""
+    strengthColorValue = color.new(#FFD54F, 100)
+    if sigStrength > 70
+        strengthDisplay := "VERY STRONG"
+        strengthColorValue := color.new(#00C853, 100)
+    else if sigStrength > 30
+        strengthDisplay := "STRONG"
+        strengthColorValue := color.new(#00C853, 100)
+    else if sigStrength > 0
+        strengthDisplay := "WEAK BUY"
+        strengthColorValue := color.new(#00C853, 100)
+    else if sigStrength < -70
+        strengthDisplay := "VERY STRONG"
+        strengthColorValue := color.new(#FF1744, 100)
+    else if sigStrength < -30
+        strengthDisplay := "STRONG"
+        strengthColorValue := color.new(#FF1744, 100)
+    else if sigStrength < 0
+        strengthDisplay := "WEAK SELL"
+        strengthColorValue := color.new(#FF1744, 100)
+    else
+        strengthDisplay := "NEUTRAL"
+        strengthColorValue := color.new(#FFD54F, 100)
+    
+    table.cell(infoTable, 0, 7, "Signal:", text_color=color.white, text_size=size.small)
+    table.cell(infoTable, 1, 7, strengthDisplay, text_color=strengthColorValue, text_size=size.small)
+    
+    // Method info
+    methodInfo = weightingMethod
+    if useCloseOpen
+        methodInfo := methodInfo + " (C-O)"
+    else
+        methodInfo := methodInfo + " (C-C)"
+    
+    table.cell(infoTable, 0, 8, "Method:", text_color=color.white, text_size=size.small)
+    table.cell(infoTable, 1, 8, methodInfo, text_color=color.new(#B8F2E6, 100), text_size=size.small)

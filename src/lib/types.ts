@@ -263,6 +263,46 @@ export interface NiftyDivergencePoint {
   fiiNetFlow: number;
 }
 
+// Weighted Cash Flow Bar — one bar every 15 seconds (4 bars per minute)
+// Based on Pine Script logic: CashFlow = (Close-Open) × Volume × Weight%
+export interface WeightedCashFlowBar {
+  timestamp: string;          // Time label for the bar
+  // Per-stock breakdown
+  stockFlows: {
+    symbol: string;
+    cashFlow: number;         // (Close-Open) × Volume
+    niftyWeighted: number;    // cashFlow × niftyWeight%
+    sensexWeighted: number;   // cashFlow × sensexWeight%
+    weight: number;           // Nifty weight %
+    moneyIn: number;
+    moneyOut: number;
+  }[];
+  // Combined
+  niftyWeightedCF: number;    // Sum of all niftyWeighted
+  sensexWeightedCF: number;   // Sum of all sensexWeighted
+  totalMoneyIn: number;       // Green bar
+  totalMoneyOut: number;      // Red bar
+  netFlow: number;            // Blue bar (Money In - Money Out)
+  isStrongInflow: boolean;
+  isStrongOutflow: boolean;
+}
+
+// Cash Flow Trend with smoothing and bands (from Pine Script)
+export interface CashFlowTrend {
+  currentValue: number;
+  smoothed: number;           // SMA(14)
+  upperBand: number;          // smoothed + 0.5 × stdev
+  lowerBand: number;          // smoothed - 0.5 × stdev
+  isStrongInflow: boolean;
+  isStrongOutflow: boolean;
+  isUptrend: boolean;
+  isDowntrend: boolean;
+  momentum: number;
+  signalStrength: number;     // -100 to +100
+  bearishDivergence: boolean;
+  bullishDivergence: boolean;
+}
+
 // Constants
 export const INDICES = [
   { symbol: 'NIFTY', name: 'Nifty 50', lotSize: 25, strikes: 11, step: 50, expiryDay: 2, expiryType: 'weekly' as ExpiryType },
@@ -271,22 +311,25 @@ export const INDICES = [
   { symbol: 'FINNIFTY', name: 'Fin Nifty', lotSize: 25, strikes: 11, step: 50, expiryDay: -1, expiryType: 'monthly' as ExpiryType },
 ] as const;
 
+// Top 15 Nifty50 Stocks with actual weightages for BOTH indices
+// Stocks impact on indices calculated as per their weightage
+// Sorted by Nifty50 weight (highest first)
 export const TOP_STOCKS = [
-  { symbol: 'RELIANCE', name: 'Reliance Industries', lotSize: 250, step: 10 },
-  { symbol: 'TCS', name: 'Tata Consultancy', lotSize: 150, step: 5 },
-  { symbol: 'HDFCBANK', name: 'HDFC Bank', lotSize: 550, step: 5 },
-  { symbol: 'INFY', name: 'Infosys', lotSize: 300, step: 5 },
-  { symbol: 'ICICIBANK', name: 'ICICI Bank', lotSize: 700, step: 5 },
-  { symbol: 'HINDUNILVR', name: 'Hindustan Unilever', lotSize: 300, step: 5 },
-  { symbol: 'SBIN', name: 'State Bank India', lotSize: 3750, step: 2.5 },
-  { symbol: 'BHARTIARTL', name: 'Bharti Airtel', lotSize: 1100, step: 5 },
-  { symbol: 'ITC', name: 'ITC Limited', lotSize: 1600, step: 2.5 },
-  { symbol: 'KOTAKBANK', name: 'Kotak Bank', lotSize: 400, step: 5 },
-  { symbol: 'LT', name: 'Larsen & Toubro', lotSize: 150, step: 10 },
-  { symbol: 'AXISBANK', name: 'Axis Bank', lotSize: 900, step: 2.5 },
-  { symbol: 'BAJFINANCE', name: 'Bajaj Finance', lotSize: 125, step: 10 },
-  { symbol: 'MARUTI', name: 'Maruti Suzuki', lotSize: 50, step: 50 },
-  { symbol: 'TITAN', name: 'Titan Company', lotSize: 250, step: 10 },
+  { symbol: 'HDFCBANK', name: 'HDFC Bank',           lotSize: 550,  step: 5,    niftyWeight: 9.97, sensexWeight: 12.03 },
+  { symbol: 'ICICIBANK', name: 'ICICI Bank',          lotSize: 700,  step: 5,    niftyWeight: 9.09, sensexWeight: 10.96 },
+  { symbol: 'RELIANCE',  name: 'Reliance Industries',  lotSize: 250,  step: 10,   niftyWeight: 7.92, sensexWeight: 9.56 },
+  { symbol: 'BHARTIARTL',name: 'Bharti Airtel',       lotSize: 1100, step: 5,    niftyWeight: 5.55, sensexWeight: 6.70 },
+  { symbol: 'LT',        name: 'Larsen & Toubro',      lotSize: 150,  step: 10,   niftyWeight: 4.25, sensexWeight: 5.13 },
+  { symbol: 'SBIN',      name: 'State Bank India',     lotSize: 3750, step: 2.5,  niftyWeight: 3.95, sensexWeight: 4.77 },
+  { symbol: 'INFY',      name: 'Infosys',              lotSize: 300,  step: 5,    niftyWeight: 3.67, sensexWeight: 4.43 },
+  { symbol: 'AXISBANK',  name: 'Axis Bank',            lotSize: 900,  step: 2.5,  niftyWeight: 3.13, sensexWeight: 3.78 },
+  { symbol: 'M&M',       name: 'Mahindra & Mahindra',  lotSize: 600,  step: 2.5,  niftyWeight: 2.74, sensexWeight: 3.30 },
+  { symbol: 'BAJFINANCE',name: 'Bajaj Finance',        lotSize: 125,  step: 10,   niftyWeight: 2.61, sensexWeight: 3.15 },
+  { symbol: 'KOTAKBANK', name: 'Kotak Bank',           lotSize: 400,  step: 5,    niftyWeight: 2.58, sensexWeight: 3.11 },
+  { symbol: 'ITC',       name: 'ITC Limited',          lotSize: 1600, step: 2.5,  niftyWeight: 2.40, sensexWeight: 2.90 },
+  { symbol: 'TCS',       name: 'Tata Consultancy',     lotSize: 150,  step: 5,    niftyWeight: 2.16, sensexWeight: 2.60 },
+  { symbol: 'ETERNAL',   name: 'Eternal Ltd',          lotSize: 750,  step: 2.5,  niftyWeight: 2.06, sensexWeight: 2.49 },
+  { symbol: 'TITAN',     name: 'Titan Company',        lotSize: 250,  step: 10,   niftyWeight: 1.87, sensexWeight: 2.25 },
 ] as const;
 
 export const RISK_FREE_RATE = 0.065;
