@@ -449,6 +449,72 @@ export const GLOBAL_INDICES = [
   { name: 'KOSPI', country: 'Korea', baseValue: 2580 },
 ] as const;
 
+// =====================================================
+// OPTIONS FLOW ARCHITECTURE
+// At each strike, 4 trade types happen simultaneously:
+//   Call Buy (bullish) + Put Write (bullish) = BULLISH OPTIONS FLOW
+//   Put Buy (bearish)  + Call Write (bearish) = BEARISH OPTIONS FLOW
+// Indexes: 11 strikes around ATM (ATM ± 5 each side)
+// Stocks (NSE only, 15 F&O stocks): 9 strikes around ATM (ATM ± 4 each side)
+// BSE does NOT have stock options
+// =====================================================
+
+// Single strike's options flow for one 15-second interval
+export interface StrikeOptionsFlow {
+  strike: number;
+  isATM: boolean;
+  callBuy: number;     // ₹ value of call buying (dark green)
+  putWrite: number;    // ₹ value of put writing/selling (light green)
+  putBuy: number;      // ₹ value of put buying (dark red)
+  callWrite: number;   // ₹ value of call writing/selling (light red)
+  // Computed
+  bullishFlow: number; // callBuy + putWrite
+  bearishFlow: number; // putBuy + callWrite
+  netFlow: number;     // bullishFlow - bearishFlow
+}
+
+// One instrument's options flow across all strikes for a 15s interval
+export interface InstrumentOptionsFlow {
+  symbol: string;
+  name: string;
+  type: InstrumentType;
+  atmStrike: number;
+  strikeStep: number;
+  strikes: StrikeOptionsFlow[];
+  // Aggregated across ALL strikes
+  totalCallBuy: number;
+  totalPutWrite: number;
+  totalPutBuy: number;
+  totalCallWrite: number;
+  totalBullishFlow: number;
+  totalBearishFlow: number;
+  totalNetFlow: number;
+}
+
+// One 15-second bar of ALL options flow (indexes + stocks)
+// This sits BELOW the cash flow bar in the stacked view
+export interface OptionsFlowBar {
+  timestamp: string;
+  // Index options flow (all 4 indexes combined)
+  indexFlows: InstrumentOptionsFlow[];
+  indexTotalCallBuy: number;
+  indexTotalPutWrite: number;
+  indexTotalPutBuy: number;
+  indexTotalCallWrite: number;
+  indexBullishFlow: number;  // combined bullish
+  indexBearishFlow: number;  // combined bearish
+  indexNetFlow: number;      // net = bullish - bearish
+  // Stock options flow (15 NSE F&O stocks combined — BSE has no stock options)
+  stockFlows: InstrumentOptionsFlow[];
+  stockTotalCallBuy: number;
+  stockTotalPutWrite: number;
+  stockTotalPutBuy: number;
+  stockTotalCallWrite: number;
+  stockBullishFlow: number;
+  stockBearishFlow: number;
+  stockNetFlow: number;
+}
+
 export const SIGNAL_WEIGHTS = {
   fiiFlow: 0.25,
   propdeskFlow: 0.20,

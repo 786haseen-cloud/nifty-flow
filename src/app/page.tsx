@@ -5,12 +5,13 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Badge } from '@/components/ui/badge';
 import {
   Globe, Activity, Target, Landmark, Thermometer, Settings,
-  Wifi, WifiOff, Clock, TrendingUp, TrendingDown, Info,
+  Wifi, WifiOff, Clock, TrendingUp, TrendingDown, Info, Layers,
 } from 'lucide-react';
 import BirdsEye from '@/components/dashboard/birds-eye';
 import LiveMonitor from '@/components/dashboard/live-monitor';
 import SignalEngineTab from '@/components/dashboard/signal-engine-tab';
 import BigMoneyTab from '@/components/dashboard/big-money-tab';
+import OptionsFlowTab from '@/components/dashboard/options-flow-tab';
 import GreeksDecay from '@/components/dashboard/greeks-decay';
 import SettingsConfig from '@/components/dashboard/settings-config';
 import { generateDemoVIX, getMarketStatus } from '@/lib/demo-data';
@@ -174,6 +175,12 @@ export default function DashboardPage() {
               <span className="hidden sm:inline">3-Day Pred</span>
               <span className="sm:hidden">🔮</span>
             </TabsTrigger>
+            {/* OPTIONS FLOW = THE MAIN THING — Cash + Options flow stacked view */}
+            <TabsTrigger value="options-flow" className="flex-1 text-xs gap-1.5 data-[state=active]:bg-purple-500/20 data-[state=active]:text-purple-300 font-bold">
+              <Layers className="h-3.5 w-3.5" />
+              <span className="hidden sm:inline">⚡ Opt Flow</span>
+              <span className="sm:hidden">⚡</span>
+            </TabsTrigger>
             <TabsTrigger value="birds-eye" className="flex-1 text-xs gap-1.5 data-[state=active]:bg-orange-500/20 data-[state=active]:text-orange-300">
               <Globe className="h-3.5 w-3.5" />
               <span className="hidden sm:inline">Context</span>
@@ -205,6 +212,11 @@ export default function DashboardPage() {
             <BigMoneyTab />
           </TabsContent>
 
+          {/* OPTIONS FLOW = THE MAIN THING — Cash → Index Options → Stock Options stacked */}
+          <TabsContent value="options-flow" className="mt-0">
+            <OptionsFlowTab />
+          </TabsContent>
+
           <TabsContent value="birds-eye" className="mt-0">
             <BirdsEye />
           </TabsContent>
@@ -225,6 +237,7 @@ export default function DashboardPage() {
           <span>
             <span className="text-emerald-400 font-semibold">LIVE = PRIMARY</span> — Options OI + Cash Flow + Money Flow drives index direction |
             <span className="text-amber-400 ml-1">3-Day = Prediction compass</span> (alignment check only) |
+            <span className="text-purple-400 ml-1">Opt Flow = Cash → Idx Options → Stk Options</span> (stacked correlation) |
             <span className="text-blue-400 ml-1">Net Money Flow (NSE+BSE)</span> |
             <span className="text-orange-400 ml-1">CAS: Cash PAUSED, F&O Continues</span>
           </span>

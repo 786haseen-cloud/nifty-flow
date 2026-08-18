@@ -23,6 +23,9 @@ import {
   type LiveMoneyFlowInference,
   type InstitutionalRollingWindow,
   type MarketDataContext,
+  type StrikeOptionsFlow,
+  type InstrumentOptionsFlow,
+  type OptionsFlowBar,
   GLOBAL_INDICES,
   INDICES,
   TOP_STOCKS,
@@ -1144,4 +1147,205 @@ export function formatCr(n: number): string {
 
 export function formatLakh(n: number): string {
   return `${round2(n / 100000).toFixed(1)} L`;
+}
+
+// =====================================================
+// OPTIONS FLOW DEMO DATA
+// At each strike: Call Buy (dark green), Put Write (light green), Put Buy (dark red), Call Write (light red)
+// Indexes: 11 strikes (ATM ± 5), Stocks: 9 strikes (ATM ± 4)
+// BSE has NO stock options
+// =====================================================
+
+// ATM strikes for indexes (approximate current levels)
+const INDEX_ATM: Record<string, number> = {
+  NIFTY: 24350,
+  SENSEX: 80100,
+  BANKNIFTY: 51800,
+  FINNIFTY: 23200,
+};
+
+// Approximate ATM strikes for top 15 stocks
+const STOCK_ATM: Record<string, number> = {
+  HDFCBANK: 1740,
+  ICICIBANK: 1280,
+  RELIANCE: 2960,
+  BHARTIARTL: 1640,
+  LT: 3620,
+  SBIN: 830,
+  INFY: 1620,
+  AXISBANK: 1170,
+  'M&M': 2940,
+  BAJFINANCE: 7450,
+  KOTAKBANK: 1870,
+  ITC: 460,
+  TCS: 3760,
+  ETERNAL: 710,
+  TITAN: 3560,
+};
+
+// Generate strike-level options flow for one instrument
+function generateStrikeFlows(
+  atmStrike: number,
+  step: number,
+  numStrikes: number,
+  isIndex: boolean,
+): StrikeOptionsFlow[] {
+  const halfStrikes = Math.floor(numStrikes / 2);
+  const strikes: StrikeOptionsFlow[] = [];
+
+  for (let i = -halfStrikes; i <= halfStrikes; i++) {
+    const strike = atmStrike + i * step;
+    const isATM = i === 0;
+    const distanceFromATM = Math.abs(i);
+
+    // ATM strikes have highest activity; OTM strikes have less
+    const activityMultiplier = Math.max(0.2, 1 - distanceFromATM * 0.12);
+
+    // Base flow values — indexes have larger flows than stocks
+    const baseFlow = isIndex ? rand(5000, 25000) : rand(2000, 12000);
+
+    // Call Buy: Buyers of calls (bullish bet)
+    // Higher near ATM, even higher if market is slightly bullish
+    const callBuy = roundN(baseFlow * activityMultiplier * rand(0.5, 1.5), 0);
+
+    // Put Write: Sellers of puts (also bullish — they think price won't drop)
+    // Put writing is often higher than call buying (smart money writes options)
+    const putWrite = roundN(baseFlow * activityMultiplier * rand(0.4, 1.3), 0);
+
+    // Put Buy: Buyers of puts (bearish bet)
+    // Usually less than call buy in a mildly bullish market
+    const putBuy = roundN(baseFlow * activityMultiplier * rand(0.3, 1.1), 0);
+
+    // Call Write: Sellers of calls (bearish — they think price won't rise)
+    // Call writing can be high when market makers are hedging
+    const callWrite = roundN(baseFlow * activityMultiplier * rand(0.3, 1.2), 0);
+
+    const bullishFlow = callBuy + putWrite;
+    const bearishFlow = putBuy + callWrite;
+
+    strikes.push({
+      strike,
+      isATM,
+      callBuy,
+      putWrite,
+      putBuy,
+      callWrite,
+      bullishFlow,
+      bearishFlow,
+      netFlow: bullishFlow - bearishFlow,
+    });
+  }
+
+  return strikes;
+}
+
+// Generate options flow for one instrument (all strikes)
+function generateInstrumentOptionsFlow(
+  symbol: string,
+  name: string,
+  type: InstrumentType,
+  atmStrike: number,
+  step: number,
+  numStrikes: number,
+): InstrumentOptionsFlow {
+  const strikes = generateStrikeFlows(atmStrike, step, numStrikes, type === 'index');
+
+  const totalCallBuy = strikes.reduce((s, k) => s + k.callBuy, 0);
+  const totalPutWrite = strikes.reduce((s, k) => s + k.putWrite, 0);
+  const totalPutBuy = strikes.reduce((s, k) => s + k.putBuy, 0);
+  const totalCallWrite = strikes.reduce((s, k) => s + k.callWrite, 0);
+  const totalBullishFlow = totalCallBuy + totalPutWrite;
+  const totalBearishFlow = totalPutBuy + totalCallWrite;
+
+  return {
+    symbol,
+    name,
+    type,
+    atmStrike,
+    strikeStep: step,
+    strikes,
+    totalCallBuy,
+    totalPutWrite,
+    totalPutBuy,
+    totalCallWrite,
+    totalBullishFlow,
+    totalBearishFlow,
+    totalNetFlow: totalBullishFlow - totalBearishFlow,
+  };
+}
+
+// Generate one 15-second OptionsFlowBar for ALL instruments
+export function generateDemoOptionsFlowBar(): OptionsFlowBar {
+  const now = new Date();
+  const istH = ((now.getUTCHours() + 5) % 24 + 24) % 24;
+  const istM = now.getUTCMinutes();
+  const istS = now.getUTCSeconds();
+  const timestamp = `${String(istH).padStart(2, '0')}:${String(istM).padStart(2, '0')}:${String(istS).padStart(2, '0')} IST`;
+
+  // Index options flow (all 4 indexes)
+  const indexFlows: InstrumentOptionsFlow[] = INDICES.map(idx => {
+    const atm = INDEX_ATM[idx.symbol] || 24000;
+    return generateInstrumentOptionsFlow(
+      idx.symbol,
+      idx.name,
+      'index',
+      atm,
+      idx.step,
+      idx.strikes, // 11 strikes for indexes
+    );
+  });
+
+  // Stock options flow (15 NSE F&O stocks — BSE has no stock options)
+  const stockFlows: InstrumentOptionsFlow[] = TOP_STOCKS.map(stock => {
+    const atm = STOCK_ATM[stock.symbol] || 1000;
+    return generateInstrumentOptionsFlow(
+      stock.symbol,
+      stock.name,
+      'stock',
+      atm,
+      stock.step,
+      9, // 9 strikes for stocks (ATM ± 4)
+    );
+  });
+
+  // Aggregate index totals
+  const indexTotalCallBuy = indexFlows.reduce((s, f) => s + f.totalCallBuy, 0);
+  const indexTotalPutWrite = indexFlows.reduce((s, f) => s + f.totalPutWrite, 0);
+  const indexTotalPutBuy = indexFlows.reduce((s, f) => s + f.totalPutBuy, 0);
+  const indexTotalCallWrite = indexFlows.reduce((s, f) => s + f.totalCallWrite, 0);
+
+  // Aggregate stock totals
+  const stockTotalCallBuy = stockFlows.reduce((s, f) => s + f.totalCallBuy, 0);
+  const stockTotalPutWrite = stockFlows.reduce((s, f) => s + f.totalPutWrite, 0);
+  const stockTotalPutBuy = stockFlows.reduce((s, f) => s + f.totalPutBuy, 0);
+  const stockTotalCallWrite = stockFlows.reduce((s, f) => s + f.totalCallWrite, 0);
+
+  return {
+    timestamp,
+    indexFlows,
+    indexTotalCallBuy,
+    indexTotalPutWrite,
+    indexTotalPutBuy,
+    indexTotalCallWrite,
+    indexBullishFlow: indexTotalCallBuy + indexTotalPutWrite,
+    indexBearishFlow: indexTotalPutBuy + indexTotalCallWrite,
+    indexNetFlow: (indexTotalCallBuy + indexTotalPutWrite) - (indexTotalPutBuy + indexTotalCallWrite),
+    stockFlows,
+    stockTotalCallBuy,
+    stockTotalPutWrite,
+    stockTotalPutBuy,
+    stockTotalCallWrite,
+    stockBullishFlow: stockTotalCallBuy + stockTotalPutWrite,
+    stockBearishFlow: stockTotalPutBuy + stockTotalCallWrite,
+    stockNetFlow: (stockTotalCallBuy + stockTotalPutWrite) - (stockTotalPutBuy + stockTotalCallWrite),
+  };
+}
+
+// Generate multiple historical options flow bars
+export function generateDemoOptionsFlowBars(numBars: number = 60): OptionsFlowBar[] {
+  const bars: OptionsFlowBar[] = [];
+  for (let i = 0; i < numBars; i++) {
+    bars.push(generateDemoOptionsFlowBar());
+  }
+  return bars;
 }
