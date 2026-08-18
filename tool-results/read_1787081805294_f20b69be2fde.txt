@@ -1,0 +1,502 @@
+     1→     1→     1→'use client';
+     2→     2→     2→
+     3→     3→     3→import { useEffect, useState, useMemo } from 'react';
+     4→     4→     4→import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+     5→     5→     5→import { Badge } from '@/components/ui/badge';
+     6→     6→     6→import {
+     7→     7→     7→  BarChart3, Activity, Layers, Zap, Crosshair,
+     8→     8→     8→  TrendingUp, TrendingDown, ShieldAlert, AlertTriangle,
+     9→     9→     9→} from 'lucide-react';
+    10→    10→    10→import type { WeightedCashFlowBar, CashFlowTrend, OptionsFlowBar, FuturesFlowBar, CompositeSignal } from '@/lib/types';
+    11→    11→    11→import {
+    12→    12→    12→  generateDemoWeightedBars, computeCashFlowTrend,
+    13→    13→    13→  generateDemoOptionsFlowBar, generateDemoOptionsFlowBars,
+    14→    14→    14→  generateDemoFuturesFlowBar, generateDemoFuturesFlowBars,
+    15→    15→    15→  computeCompositeSignal,
+    16→    16→    16→} from '@/lib/demo-data';
+    17→    17→    17→
+    18→    18→    18→// Chart dimensions — compact for single-screen
+    19→    19→    19→const VISIBLE_BARS = 160;
+    20→    20→    20→const BAR_WIDTH = 2;
+    21→    21→    21→const CHART_H = 72;      // Each flow chart row height (compact)
+    22→    22→    22→const PRICE_H = 120;     // Price chart height — own dedicated frame
+    23→    23→    23→
+    24→    24→    24→// Color palette
+    25→    25→    25→const C = {
+    26→    26→    26→  callBuy: '#16a34a',      // dark green
+    27→    27→    27→  putWrite: '#4ade80',     // light green
+    28→    28→    28→  putBuy: '#dc2626',       // dark red
+    29→    29→    29→  callWrite: '#f87171',    // light red
+    30→    30→    30→  bullish: '#22c55e',
+    31→    31→    31→  bearish: '#ef4444',
+    32→    32→    32→  netBlue: '#3b82f6',
+    33→    33→    33→  futBuy: '#818cf8',       // indigo-400
+    34→    34→    34→  futSell: '#f472b6',      // pink-400
+    35→    35→    35→  score: '#fbbf24',        // amber-400
+    36→    36→    36→  priceUp: '#34d399',
+    37→    37→    37→  priceDn: '#f87171',
+    38→    38→    38→} as const;
+    39→    39→    39→
+    40→    40→    40→export default function OptionsFlowTab() {
+    41→    41→    41→  // Cash flow data
+    42→    42→    42→  const [cashBars, setCashBars] = useState<WeightedCashFlowBar[]>([]);
+    43→    43→    43→  const [cashTrend, setCashTrend] = useState<CashFlowTrend | null>(null);
+    44→    44→    44→
+    45→    45→    45→  // Options flow data
+    46→    46→    46→  const [optionsBars, setOptionsBars] = useState<OptionsFlowBar[]>([]);
+    47→    47→    47→
+    48→    48→    48→  // Futures flow data
+    49→    49→    49→  const [futBars, setFutBars] = useState<FuturesFlowBar[]>([]);
+    50→    50→    50→
+    51→    51→    51→  // Nifty price simulation (random walk)
+    52→    52→    52→  const [niftyPrices, setNiftyPrices] = useState<number[]>([]);
+    53→    53→    53→  const [niftyPrice, setNiftyPrice] = useState(24350);
+    54→    54→    54→
+    55→    55→    55→  // Score history for the score line
+    56→    56→    56→  const [scoreHistory, setScoreHistory] = useState<number[]>([]);
+    57→    57→    57→
+    58→    58→    58→  // Composite signal
+    59→    59→    59→  const [signal, setSignal] = useState<CompositeSignal | null>(null);
+    60→    60→    60→
+    61→    61→    61→  // Initialize + refresh every 15 seconds
+    62→    62→    62→  useEffect(() => {
+    63→    63→    63→    const initCashBars = generateDemoWeightedBars(60);
+    64→    64→    64→    setCashBars(initCashBars);
+    65→    65→    65→    setCashTrend(computeCashFlowTrend(initCashBars));
+    66→    66→    66→    setOptionsBars(generateDemoOptionsFlowBars(60));
+    67→    67→    67→    setFutBars(generateDemoFuturesFlowBars(60));
+    68→    68→    68→
+    69→    69→    69→    // Initialize price walk
+    70→    70→    70→    const initPrices: number[] = [];
+    71→    71→    71→    let p = 24350;
+    72→    72→    72→    for (let i = 0; i < 60; i++) {
+    73→    73→    73→      p += (Math.random() - 0.48) * 3;
+    74→    74→    74→      initPrices.push(p);
+    75→    75→    75→    }
+    76→    76→    76→    setNiftyPrices(initPrices);
+    77→    77→    77→    setNiftyPrice(initPrices[initPrices.length - 1]);
+    78→    78→    78→
+    79→    79→    79→    // Initial score
+    80→    80→    80→    setScoreHistory(Array.from({ length: 60 }, () => (Math.random() - 0.45) * 60));
+    81→    81→    81→
+    82→    82→    82→    const interval = setInterval(() => {
+    83→    83→    83→      // Cash
+    84→    84→    84→      setCashBars(prev => {
+    85→    85→    85→        const newBar = generateDemoWeightedBars(1)[0];
+    86→    86→    86→        const updated = [...prev, newBar];
+    87→    87→    87→        return updated.length > 500 ? updated.slice(-500) : updated;
+    88→    88→    88→      });
+    89→    89→    89→
+    90→    90→    90→      // Options
+    91→    91→    91→      setOptionsBars(prev => {
+    92→    92→    92→        const newBar = generateDemoOptionsFlowBar();
+    93→    93→    93→        const updated = [...prev, newBar];
+    94→    94→    94→        return updated.length > 500 ? updated.slice(-500) : updated;
+    95→    95→    95→      });
+    96→    96→    96→
+    97→    97→    97→      // Futures
+    98→    98→    98→      setFutBars(prev => {
+    99→    99→    99→        const newBar = generateDemoFuturesFlowBar();
+   100→   100→   100→        const updated = [...prev, newBar];
+   101→   101→   101→        return updated.length > 500 ? updated.slice(-500) : updated;
+   102→   102→   102→      });
+   103→   103→   103→
+   104→   104→   104→      // Price walk
+   105→   105→   105→      setNiftyPrice(prev => {
+   106→   106→   106→        const next = prev + (Math.random() - 0.48) * 3;
+   107→   107→   107→        setNiftyPrices(pp => {
+   108→   108→   108→          const updated = [...pp, next];
+   109→   109→   109→          return updated.length > 500 ? updated.slice(-500) : updated;
+   110→   110→   110→        });
+   111→   111→   111→        return next;
+   112→   112→   112→      });
+   113→   113→   113→    }, 15000);
+   114→   114→   114→
+   115→   115→   115→    return () => clearInterval(interval);
+   116→   116→   116→  }, []);
+   117→   117→   117→
+   118→   118→   118→  // Recalculate cash trend and composite signal when data changes
+   119→   119→   119→  useEffect(() => {
+   120→   120→   120→    if (cashBars.length > 14) {
+   121→   121→   121→      setCashTrend(computeCashFlowTrend(cashBars));
+   122→   122→   122→    }
+   123→   123→   123→  }, [cashBars]);
+   124→   124→   124→
+   125→   125→   125→  // Compute composite signal from latest data
+   126→   126→   126→  useEffect(() => {
+   127→   127→   127→    const latestCash = cashBars[cashBars.length - 1];
+   128→   128→   128→    const latestOpt = optionsBars[optionsBars.length - 1];
+   129→   129→   129→    const latestFut = futBars[futBars.length - 1];
+   130→   130→   130→
+   131→   131→   131→    if (latestCash && latestOpt && latestFut) {
+   132→   132→   132→      const priceTrend = niftyPrice - 24350; // Simple: distance from open
+   133→   133→   133→      const sig = computeCompositeSignal(
+   134→   134→   134→        latestCash.netFlow,
+   135→   135→   135→        latestOpt.indexNetFlow,
+   136→   136→   136→        latestOpt.stockNetFlow,
+   137→   137→   137→        latestFut.indexFutNet,
+   138→   138→   138→        latestFut.stockFutNet,
+   139→   139→   139→        priceTrend,
+   140→   140→   140→      );
+   141→   141→   141→      setSignal(sig);
+   142→   142→   142→      setScoreHistory(prev => {
+   143→   143→   143→        const updated = [...prev, sig.score];
+   144→   144→   144→        return updated.length > 500 ? updated.slice(-500) : updated;
+   145→   145→   145→      });
+   146→   146→   146→    }
+   147→   147→   147→  }, [cashBars, optionsBars, futBars, niftyPrice]);
+   148→   148→   148→
+   149→   149→   149→  // Visible slices
+   150→   150→   150→  const visCash = cashBars.slice(-VISIBLE_BARS);
+   151→   151→   151→  const visOpt = optionsBars.slice(-VISIBLE_BARS);
+   152→   152→   152→  const visFut = futBars.slice(-VISIBLE_BARS);
+   153→   153→   153→  const visPrices = niftyPrices.slice(-VISIBLE_BARS);
+   154→   154→   154→  const visScores = scoreHistory.slice(-VISIBLE_BARS);
+   155→   155→   155→  const latestOpt = visOpt[visOpt.length - 1];
+   156→   156→   156→  const latestFut = visFut[visFut.length - 1];
+   157→   157→   157→
+   158→   158→   158→  // Scale calculations
+   159→   159→   159→  const cashMaxAbs = Math.max(1, ...visCash.map(b => Math.max(Math.abs(b.totalMoneyIn), Math.abs(b.totalMoneyOut), Math.abs(b.netFlow))));
+   160→   160→   160→  const idxOptMax = Math.max(1, ...visOpt.map(b => Math.max(b.indexBullishFlow, b.indexBearishFlow)));
+   161→   161→   161→  const stkOptMax = Math.max(1, ...visOpt.map(b => Math.max(b.stockBullishFlow, b.stockBearishFlow)));
+   162→   162→   162→  const idxFutMax = Math.max(1, ...visFut.map(b => Math.max(Math.abs(b.indexFutBuy), Math.abs(b.indexFutSell))));
+   163→   163→   163→  const stkFutMax = Math.max(1, ...visFut.map(b => Math.max(Math.abs(b.stockFutBuy), Math.abs(b.stockFutSell))));
+   164→   164→   164→
+   165→   165→   165→  const priceMin = Math.min(...visPrices);
+   166→   166→   166→  const priceMax = Math.max(...visPrices);
+   167→   167→   167→  const priceRange = Math.max(1, priceMax - priceMin);
+   168→   168→   168→
+   169→   169→   169→  // Summary totals
+   170→   170→   170→  const totalCashNet = visCash.reduce((s, b) => s + b.netFlow, 0);
+   171→   171→   171→  const totalIdxOptNet = visOpt.reduce((s, b) => s + b.indexNetFlow, 0);
+   172→   172→   172→  const totalStkOptNet = visOpt.reduce((s, b) => s + b.stockNetFlow, 0);
+   173→   173→   173→  const totalIdxFutNet = visFut.reduce((s, b) => s + b.indexFutNet, 0);
+   174→   174→   174→  const totalStkFutNet = visFut.reduce((s, b) => s + b.stockFutNet, 0);
+   175→   175→   175→
+   176→   176→   176→  // Score line SVG path
+   177→   177→   177→  const scoreMin = Math.min(-50, ...visScores);
+   178→   178→   178→  const scoreMax = Math.max(50, ...visScores);
+   179→   179→   179→  const scoreRange = Math.max(1, scoreMax - scoreMin);
+   180→   180→   180→
+   181→   181→   181→  return (
+   182→   182→   182→    <div className="space-y-2">
+   183→   183→   183→      {/* ═══════════════════════════════════════════════════════════
+   184→   184→   184→          ROW 1: COMPOSITE SIGNAL CARD — The actionable trade signal
+   185→   185→   185→          ═══════════════════════════════════════════════════════════ */}
+   186→   186→   186→      {signal && (
+   187→   187→   187→        <Card className={`border-2 ${
+   188→   188→   188→          signal.action === 'BUY_CALL' ? 'border-emerald-500/60 bg-emerald-500/5' :
+   189→   189→   189→          signal.action === 'BUY_PUT' ? 'border-red-500/60 bg-red-500/5' :
+   190→   190→   190→          'border-amber-500/40 bg-amber-500/5'
+   191→   191→   191→        } backdrop-blur-sm`}>
+   192→   192→   192→          <CardContent className="p-2">
+   193→   193→   193→            <div className="flex items-center justify-between flex-wrap gap-x-4 gap-y-1">
+   194→   194→   194→              {/* Action badge */}
+   195→   195→   195→              <div className="flex items-center gap-2">
+   196→   196→   196→                <Crosshair className={`h-5 w-5 ${
+   197→   197→   197→                  signal.action === 'BUY_CALL' ? 'text-emerald-400' :
+   198→   198→   198→                  signal.action === 'BUY_PUT' ? 'text-red-400' : 'text-amber-400'
+   199→   199→   199→                }`} />
+   200→   200→   200→                <span className="text-lg font-bold font-mono">
+   201→   201→   201→                  {signal.action === 'BUY_CALL' ? 'BUY CALL' :
+   202→   202→   202→                   signal.action === 'BUY_PUT' ? 'BUY PUT' :
+   203→   203→   203→                   signal.action === 'EXIT' ? 'EXIT' : 'WAIT'}
+   204→   204→   204→                </span>
+   205→   205→   205→                <span className="text-xs text-muted-foreground">
+   206→   206→   206→                  Nifty {signal.suggestedStrike.toLocaleString()} @ ₹{signal.suggestedPremium.toFixed(0)}
+   207→   207→   207→                </span>
+   208→   208→   208→              </div>
+   209→   209→   209→
+   210→   210→   210→              {/* Score */}
+   211→   211→   211→              <div className="flex items-center gap-2">
+   212→   212→   212→                <span className="text-[10px] text-muted-foreground">Score</span>
+   213→   213→   213→                <div className="w-32 h-3 rounded-full bg-muted overflow-hidden relative">
+   214→   214→   214→                  {/* Center line */}
+   215→   215→   215→                  <div className="absolute inset-y-0 left-1/2 w-px bg-border z-10" />
+   216→   216→   216→                  <div
+   217→   217→   217→                    className={`absolute inset-y-0 rounded-full transition-all duration-300 ${
+   218→   218→   218→                      signal.score > 0 ? 'bg-emerald-500' : 'bg-red-500'
+   219→   219→   219→                    }`}
+   220→   220→   220→                    style={{
+   221→   221→   221→                      left: signal.score > 0 ? '50%' : `${50 + (signal.score / 100) * 50}%`,
+   222→   222→   222→                      width: `${Math.abs(signal.score / 100) * 50}%`,
+   223→   223→   223→                    }}
+   224→   224→   224→                  />
+   225→   225→   225→                </div>
+   226→   226→   226→                <span className={`text-sm font-mono font-bold ${signal.score > 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+   227→   227→   227→                  {signal.score > 0 ? '+' : ''}{signal.score.toFixed(0)}
+   228→   228→   228→                </span>
+   229→   229→   229→              </div>
+   230→   230→   230→
+   231→   231→   231→              {/* Confidence */}
+   232→   232→   232→              <div className="flex items-center gap-1">
+   233→   233→   233→                <span className="text-[10px] text-muted-foreground">Conf</span>
+   234→   234→   234→                <span className={`text-sm font-mono font-bold ${signal.confidence > 60 ? 'text-emerald-400' : signal.confidence > 30 ? 'text-amber-400' : 'text-red-400'}`}>
+   235→   235→   235→                  {signal.confidence.toFixed(0)}%
+   236→   236→   236→                </span>
+   237→   237→   237→              </div>
+   238→   238→   238→
+   239→   239→   239→              {/* Trade details */}
+   240→   240→   240→              <div className="flex items-center gap-3 text-[10px] font-mono">
+   241→   241→   241→                <span>SL: ₹{signal.stopLoss.toFixed(0)}</span>
+   242→   242→   242→                <span className="text-emerald-400">T1: ₹{signal.target1.toFixed(0)}</span>
+   243→   243→   243→                <span className="text-emerald-300">T2: ₹{signal.target2.toFixed(0)}</span>
+   244→   244→   244→                <span>RR: {signal.riskReward.toFixed(1)}:1</span>
+   245→   245→   245→              </div>
+   246→   246→   246→
+   247→   247→   247→              {/* Divergence alerts */}
+   248→   248→   248→              <div className="flex items-center gap-1">
+   249→   249→   249→                {signal.cashOptDivergence && (
+   250→   250→   250→                  <Badge variant="outline" className="text-[8px] border-amber-500/40 text-amber-300 px-1 py-0">
+   251→   251→   251→                    <AlertTriangle className="h-2.5 w-2.5 mr-0.5" />Cash-Opt Div
+   252→   252→   252→                  </Badge>
+   253→   253→   253→                )}
+   254→   254→   254→                {signal.futCashDivergence && (
+   255→   255→   255→                  <Badge variant="outline" className="text-[8px] border-orange-500/40 text-orange-300 px-1 py-0">
+   256→   256→   256→                    <AlertTriangle className="h-2.5 w-2.5 mr-0.5" />Fut-Cash Div
+   257→   257→   257→                  </Badge>
+   258→   258→   258→                )}
+   259→   259→   259→              </div>
+   260→   260→   260→
+   261→   261→   261→              {/* Reasoning */}
+   262→   262→   262→              <div className="text-[9px] text-muted-foreground max-w-xs truncate">
+   263→   263→   263→                {signal.reasoning}
+   264→   264→   264→              </div>
+   265→   265→   265→            </div>
+   266→   266→   266→          </CardContent>
+   267→   267→   267→        </Card>
+   268→   268→   268→      )}
+   269→   269→   269→
+   270→   270→   270→      {/* ═══════════════════════════════════════════════════════════
+   271→   271→   271→          ROW 2a: NIFTY50 PRICE + SCORE LINE — OWN DEDICATED FRAME
+   272→   272→   272→          Time axis + Price axis + Signal markers
+   273→   273→   273→          ═══════════════════════════════════════════════════════════ */}
+   274→   274→   274→      <Card className="border-border/50 bg-card/80 backdrop-blur-sm">
+   275→   275→   275→        <CardHeader className="pb-1 pt-2">
+   276→   276→   276→          <CardTitle className="flex items-center gap-2 text-xs">
+   277→   277→   277→            <Activity className="h-3.5 w-3.5 text-emerald-400" />
+   278→   278→   278→            Nifty 50 Price + Composite Score
+   279→   279→   279→            <span className={`font-mono font-bold ${niftyPrice >= 24350 ? 'text-emerald-400' : 'text-red-400'}`}>
+   280→   280→   280→              {niftyPrice.toFixed(0)}
+   281→   281→   281→            </span>
+   282→   282→   282→            <span className="text-[10px] text-muted-foreground">
+   283→   283→   283→              Chg: {(niftyPrice - 24350).toFixed(0)} ({((niftyPrice - 24350) / 24350 * 100).toFixed(2)}%)
+   284→   284→   284→            </span>
+   285→   285→   285→            {signal && (
+   286→   286→   286→              <span className={`ml-1 font-bold px-1.5 py-0 rounded text-[9px] ${
+   287→   287→   287→                signal.action === 'BUY_CALL' ? 'bg-emerald-500/20 text-emerald-300' :
+   288→   288→   288→                signal.action === 'BUY_PUT' ? 'bg-red-500/20 text-red-300' : 'bg-amber-500/20 text-amber-300'
+   289→   289→   289→              }`}>
+   290→   290→   290→                {signal.action === 'BUY_CALL' ? '▲ BUY CALL' : signal.action === 'BUY_PUT' ? '▼ BUY PUT' : '— WAIT'}
+   291→   291→   291→              </span>
+   292→   292→   292→            )}
+   293→   293→   293→            <div className="ml-auto flex items-center gap-2 text-[9px]">
+   294→   294→   294→              <span className="flex items-center gap-0.5"><span className="inline-block w-3 h-0.5 rounded" style={{ background: niftyPrice >= 24350 ? C.priceUp : C.priceDn }} />Price</span>
+   295→   295→   295→              <span className="flex items-center gap-0.5"><span className="inline-block w-3 h-0.5 rounded" style={{ background: C.score }} />Score</span>
+   296→   296→   296→              <span className="flex items-center gap-0.5"><span className="inline-block w-2 h-2 rounded-full" style={{ background: C.callBuy }} />Call</span>
+   297→   297→   297→              <span className="flex items-center gap-0.5"><span className="inline-block w-2 h-2 rounded-full" style={{ background: C.putBuy }} />Put</span>
+   298→   298→   298→            </div>
+   299→   299→   299→          </CardTitle>
+   300→   300→   300→        </CardHeader>
+   301→   301→   301→        <CardContent className="px-2 pb-2">
+   302→   302→   302→          <div className="relative border border-border/30 rounded bg-black/30" style={{ height: PRICE_H }}>
+   303→   303→   303→            {/* Left Y-axis: Price scale */}
+   304→   304→   304→            <div className="absolute left-0 top-0 bottom-0 w-12 border-r border-border/20 z-10 flex flex-col justify-between py-1 px-0.5">
+   305→   305→   305→              <span className="text-[8px] font-mono text-muted-foreground">{priceMax.toFixed(0)}</span>
+   306→   306→   306→              <span className="text-[8px] font-mono text-muted-foreground">{((priceMax + priceMin) / 2).toFixed(0)}</span>
+   307→   307→   307→              <span className="text-[8px] font-mono text-muted-foreground">{priceMin.toFixed(0)}</span>
+   308→   308→   308→            </div>
+   309→   309→   309→
+   310→   310→   310→            {/* Right Y-axis: Score scale */}
+   311→   311→   311→            <div className="absolute right-0 top-0 bottom-0 w-10 border-l border-border/20 z-10 flex flex-col justify-between py-1 px-0.5">
+   312→   312→   312→              <span className="text-[8px] font-mono text-amber-400/60">+{scoreMax.toFixed(0)}</span>
+   313→   313→   313→              <span className="text-[8px] font-mono text-muted-foreground">0</span>
+   314→   314→   314→              <span className="text-[8px] font-mono text-amber-400/60">{scoreMin.toFixed(0)}</span>
+   315→   315→   315→            </div>
+   316→   316→   316→
+   317→   317→   317→            {/* SVG chart area */}
+   318→   318→   318→            <svg
+   319→   319→   319→              className="absolute left-12 right-10 top-0 bottom-0"
+   320→   320→   320→              viewBox={`0 0 ${visPrices.length * BAR_WIDTH} ${PRICE_H}`}
+   321→   321→   321→              preserveAspectRatio="none"
+   322→   322→   322→            >
+   323→   323→   323→              {/* Horizontal grid lines */}
+   324→   324→   324→              {[0.25, 0.5, 0.75].map(frac => (
+   325→   325→   325→                <line key={frac}
+   326→   326→   326→                  x1="0" y1={PRICE_H * frac}
+   327→   327→   327→                  x2={visPrices.length * BAR_WIDTH} y2={PRICE_H * frac}
+   328→   328→   328→                  stroke="#1e293b" strokeWidth="0.3"
+   329→   329→   329→                />
+   330→   330→   330→              ))}
+   331→   331→   331→
+   332→   332→   332→              {/* Score zero line (center) */}
+   333→   333→   333→              <line
+   334→   334→   334→                x1="0" y1={PRICE_H * (1 - (0 - scoreMin) / scoreRange)}
+   335→   335→   335→                x2={visPrices.length * BAR_WIDTH} y2={PRICE_H * (1 - (0 - scoreMin) / scoreRange)}
+   336→   336→   336→                stroke="#334155" strokeWidth="0.3" strokeDasharray="2,2"
+   337→   337→   337→              />
+   338→   338→   338→
+   339→   339→   339→              {/* Score area (subtle fill) */}
+   340→   340→   340→              {visScores.length > 1 && (
+   341→   341→   341→                <path
+   342→   342→   342→                  d={visScores.map((s, i) => {
+   343→   343→   343→                    const x = i * BAR_WIDTH;
+   344→   344→   344→                    const y = PRICE_H * (1 - (s - scoreMin) / scoreRange);
+   345→   345→   345→                    return `${i === 0 ? 'M' : 'L'}${x},${y}`;
+   346→   346→   346→                  }).join(' ') + ` L${(visScores.length - 1) * BAR_WIDTH},${PRICE_H * (1 - (0 - scoreMin) / scoreRange)} L0,${PRICE_H * (1 - (0 - scoreMin) / scoreRange)} Z`}
+   347→   347→   347→                  fill={signal && signal.score > 0 ? 'rgba(34,197,94,0.06)' : 'rgba(239,68,68,0.06)'}
+   348→   348→   348→                />
+   349→   349→   349→              )}
+   350→   350→   350→
+   351→   351→   351→              {/* Score line (thin amber) */}
+   352→   352→   352→              {visScores.length > 1 && (
+   353→   353→   353→                <polyline
+   354→   354→   354→                  fill="none"
+   355→   355→   355→                  stroke={C.score}
+   356→   356→   356→                  strokeWidth="0.6"
+   357→   357→   357→                  strokeOpacity="0.7"
+   358→   358→   358→                  points={visScores.map((s, i) => {
+   359→   359→   359→                    const x = i * BAR_WIDTH;
+   360→   360→   360→                    const y = PRICE_H * (1 - (s - scoreMin) / scoreRange);
+   361→   361→   361→                    return `${x},${y}`;
+   362→   362→   362→                  }).join(' ')}
+   363→   363→   363→                />
+   364→   364→   364→              )}
+   365→   365→   365→
+   366→   366→   366→              {/* Nifty price line (thin, crisp) */}
+   367→   367→   367→              {visPrices.length > 1 && (
+   368→   368→   368→                <polyline
+   369→   369→   369→                  fill="none"
+   370→   370→   370→                  stroke={niftyPrice >= 24350 ? C.priceUp : C.priceDn}
+   371→   371→   371→                  strokeWidth="0.8"
+   372→   372→   372→                  strokeLinejoin="round"
+   373→   373→   373→                  points={visPrices.map((p, i) => {
+   374→   374→   374→                    const x = i * BAR_WIDTH;
+   375→   375→   375→                    const y = PRICE_H * (1 - (p - priceMin) / priceRange);
+   376→   376→   376→                    return `${x},${y}`;
+   377→   377→   377→                  }).join(' ')}
+   378→   378→   378→                />
+   379→   379→   379→              )}
+   380→   380→   380→
+   381→   381→   381→              {/* Signal markers — small dots, not big triangles */}
+   382→   382→   382→              {visScores.map((s, i) => {
+   383→   383→   383→                if (Math.abs(s) < 35) return null;
+   384→   384→   384→                const x = i * BAR_WIDTH;
+   385→   385→   385→                const y = PRICE_H * (1 - (visPrices[i] - priceMin) / priceRange);
+   386→   386→   386→                const r = Math.abs(s) > 60 ? 2 : 1.5;
+   387→   387→   387→                if (s > 35) return <circle key={i} cx={x} cy={y - 4} r={r} fill={C.callBuy} />;
+   388→   388→   388→                if (s < -35) return <circle key={i} cx={x} cy={y + 4} r={r} fill={C.putBuy} />;
+   389→   389→   389→                return null;
+   390→   390→   390→              })}
+   391→   391→   391→            </svg>
+   392→   392→   392→
+   393→   393→   393→            {/* Live indicator */}
+   394→   394→   394→            <div className="absolute top-1 right-12 z-20">
+   395→   395→   395→              <Badge className="text-[7px] bg-emerald-500/20 text-emerald-300 border-emerald-500/30 px-1 py-0 animate-pulse">LIVE</Badge>
+   396→   396→   396→            </div>
+   397→   397→   397→          </div>
+   398→   398→   398→
+   399→   399→   399→          {/* Time axis below price chart */}
+   400→   400→   400→          <div className="flex justify-between px-12 mt-0.5 text-[7px] font-mono text-muted-foreground">
+   401→   401→   401→            {visCash.length > 0 && <>
+   402→   402→   402→              <span>{visCash[0]?.timestamp || ''}</span>
+   403→   403→   403→              <span>{visCash[Math.floor(visCash.length / 4)]?.timestamp || ''}</span>
+   404→   404→   404→              <span>{visCash[Math.floor(visCash.length / 2)]?.timestamp || ''}</span>
+   405→   405→   405→              <span>{visCash[Math.floor(visCash.length * 3 / 4)]?.timestamp || ''}</span>
+   406→   406→   406→              <span>{visCash[visCash.length - 1]?.timestamp || ''}</span>
+   407→   407→   407→            </>}
+   408→   408→   408→          </div>
+   409→   409→   409→        </CardContent>
+   410→   410→   410→      </Card>
+   411→   411→   411→
+   412→   412→   412→      {/* ═══════════════════════════════════════════════════════════
+   413→   413→   413→          ROW 2b: FLOW CHARTS — Cash | Options | Futures
+   414→   414→   414→          ═══════════════════════════════════════════════════════════ */}
+   415→   415→   415→      <Card className="border-border/50 bg-card/80 backdrop-blur-sm">
+   416→   416→   416→        <CardHeader className="pb-1 pt-2">
+   417→   417→   417→          <CardTitle className="flex items-center gap-2 text-xs">
+   418→   418→   418→            <Layers className="h-3.5 w-3.5 text-purple-400" />
+   419→   419→   419→            Money Flow Bars — Cash | Options | Futures
+   420→   420→   420→            <span className="text-muted-foreground font-normal">| Every 15s | {VISIBLE_BARS} bars visible</span>
+   421→   421→   421→            {/* Mini legend */}
+   422→   422→   422→            <div className="ml-auto flex items-center gap-2 text-[9px]">
+   423→   423→   423→              <span className="flex items-center gap-0.5"><span className="inline-block w-2 h-1.5 rounded-sm bg-emerald-500/50" />Buy</span>
+   424→   424→   424→              <span className="flex items-center gap-0.5"><span className="inline-block w-2 h-1.5 rounded-sm bg-red-500/50" />Sell</span>
+   425→   425→   425→              <span className="flex items-center gap-0.5"><span className="inline-block w-2 h-1.5 rounded-sm bg-blue-500" />Net</span>
+   426→   426→   426→              <span className="flex items-center gap-0.5"><span className="inline-block w-2 h-1.5 rounded-sm" style={{ background: C.callBuy }} />CB</span>
+   427→   427→   427→              <span className="flex items-center gap-0.5"><span className="inline-block w-2 h-1.5 rounded-sm" style={{ background: C.putWrite }} />PW</span>
+   428→   428→   428→              <span className="flex items-center gap-0.5"><span className="inline-block w-2 h-1.5 rounded-sm" style={{ background: C.putBuy }} />PB</span>
+   429→   429→   429→              <span className="flex items-center gap-0.5"><span className="inline-block w-2 h-1.5 rounded-sm" style={{ background: C.callWrite }} />CW</span>
+   430→   430→   430→              <span className="flex items-center gap-0.5"><span className="inline-block w-2 h-1.5 rounded-sm" style={{ background: C.futBuy }} />FutBuy</span>
+   431→   431→   431→              <span className="flex items-center gap-0.5"><span className="inline-block w-2 h-1.5 rounded-sm" style={{ background: C.futSell }} />FutSell</span>
+   432→   432→   432→              <span className="flex items-center gap-0.5"><span className="inline-block w-2 h-0.5" style={{ background: C.score }} />Score</span>
+   433→   433→   433→            </div>
+   434→   434→   434→          </CardTitle>
+   435→   435→   435→        </CardHeader>
+   436→   436→   436→        <CardContent className="space-y-0.5 px-2 pb-2">
+   437→   437→   437→
+   438→   438→   438→          {/* ── LAYER 2: CASH FLOW BARS (Green=Buy, Red=Sell, Blue=Net) ── */}
+   439→   439→   439→          <FlowChartRow
+   440→   440→   440→            label="CASH"
+   441→   441→   441→            labelColor="text-emerald-400"
+   442→   442→   442→            subtitle="Green=Buy | Red=Sell | Blue=Net | NSE+BSE"
+   443→   443→   443→            maxAbs={cashMaxAbs}
+   444→   444→   444→            unit="Cr"
+   445→   445→   445→            unitDivisor={10000000}
+   446→   446→   446→          >
+   447→   447→   447→            {visCash.map((bar, i) => {
+   448→   448→   448→              const inH = Math.max(0.5, (bar.totalMoneyIn / cashMaxAbs) * (CHART_H * 0.3));
+   449→   449→   449→              const outH = Math.max(0.5, (bar.totalMoneyOut / cashMaxAbs) * (CHART_H * 0.3));
+   450→   450→   450→              const netH = Math.max(0.5, (Math.abs(bar.netFlow) / cashMaxAbs) * (CHART_H * 0.45));
+   451→   451→   451→              const netPos = bar.netFlow >= 0;
+   452→   452→   452→              return (
+   453→   453→   453→                <div key={i} className="flex flex-col items-center justify-center" style={{ width: BAR_WIDTH, height: '100%' }}>
+   454→   454→   454→                  {/* Buy pressure (green) — above center */}
+   455→   455→   455→                  <div className="w-full flex-1 flex flex-col items-end justify-end">
+   456→   456→   456→                    <div className="w-full bg-emerald-500/50" style={{ height: inH }}
+   457→   457→   457→                      title={`Buy: +${(bar.totalMoneyIn / 10000000).toFixed(2)} Cr`}
+   458→   458→   458→                    />
+   459→   459→   459→                  </div>
+   460→   460→   460→                  {/* Net flow (blue) — dominant bar showing direction */}
+   461→   461→   461→                  <div className="w-full flex justify-center" style={{ height: CHART_H * 0.08 }}>
+   462→   462→   462→                    <div
+   463→   463→   463→                      className={`w-full rounded-sm ${netPos ? 'bg-blue-500' : 'bg-blue-600'}`}
+   464→   464→   464→                      style={{ height: Math.min(netH, CHART_H * 0.45) }}
+   465→   465→   465→                      title={`Net: ${netPos ? '+' : ''}${(bar.netFlow / 10000000).toFixed(2)} Cr | Buy: +${(bar.totalMoneyIn / 10000000).toFixed(2)} Cr | Sell: -${(bar.totalMoneyOut / 10000000).toFixed(2)} Cr`}
+   466→   466→   466→                    />
+   467→   467→   467→                  </div>
+   468→   468→   468→                  {/* Sell pressure (red) — below center */}
+   469→   469→   469→                  <div className="w-full flex-1 flex flex-col items-start">
+   470→   470→   470→                    <div className="w-full bg-red-500/50" style={{ height: outH }}
+   471→   471→   471→                      title={`Sell: -${(bar.totalMoneyOut / 10000000).toFixed(2)} Cr`}
+   472→   472→   472→                    />
+   473→   473→   473→                  </div>
+   474→   474→   474→                </div>
+   475→   475→   475→              );
+   476→   476→   476→            })}
+   477→   477→   477→          </FlowChartRow>
+   478→   478→   478→
+   479→   479→   479→          {/* ── LAYER 3: INDEX OPTIONS FLOW (4-color) ── */}
+   480→   480→   480→          <FlowChartRow
+   481→   481→   481→            label="IDX OPT"
+   482→   482→   482→            labelColor="text-amber-400"
+   483→   483→   483→            subtitle="4 indexes × 11 strikes"
+   484→   484→   484→            maxAbs={idxOptMax}
+   485→   485→   485→            unit="L"
+   486→   486→   486→            unitDivisor={100000}
+   487→   487→   487→          >
+   488→   488→   488→            {visOpt.map((bar, i) => (
+   489→   489→   489→              <FourColorBar key={i}
+   490→   490→   490→                buy1={bar.indexTotalCallBuy} buy2={bar.indexTotalPutWrite}
+   491→   491→   491→                sell1={bar.indexTotalPutBuy} sell2={bar.indexTotalCallWrite}
+   492→   492→   492→                maxAbs={idxOptMax} height={CHART_H}
+   493→   493→   493→              />
+   494→   494→   494→            ))}
+   495→   495→   495→          </FlowChartRow>
+   496→   496→   496→
+   497→   497→   497→          {/* ── LAYER 4: STOCK OPTIONS FLOW (4-color) ── */}
+   498→   498→   498→          <FlowChartRow
+   499→   499→   499→            label="STK OPT"
+   500→   500→   500→            labelColor="text-cyan-400"
+
+[showing lines 1-500 of 786; use offset=501 with limit to continue reading]

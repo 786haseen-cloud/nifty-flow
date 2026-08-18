@@ -19,7 +19,7 @@ import {
 const VISIBLE_BARS = 160;
 const BAR_WIDTH = 2;
 const CHART_H = 72;      // Each flow chart row height (compact)
-const PRICE_H = 120;     // Price chart height — own dedicated frame
+const PRICE_H = 140;     // Price chart height — own dedicated frame
 
 // Color palette
 const C = {
@@ -271,11 +271,12 @@ export default function OptionsFlowTab() {
           ROW 2a: NIFTY50 PRICE + SCORE LINE — OWN DEDICATED FRAME
           Time axis + Price axis + Signal markers
           ═══════════════════════════════════════════════════════════ */}
-      <Card className="border-border/50 bg-card/80 backdrop-blur-sm">
+      <Card className="border-2 border-emerald-500/30 bg-card/90 backdrop-blur-sm shadow-lg shadow-emerald-500/5">
         <CardHeader className="pb-1 pt-2">
           <CardTitle className="flex items-center gap-2 text-xs">
             <Activity className="h-3.5 w-3.5 text-emerald-400" />
-            Nifty 50 Price + Composite Score
+            Nifty 50 Price + Score
+            <span className="text-[9px] text-muted-foreground font-normal">│ own frame │ time + price axes</span>
             <span className={`font-mono font-bold ${niftyPrice >= 24350 ? 'text-emerald-400' : 'text-red-400'}`}>
               {niftyPrice.toFixed(0)}
             </span>
@@ -299,33 +300,38 @@ export default function OptionsFlowTab() {
           </CardTitle>
         </CardHeader>
         <CardContent className="px-2 pb-2">
-          <div className="relative border border-border/30 rounded bg-black/30" style={{ height: PRICE_H }}>
-            {/* Left Y-axis: Price scale */}
-            <div className="absolute left-0 top-0 bottom-0 w-12 border-r border-border/20 z-10 flex flex-col justify-between py-1 px-0.5">
-              <span className="text-[8px] font-mono text-muted-foreground">{priceMax.toFixed(0)}</span>
-              <span className="text-[8px] font-mono text-muted-foreground">{((priceMax + priceMin) / 2).toFixed(0)}</span>
-              <span className="text-[8px] font-mono text-muted-foreground">{priceMin.toFixed(0)}</span>
+          <div className="relative border-2 border-border/60 rounded-md bg-[#0c0f1a]/90" style={{ height: PRICE_H }}>
+            {/* Left Y-axis: Price scale — 5 ticks */}
+            <div className="absolute left-0 top-0 bottom-0 w-14 border-r border-border/30 z-10 flex flex-col justify-between py-1 px-1">
+              <span className="text-[9px] font-mono text-emerald-400/80">{priceMax.toFixed(0)}</span>
+              <span className="text-[9px] font-mono text-muted-foreground">{(priceMax - priceRange * 0.25).toFixed(0)}</span>
+              <span className="text-[9px] font-mono text-muted-foreground">{((priceMax + priceMin) / 2).toFixed(0)}</span>
+              <span className="text-[9px] font-mono text-muted-foreground">{(priceMin + priceRange * 0.25).toFixed(0)}</span>
+              <span className="text-[9px] font-mono text-red-400/80">{priceMin.toFixed(0)}</span>
             </div>
 
-            {/* Right Y-axis: Score scale */}
-            <div className="absolute right-0 top-0 bottom-0 w-10 border-l border-border/20 z-10 flex flex-col justify-between py-1 px-0.5">
-              <span className="text-[8px] font-mono text-amber-400/60">+{scoreMax.toFixed(0)}</span>
-              <span className="text-[8px] font-mono text-muted-foreground">0</span>
-              <span className="text-[8px] font-mono text-amber-400/60">{scoreMin.toFixed(0)}</span>
+            {/* Right Y-axis: Score scale — 5 ticks */}
+            <div className="absolute right-0 top-0 bottom-0 w-12 border-l border-border/30 z-10 flex flex-col justify-between py-1 px-1 text-right">
+              <span className="text-[9px] font-mono text-amber-400/70">+{scoreMax.toFixed(0)}</span>
+              <span className="text-[9px] font-mono text-amber-400/40">+{(scoreMax * 0.5).toFixed(0)}</span>
+              <span className="text-[9px] font-mono text-muted-foreground">0</span>
+              <span className="text-[9px] font-mono text-amber-400/40">{(scoreMin * 0.5).toFixed(0)}</span>
+              <span className="text-[9px] font-mono text-amber-400/70">{scoreMin.toFixed(0)}</span>
             </div>
 
-            {/* SVG chart area */}
+            {/* SVG chart area — uses vector-effect=non-scaling-stroke for crisp 1px lines */}
             <svg
-              className="absolute left-12 right-10 top-0 bottom-0"
+              className="absolute left-14 right-12 top-0 bottom-0"
               viewBox={`0 0 ${visPrices.length * BAR_WIDTH} ${PRICE_H}`}
               preserveAspectRatio="none"
             >
-              {/* Horizontal grid lines */}
-              {[0.25, 0.5, 0.75].map(frac => (
+              {/* Horizontal grid lines — match 5 Y-axis ticks */}
+              {[0.2, 0.4, 0.5, 0.6, 0.8].map(frac => (
                 <line key={frac}
                   x1="0" y1={PRICE_H * frac}
                   x2={visPrices.length * BAR_WIDTH} y2={PRICE_H * frac}
-                  stroke="#1e293b" strokeWidth="0.3"
+                  stroke={frac === 0.5 ? '#1e293b' : '#111827'} strokeWidth={frac === 0.5 ? '0.5' : '0.3'}
+                  vectorEffect="non-scaling-stroke"
                 />
               ))}
 
@@ -333,7 +339,8 @@ export default function OptionsFlowTab() {
               <line
                 x1="0" y1={PRICE_H * (1 - (0 - scoreMin) / scoreRange)}
                 x2={visPrices.length * BAR_WIDTH} y2={PRICE_H * (1 - (0 - scoreMin) / scoreRange)}
-                stroke="#334155" strokeWidth="0.3" strokeDasharray="2,2"
+                stroke="#334155" strokeWidth="0.5" strokeDasharray="3,3"
+                vectorEffect="non-scaling-stroke"
               />
 
               {/* Score area (subtle fill) */}
@@ -348,13 +355,15 @@ export default function OptionsFlowTab() {
                 />
               )}
 
-              {/* Score line (thin amber) */}
+              {/* Score line (thin amber, 1px screen-px) */}
               {visScores.length > 1 && (
                 <polyline
                   fill="none"
                   stroke={C.score}
-                  strokeWidth="0.6"
-                  strokeOpacity="0.7"
+                  strokeWidth="1"
+                  strokeOpacity="0.65"
+                  strokeLinejoin="round"
+                  vectorEffect="non-scaling-stroke"
                   points={visScores.map((s, i) => {
                     const x = i * BAR_WIDTH;
                     const y = PRICE_H * (1 - (s - scoreMin) / scoreRange);
@@ -363,13 +372,14 @@ export default function OptionsFlowTab() {
                 />
               )}
 
-              {/* Nifty price line (thin, crisp) */}
+              {/* Nifty price line (thin, crisp, 1.2px screen-px) */}
               {visPrices.length > 1 && (
                 <polyline
                   fill="none"
                   stroke={niftyPrice >= 24350 ? C.priceUp : C.priceDn}
-                  strokeWidth="0.8"
+                  strokeWidth="1.2"
                   strokeLinejoin="round"
+                  vectorEffect="non-scaling-stroke"
                   points={visPrices.map((p, i) => {
                     const x = i * BAR_WIDTH;
                     const y = PRICE_H * (1 - (p - priceMin) / priceRange);
@@ -378,26 +388,25 @@ export default function OptionsFlowTab() {
                 />
               )}
 
-              {/* Signal markers — small dots, not big triangles */}
+              {/* Signal markers — small dots at signal points */}
               {visScores.map((s, i) => {
                 if (Math.abs(s) < 35) return null;
                 const x = i * BAR_WIDTH;
                 const y = PRICE_H * (1 - (visPrices[i] - priceMin) / priceRange);
-                const r = Math.abs(s) > 60 ? 2 : 1.5;
-                if (s > 35) return <circle key={i} cx={x} cy={y - 4} r={r} fill={C.callBuy} />;
-                if (s < -35) return <circle key={i} cx={x} cy={y + 4} r={r} fill={C.putBuy} />;
+                if (s > 35) return <circle key={i} cx={x} cy={y - 3} r={1.2} fill={C.callBuy} vectorEffect="non-scaling-stroke" />;
+                if (s < -35) return <circle key={i} cx={x} cy={y + 3} r={1.2} fill={C.putBuy} vectorEffect="non-scaling-stroke" />;
                 return null;
               })}
             </svg>
 
             {/* Live indicator */}
-            <div className="absolute top-1 right-12 z-20">
+            <div className="absolute top-1.5 right-14 z-20">
               <Badge className="text-[7px] bg-emerald-500/20 text-emerald-300 border-emerald-500/30 px-1 py-0 animate-pulse">LIVE</Badge>
             </div>
           </div>
 
           {/* Time axis below price chart */}
-          <div className="flex justify-between px-12 mt-0.5 text-[7px] font-mono text-muted-foreground">
+          <div className="flex justify-between px-14 mt-1 text-[8px] font-mono text-muted-foreground">
             {visCash.length > 0 && <>
               <span>{visCash[0]?.timestamp || ''}</span>
               <span>{visCash[Math.floor(visCash.length / 4)]?.timestamp || ''}</span>
