@@ -1,0 +1,873 @@
+     1→import {
+     2→  type GlobalIndex,
+     3→  type GIFTNifty,
+     4→  type NextMonthFutures,
+     5→  type ExpiryInfo,
+     6→  type NewsEvent,
+     7→  type VIXData,
+     8→  type InstrumentData,
+     9→  type OptionStrike,
+    10→  type PlayerFlow,
+    11→  type DayComparison,
+    12→  type BigTradeEntry,
+    13→  type NiftyDivergencePoint,
+    14→  type InstrumentType,
+    15→  type BuiltUpType,
+    16→  type NetMoneyFlow,
+    17→  type ExchangeStockData,
+    18→  type DualExchangeStock,
+    19→  type WeightedCashFlowBar,
+    20→  type CashFlowTrend,
+    21→  GLOBAL_INDICES,
+    22→  INDICES,
+    23→  TOP_STOCKS,
+    24→} from './types';
+    25→
+    26→function rand(min: number, max: number): number {
+    27→  return Math.random() * (max - min) + min;
+    28→}
+    29→
+    30→function randInt(min: number, max: number): number {
+    31→  return Math.floor(rand(min, max + 1));
+    32→}
+    33→
+    34→function round2(n: number): number {
+    35→  return Math.round(n * 100) / 100;
+    36→}
+    37→
+    38→function roundN(n: number, d: number): number {
+    39→  const f = Math.pow(10, d);
+    40→  return Math.round(n * f) / f;
+    41→}
+    42→
+    43→// --- Global Indices ---
+    44→export function generateDemoGlobalIndices(): GlobalIndex[] {
+    45→  const istHour = new Date().getUTCHours() + 5.5;
+    46→  const asiaOpen = istHour >= 6 && istHour < 15;
+    47→
+    48→  return GLOBAL_INDICES.map((idx) => {
+    49→    const changePercent = rand(-1.5, 1.5);
+    50→    const change = roundN(idx.baseValue * changePercent / 100, idx.baseValue > 10000 ? 0 : 2);
+    51→    const value = roundN(idx.baseValue + change, idx.baseValue > 10000 ? 0 : 2);
+    52→    const isUS = idx.country === 'US';
+    53→    const isEurope = idx.country === 'UK' || idx.country === 'Germany';
+    54→    const isAsia = idx.country === 'Japan' || idx.country === 'HK' || idx.country === 'China' || idx.country === 'Korea';
+    55→
+    56→    let status: 'open' | 'closed' | 'pre-market' = 'closed';
+    57→    if (isUS) status = istHour >= 19.5 && istHour < 25 ? 'open' : istHour >= 18 ? 'pre-market' : 'closed';
+    58→    else if (isEurope) status = istHour >= 13 && istHour < 21.5 ? 'open' : 'closed';
+    59→    else if (isAsia) status = asiaOpen ? 'open' : 'closed';
+    60→
+    61→    let impactOnNifty: GlobalIndex['impactOnNifty'];
+    62→    if (Math.abs(changePercent) < 0.15) impactOnNifty = changePercent >= 0 ? 'mild_positive' : 'mild_negative';
+    63→    else if (Math.abs(changePercent) < 0.4) impactOnNifty = changePercent >= 0 ? 'mild_positive' : 'mild_negative';
+    64→    else if (changePercent >= 0) impactOnNifty = 'positive';
+    65→    else impactOnNifty = 'negative';
+    66→
+    67→    if (idx.country === 'China') impactOnNifty = changePercent >= 0 ? 'mild_positive' : 'mild_negative';
+    68→    if (Math.abs(changePercent) > 0.5 && changePercent > 0) impactOnNifty = 'positive';
+    69→    if (Math.abs(changePercent) > 0.5 && changePercent < 0) impactOnNifty = 'negative';
+    70→
+    71→    return {
+    72→      name: idx.name,
+    73→      country: idx.country,
+    74→      value,
+    75→      change,
+    76→      changePercent: round2(changePercent),
+    77→      status,
+    78→      impactOnNifty,
+    79→    };
+    80→  });
+    81→}
+    82→
+    83→// --- GIFT Nifty ---
+    84→export function generateDemoGIFTNifty(niftyClose: number = 24350): GIFTNifty {
+    85→  const change = round2(rand(-80, 80));
+    86→  const value = round2(niftyClose + change + rand(10, 30));
+    87→  return {
+    88→    value,
+    89→    change,
+    90→    indicativeOpen: round2(value - rand(5, 15)),
+    91→  };
+    92→}
+    93→
+    94→// --- Next Month Futures ---
+    95→export function generateDemoNextMonthFutures(): NextMonthFutures {
+    96→  const ltp = round2(rand(24400, 24600));
+    97→  const spot = 24350;
+    98→  const basis = round2(ltp - spot);
+    99→  return {
+   100→    symbol: 'NIFTY',
+   101→    ltp,
+   102→    basis,
+   103→    oi: randInt(8000000, 12000000),
+   104→    premiumDiscount: basis >= 0 ? 'premium' : 'discount',
+   105→  };
+   106→}
+   107→
+   108→// --- Expiry Info ---
+   109→function getNextExpiry(expiryDay: number, expiryType: 'weekly' | 'monthly'): { date: Date; daysToExpiry: number } {
+   110→  const now = new Date();
+   111→  const istOffset = 5.5 * 60 * 60 * 1000;
+   112→  const istNow = new Date(now.getTime() + istOffset);
+   113→
+   114→  if (expiryType === 'weekly') {
+   115→    // Find next expiryDay (0=Sun, 1=Mon, 2=Tue, ..., 6=Sat)
+   116→    const currentDay = istNow.getUTCDay();
+   117→    let daysUntil = expiryDay - currentDay;
+   118→    if (daysUntil <= 0) daysUntil += 7;
+   119→    const expiryDate = new Date(istNow);
+   120→    expiryDate.setUTCDate(expiryDate.getUTCDate() + daysUntil);
+   121→    expiryDate.setUTCHours(15, 30, 0, 0);
+   122→    const diff = expiryDate.getTime() - istNow.getTime();
+   123→    return { date: expiryDate, daysToExpiry: Math.max(1, Math.ceil(diff / (24 * 60 * 60 * 1000))) };
+   124→  } else {
+   125→    // Last specific weekday of current or next month
+   126→    const currentMonth = istNow.getUTCMonth();
+   127→    const currentYear = istNow.getUTCFullYear();
+   128→    const targetDay = expiryDay; // reuse for monthly: -1 means last Tuesday
+   129→
+   130→    const actualDay = expiryDay === -1 ? 2 : expiryDay; // Tuesday = 2 for BankNifty/Finnifty
+   131→    // For Bankex: Thursday = 4 (handled separately in caller)
+   132→
+   133→    let month = currentMonth;
+   134→    let year = currentYear;
+   135→
+   136→    // Find last Tuesday/Thursday of the month
+   137→    const lastDay = new Date(Date.UTC(year, month + 1, 0));
+   138→    let lastTarget = lastDay.getUTCDay();
+   139→    let diff2 = lastTarget - actualDay;
+   140→    if (diff2 < 0) diff2 += 7;
+   141→    if (diff2 > 6) diff2 -= 7;
+   142→    let expiryDayNum = lastDay.getUTCDate() - diff2;
+   143→    let expiryDate = new Date(Date.UTC(year, month, expiryDayNum, 15, 30, 0));
+   144→
+   145→    if (expiryDate <= istNow) {
+   146→      month++;
+   147→      if (month > 11) { month = 0; year++; }
+   148→      const lastDay2 = new Date(Date.UTC(year, month + 1, 0));
+   149→      let lastTarget2 = lastDay2.getUTCDay();
+   150→      let diff3 = lastTarget2 - actualDay;
+   151→      if (diff3 < 0) diff3 += 7;
+   152→      expiryDayNum = lastDay2.getUTCDate() - diff3;
+   153→      expiryDate = new Date(Date.UTC(year, month, expiryDayNum, 15, 30, 0));
+   154→    }
+   155→
+   156→    const diffMs = expiryDate.getTime() - istNow.getTime();
+   157→    return { date: expiryDate, daysToExpiry: Math.max(1, Math.ceil(diffMs / (24 * 60 * 60 * 1000))) };
+   158→  }
+   159→}
+   160→
+   161→export function generateDemoExpiryInfo(): ExpiryInfo[] {
+   162→  const expiryConfigs = [
+   163→    ...INDICES,
+   164→    { symbol: 'BANKEX', name: 'Bankex', lotSize: 15, strikes: 11, step: 100, expiryDay: -1, expiryType: 'monthly' as const },
+   165→  ];
+   166→
+   167→  return expiryConfigs.map((idx) => {
+   168→    let daysToExpiry: number;
+   169→    let nextExpiryDate: string;
+   170→
+   171→    if (idx.symbol === 'BANKEX') {
+   172→      // Last Thursday of month
+   173→      const result = getLastWeekdayOfMonth(4);
+   174→      daysToExpiry = result.daysToExpiry;
+   175→      nextExpiryDate = result.dateStr;
+   176→    } else {
+   177→      const result = getNextExpiry(idx.expiryDay, idx.expiryType);
+   178→      daysToExpiry = result.daysToExpiry;
+   179→      nextExpiryDate = result.date.toLocaleDateString('en-IN', { weekday: 'short', month: 'short', day: 'numeric' });
+   180→    }
+   181→
+   182→    return {
+   183→      symbol: idx.symbol,
+   184→      name: idx.name,
+   185→      nextExpiryDate,
+   186→      daysToExpiry,
+   187→      expiryType: idx.expiryType,
+   188→      isSmartMoneyWindow: daysToExpiry <= 2,
+   189→    };
+   190→  });
+   191→}
+   192→
+   193→function getLastWeekdayOfMonth(weekday: number): { dateStr: string; daysToExpiry: number } {
+   194→  const now = new Date();
+   195→  const istOffset = 5.5 * 60 * 60 * 1000;
+   196→  const istNow = new Date(now.getTime() + istOffset);
+   197→  let month = istNow.getUTCMonth();
+   198→  let year = istNow.getUTCFullYear();
+   199→
+   200→  const lastDay = new Date(Date.UTC(year, month + 1, 0));
+   201→  let diff = lastDay.getUTCDay() - weekday;
+   202→  if (diff < 0) diff += 7;
+   203→  let dayNum = lastDay.getUTCDate() - diff;
+   204→  let expiryDate = new Date(Date.UTC(year, month, dayNum, 15, 30, 0));
+   205→
+   206→  if (expiryDate <= istNow) {
+   207→    month++;
+   208→    if (month > 11) { month = 0; year++; }
+   209→    const lastDay2 = new Date(Date.UTC(year, month + 1, 0));
+   210→    let diff2 = lastDay2.getUTCDay() - weekday;
+   211→    if (diff2 < 0) diff2 += 7;
+   212→    dayNum = lastDay2.getUTCDate() - diff2;
+   213→    expiryDate = new Date(Date.UTC(year, month, dayNum, 15, 30, 0));
+   214→  }
+   215→
+   216→  const diffMs = expiryDate.getTime() - istNow.getTime();
+   217→  const daysToExpiry = Math.max(1, Math.ceil(diffMs / (24 * 60 * 60 * 1000)));
+   218→  const dateStr = expiryDate.toLocaleDateString('en-IN', { weekday: 'short', month: 'short', day: 'numeric' });
+   219→  return { dateStr, daysToExpiry };
+   220→}
+   221→
+   222→// --- News Events ---
+   223→export function generateDemoNews(): NewsEvent[] {
+   224→  const now = new Date();
+   225→  const istH = ((now.getUTCHours() + 5) % 24 + 24) % 24;
+   226→  const istM = now.getUTCMinutes() + 30;
+   227→
+   228→  const newsPool: Omit<NewsEvent, 'time'>[] = [
+   229→    { category: 'geopolitical', headline: 'US-China trade talks resume; tariffs on tech imports discussed', impact: 'high', sentiment: 'bullish' },
+   230→    { category: 'government_data', headline: 'India CPI inflation rises to 5.2% vs 4.8% expected', impact: 'high', sentiment: 'bearish' },
+   231→    { category: 'policy', headline: 'RBI keeps repo rate unchanged at 6.5%; stance remains focused on withdrawal of accommodation', impact: 'high', sentiment: 'neutral' },
+   232→    { category: 'corporate', headline: 'Reliance Q2 results: Net profit up 18% YoY, Jio adds 8M subscribers', impact: 'medium', sentiment: 'bullish' },
+   233→    { category: 'global', headline: 'Fed signals potential rate cut in September; dot plot shifts dovish', impact: 'high', sentiment: 'bullish' },
+   234→    { category: 'geopolitical', headline: 'Middle East tensions ease as ceasefire talks progress', impact: 'medium', sentiment: 'bullish' },
+   235→    { category: 'government_data', headline: 'India IIP grows 4.5% vs 3.2% previous month', impact: 'medium', sentiment: 'bullish' },
+   236→    { category: 'policy', headline: 'SEBI tightens F&O trading rules; lot size changes effective next month', impact: 'high', sentiment: 'bearish' },
+   237→    { category: 'corporate', headline: 'HDFC Bank Q2: NIM stable at 3.5%; provisions decline QoQ', impact: 'medium', sentiment: 'bullish' },
+   238→    { category: 'global', headline: 'ECB holds rates; Lagarde hints at October cut possibility', impact: 'low', sentiment: 'mild_bullish' as NewsEvent['sentiment'], },
+   239→    { category: 'geopolitical', headline: 'Russia-Ukraine conflict: New sanctions imposed on energy sector', impact: 'medium', sentiment: 'bearish' },
+   240→    { category: 'government_data', headline: 'India WPI inflation at 2.1%; remains in comfort zone', impact: 'low', sentiment: 'bullish' },
+   241→    { category: 'corporate', headline: 'TCS wins $2B deal from UK-based financial services firm', impact: 'medium', sentiment: 'bullish' },
+   242→    { category: 'global', headline: 'BOJ ends negative rate policy; yen strengthens to 148/USD', impact: 'medium', sentiment: 'neutral' },
+   243→    { category: 'policy', headline: 'Govt announces PLI scheme extension for semiconductor manufacturing', impact: 'low', sentiment: 'bullish' },
+   244→  ];
+   245→
+   246→  return newsPool.map((n, i) => {
+   247→    const h = istH - i;
+   248→    const m = istM - randInt(0, 30);
+   249→    const timeStr = `${((h % 24) + 24) % 24}:${String(Math.abs(m) % 60).padStart(2, '0')}`;
+   250→    return { ...n, time: timeStr, sentiment: n.sentiment === 'mild_bullish' ? 'bullish' : n.sentiment };
+   251→  });
+   252→}
+   253→
+   254→// --- VIX ---
+   255→export function generateDemoVIX(): VIXData {
+   256→  const value = round2(rand(12, 22));
+   257→  const change = round2(rand(-2, 2));
+   258→  const dayOpen = round2(value - change);
+   259→  const dayHigh = round2(Math.max(value, dayOpen) + rand(0.5, 2));
+   260→  const dayLow = round2(Math.min(value, dayOpen) - rand(0.5, 2));
+   261→
+   262→  let panicLevel: VIXData['panicLevel'];
+   263→  if (value < 12) panicLevel = 'calm';
+   264→  else if (value < 16) panicLevel = 'normal';
+   265→  else if (value < 20) panicLevel = 'elevated';
+   266→  else panicLevel = 'panic';
+   267→
+   268→  let trend: VIXData['trend'];
+   269→  if (change > 0.3) trend = 'rising';
+   270→  else if (change < -0.3) trend = 'falling';
+   271→  else trend = 'stable';
+   272→
+   273→  return {
+   274→    value,
+   275→    change,
+   276→    changePercent: round2((change / dayOpen) * 100),
+   277→    dayHigh,
+   278→    dayLow,
+   279→    dayOpen,
+   280→    trend,
+   281→    percentile: round2(rand(20, 80)),
+   282→    panicLevel,
+   283→  };
+   284→}
+   285→
+   286→// --- Instrument Data ---
+   287→export function generateDemoInstrument(
+   288→  symbol: string = 'NIFTY',
+   289→  name: string = 'Nifty 50',
+   290→  type: InstrumentType = 'index',
+   291→  basePrice: number = 24350
+   292→): InstrumentData {
+   293→  const cashChange = round2(rand(-200, 200));
+   294→  const cashLTP = round2(basePrice + cashChange);
+   295→  const cashChangePercent = round2((cashChange / basePrice) * 100);
+   296→  const futureLTP = round2(cashLTP + rand(-20, 40));
+   297→  const futureBasis = round2(futureLTP - cashLTP);
+   298→
+   299→  const step = symbol === 'NIFTY' || symbol === 'FINNIFTY' ? 50 : 100;
+   300→  const numStrikes = 11;
+   301→  const atmStrike = Math.round(cashLTP / step) * step;
+   302→
+   303→  const strikes: OptionStrike[] = [];
+   304→  const halfStrikes = Math.floor(numStrikes / 2);
+   305→
+   306→  for (let i = -halfStrikes; i <= halfStrikes; i++) {
+   307→    const strike = atmStrike + i * step;
+   308→    const isATM = i === 0;
+   309→    const distFromATM = Math.abs(i);
+   310→
+   311→    const callITM = strike < cashLTP;
+   312→    const putITM = strike > cashLTP;
+   313→
+   314→    const callBase = Math.max(1, cashLTP - strike + rand(-20, 20));
+   315→    const callLTP = round2(Math.max(0.5, callBase * Math.exp(-distFromATM * 0.15)));
+   316→    const putBase = Math.max(1, strike - cashLTP + rand(-20, 20));
+   317→    const putLTP = round2(Math.max(0.5, putBase * Math.exp(-distFromATM * 0.15)));
+   318→
+   319→    const callOI = roundN(rand(50000, 5000000) * (1 + distFromATM * 0.3), 0);
+   320→    const putOI = roundN(rand(50000, 5000000) * (1 + distFromATM * 0.3), 0);
+   321→
+   322→    const callIV = round2(rand(10, 25) + distFromATM * 1.5);
+   323→    const putIV = round2(rand(10, 25) + distFromATM * 1.5);
+   324→
+   325→    const callDelta = round2(callITM ? rand(0.5, 0.99) : rand(0.01, 0.49));
+   326→    const putDelta = round2(-(putITM ? rand(0.5, 0.99) : rand(0.01, 0.49)));
+   327→
+   328→    const callGamma = round2(rand(0.0001, 0.002) * (1 - distFromATM * 0.08));
+   329→    const putGamma = round2(rand(0.0001, 0.002) * (1 - distFromATM * 0.08));
+   330→
+   331→    const callTheta = round2(-rand(1, 20) * (1 + distFromATM * 0.05));
+   332→    const putTheta = round2(-rand(1, 20) * (1 + distFromATM * 0.05));
+   333→
+   334→    const callVega = round2(rand(5, 30) * (1 - distFromATM * 0.06));
+   335→    const putVega = round2(rand(5, 30) * (1 - distFromATM * 0.06));
+   336→
+   337→    let builtUp: BuiltUpType = 'None';
+   338→    const callOIChg = roundN(rand(-200000, 500000), 0);
+   339→    const putOIChg = roundN(rand(-200000, 500000), 0);
+   340→
+   341→    if (callOIChg > 100000 && callLTP < putLTP) builtUp = 'Call Writing';
+   342→    else if (callOIChg > 100000 && callLTP > putLTP) builtUp = 'Call Long Cvr.';
+   343→    else if (putOIChg > 100000 && putLTP < callLTP) builtUp = 'Put Writing';
+   344→    else if (putOIChg > 100000 && putLTP > callLTP) builtUp = 'Put Long Cvr.';
+   345→    else if (putOIChg < -100000) builtUp = 'Put Short Cvr.';
+   346→
+   347→    strikes.push({
+   348→      strike,
+   349→      callLTP,
+   350→      callOI,
+   351→      callOIChg,
+   352→      callVolume: randInt(1000, 500000),
+   353→      callIV,
+   354→      callDelta,
+   355→      callGamma,
+   356→      callTheta,
+   357→      callVega,
+   358→      callChg: round2(rand(-10, 10)),
+   359→      putLTP,
+   360→      putOI,
+   361→      putOIChg,
+   362→      putVolume: randInt(1000, 500000),
+   363→      putIV,
+   364→      putDelta,
+   365→      putGamma,
+   366→      putTheta,
+   367→      putVega,
+   368→      putChg: round2(rand(-10, 10)),
+   369→      isATM,
+   370→      builtUp,
+   371→      callITM,
+   372→      putITM,
+   373→    });
+   374→  }
+   375→
+   376→  const totalCallOI = strikes.reduce((s, k) => s + k.callOI, 0);
+   377→  const totalPutOI = strikes.reduce((s, k) => s + k.putOI, 0);
+   378→  const pcr = round2(totalPutOI / totalCallOI);
+   379→
+   380→  return {
+   381→    symbol,
+   382→    name,
+   383→    type,
+   384→    cashLTP,
+   385→    cashChange,
+   386→    cashChangePercent,
+   387→    futureLTP,
+   388→    futureBasis,
+   389→    nextMonthFutLTP: round2(futureLTP + rand(30, 80)),
+   390→    nextMonthFutBasis: round2(futureLTP + rand(30, 80) - cashLTP),
+   391→    atmStrike,
+   392→    strikes,
+   393→    totalCallOI,
+   394→    totalPutOI,
+   395→    pcr,
+   396→    chgOiPCR: round2(rand(0.5, 1.5)),
+   397→    volumePCR: round2(rand(0.4, 1.2)),
+   398→    maxPainStrike: atmStrike + (Math.random() > 0.5 ? step : -step),
+   399→  };
+   400→}
+   401→
+   402→// --- Institutional Flow ---
+   403→export function generateDemoInstitutionalFlow(): DayComparison {
+   404→  const today = new Date();
+   405→  const dateStr = today.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+   406→
+   407→  const fii: PlayerFlow = {
+   408→    player: 'FII',
+   409→    cashNet: roundN(rand(-3000, -500), 0),
+   410→    futNet: roundN(rand(-1500, 1500), 0),
+   411→    optCallNet: roundN(rand(-2000, 500), 0),
+   412→    optPutNet: roundN(rand(-500, 2000), 0),
+   413→    totalNet: 0,
+   414→  };
+   415→  fii.totalNet = roundN(fii.cashNet + fii.futNet + fii.optCallNet + fii.optPutNet, 0);
+   416→
+   417→  const propdesk: PlayerFlow = {
+   418→    player: 'PROPDESK',
+   419→    cashNet: roundN(rand(-200, 200), 0),
+   420→    futNet: roundN(rand(-800, 800), 0),
+   421→    optCallNet: roundN(rand(-1200, 1200), 0),
+   422→    optPutNet: roundN(rand(-1200, 1200), 0),
+   423→    totalNet: 0,
+   424→  };
+   425→  propdesk.totalNet = roundN(propdesk.cashNet + propdesk.futNet + propdesk.optCallNet + propdesk.optPutNet, 0);
+   426→
+   427→  const client: PlayerFlow = {
+   428→    player: 'CLIENT',
+   429→    cashNet: roundN(rand(500, 3000), 0),
+   430→    futNet: roundN(rand(-1000, 1000), 0),
+   431→    optCallNet: roundN(rand(500, 3000), 0),
+   432→    optPutNet: roundN(rand(-2000, 500), 0),
+   433→    totalNet: 0,
+   434→  };
+   435→  client.totalNet = roundN(client.cashNet + client.futNet + client.optCallNet + client.optPutNet, 0);
+   436→
+   437→  const dii: PlayerFlow = {
+   438→    player: 'DII',
+   439→    cashNet: roundN(rand(500, 2000), 0),
+   440→    futNet: roundN(rand(-50, 50), 0),
+   441→    optCallNet: roundN(rand(-10, 10), 0),
+   442→    optPutNet: roundN(rand(-10, 10), 0),
+   443→    totalNet: 0,
+   444→  };
+   445→  dii.totalNet = roundN(dii.cashNet + dii.futNet + dii.optCallNet + dii.optPutNet, 0);
+   446→
+   447→  return { date: dateStr, label: 'Day-0', fii, propdesk, client, dii };
+   448→}
+   449→
+   450→// --- 3-Day Comparison ---
+   451→export function generateDemo3DayComparison(): DayComparison[] {
+   452→  const result: DayComparison[] = [];
+   453→  const today = new Date();
+   454→
+   455→  for (let d = 2; d >= 0; d--) {
+   456→    const date = new Date(today);
+   457→    date.setDate(date.getDate() - d);
+   458→    const dateStr = date.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+   459→    const label = `Day-${2 - d}`;
+   460→
+   461→    const decay = 1 + (2 - d) * 0.3;
+   462→
+   463→    const fii: PlayerFlow = {
+   464→      player: 'FII',
+   465→      cashNet: roundN(rand(-3000, -500) * decay, 0),
+   466→      futNet: roundN(rand(-1500, 1500) * decay, 0),
+   467→      optCallNet: roundN(rand(-2000, 500) * decay, 0),
+   468→      optPutNet: roundN(rand(-500, 2000) * decay, 0),
+   469→      totalNet: 0,
+   470→    };
+   471→    fii.totalNet = roundN(fii.cashNet + fii.futNet + fii.optCallNet + fii.optPutNet, 0);
+   472→
+   473→    const propdesk: PlayerFlow = {
+   474→      player: 'PROPDESK',
+   475→      cashNet: roundN(rand(-200, 200) * decay, 0),
+   476→      futNet: roundN(rand(-800, 800) * decay, 0),
+   477→      optCallNet: roundN(rand(-1200, 1200) * decay, 0),
+   478→      optPutNet: roundN(rand(-1200, 1200) * decay, 0),
+   479→      totalNet: 0,
+   480→    };
+   481→    propdesk.totalNet = roundN(propdesk.cashNet + propdesk.futNet + propdesk.optCallNet + propdesk.optPutNet, 0);
+   482→
+   483→    const client: PlayerFlow = {
+   484→      player: 'CLIENT',
+   485→      cashNet: roundN(rand(500, 3000) * decay, 0),
+   486→      futNet: roundN(rand(-1000, 1000) * decay, 0),
+   487→      optCallNet: roundN(rand(500, 3000) * decay, 0),
+   488→      optPutNet: roundN(rand(-2000, 500) * decay, 0),
+   489→      totalNet: 0,
+   490→    };
+   491→    client.totalNet = roundN(client.cashNet + client.futNet + client.optCallNet + client.optPutNet, 0);
+   492→
+   493→    const dii: PlayerFlow = {
+   494→      player: 'DII',
+   495→      cashNet: roundN(rand(500, 2000) * decay, 0),
+   496→      futNet: 0,
+   497→      optCallNet: 0,
+   498→      optPutNet: 0,
+   499→      totalNet: 0,
+   500→    };
+   501→    dii.totalNet = dii.cashNet;
+   502→
+   503→    result.push({ date: dateStr, label, fii, propdesk, client, dii });
+   504→  }
+   505→
+   506→  return result;
+   507→}
+   508→
+   509→// --- Big Trades ---
+   510→export function generateDemoBigTrades(): BigTradeEntry[] {
+   511→  const instruments = ['NIFTY', 'BANKNIFTY', 'SENSEX', 'FINNIFTY'];
+   512→  const players: Array<'FII' | 'PROPDESK' | 'CLIENT'> = ['FII', 'PROPDESK', 'CLIENT'];
+   513→  const trades: BigTradeEntry[] = [];
+   514→  const now = Date.now();
+   515→
+   516→  for (let i = 0; i < 20; i++) {
+   517→    const player = players[randInt(0, 2)];
+   518→    const instrument = instruments[randInt(0, 3)];
+   519→    const isCall = Math.random() > 0.5;
+   520→    const isBuy = Math.random() > 0.5;
+   521→
+   522→    trades.push({
+   523→      timestamp: new Date(now - i * randInt(60000, 600000)),
+   524→      instrument,
+   525→      tradeType: isCall ? 'Call' : 'Put',
+   526→      action: isBuy ? 'BUY' : 'SELL',
+   527→      player,
+   528→      quantity: roundN(rand(500, 50000) * (player === 'FII' ? 3 : player === 'PROPDESK' ? 2 : 1), 0),
+   529→      value: roundN(rand(10, 500), 2),
+   530→      strike: roundN(rand(24000, 25000) / 50, 0) * 50,
+   531→    });
+   532→  }
+   533→
+   534→  return trades.sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime());
+   535→}
+   536→
+   537→// --- Nifty Divergence ---
+   538→export function generateDemoNiftyDivergence(): NiftyDivergencePoint[] {
+   539→  const data: NiftyDivergencePoint[] = [];
+   540→  let niftyPrice = 24000;
+   541→  let fiiFlow = 0;
+   542→
+   543→  for (let i = 0; i < 30; i++) {
+   544→    const date = new Date();
+   545→    date.setDate(date.getDate() - (29 - i));
+   546→    niftyPrice += rand(-150, 150);
+   547→    fiiFlow += rand(-500, 400);
+   548→
+   549→    data.push({
+   550→      date: date.toLocaleDateString('en-IN', { day: '2-digit', month: 'short' }),
+   551→      niftyPrice: round2(niftyPrice),
+   552→      fiiNetFlow: roundN(fiiFlow, 0),
+   553→    });
+   554→  }
+   555→
+   556→  return data;
+   557→}
+   558→
+   559→// --- Top Stocks Quick View (with Net Money Flow) ---
+   560→export interface StockQuickView {
+   561→  symbol: string;
+   562→  name: string;
+   563→  ltp: number;
+   564→  change: number;
+   565→  changePercent: number;
+   566→  callOI: number;
+   567→  putOI: number;
+   568→  pcr: number;
+   569→  netMoneyFlow: NetMoneyFlow;    // Money In - Money Out
+   570→  nseLTP: number;                 // NSE price
+   571→  bseLTP: number;                 // BSE price
+   572→  nseBseDiff: number;             // NSE - BSE difference
+   573→}
+   574→
+   575→const STOCK_BASE_PRICES = [
+   576→  { symbol: 'HDFCBANK',  name: 'HDFC Bank',            base: 1680, niftyWeight: 9.97, sensexWeight: 12.03 },
+   577→  { symbol: 'ICICIBANK', name: 'ICICI Bank',           base: 1250, niftyWeight: 9.09, sensexWeight: 10.96 },
+   578→  { symbol: 'RELIANCE',  name: 'Reliance Industries',  base: 2950, niftyWeight: 7.92, sensexWeight: 9.56 },
+   579→  { symbol: 'BHARTIARTL',name: 'Bharti Airtel',       base: 1620, niftyWeight: 5.55, sensexWeight: 6.70 },
+   580→  { symbol: 'LT',        name: 'Larsen & Toubro',      base: 3600, niftyWeight: 4.25, sensexWeight: 5.13 },
+   581→  { symbol: 'SBIN',      name: 'State Bank India',     base: 830,  niftyWeight: 3.95, sensexWeight: 4.77 },
+   582→  { symbol: 'INFY',      name: 'Infosys',              base: 1580, niftyWeight: 3.67, sensexWeight: 4.43 },
+   583→  { symbol: 'AXISBANK',  name: 'Axis Bank',            base: 1170, niftyWeight: 3.13, sensexWeight: 3.78 },
+   584→  { symbol: 'M&M',       name: 'Mahindra & Mahindra',  base: 2900, niftyWeight: 2.74, sensexWeight: 3.30 },
+   585→  { symbol: 'BAJFINANCE',name: 'Bajaj Finance',        base: 7200, niftyWeight: 2.61, sensexWeight: 3.15 },
+   586→  { symbol: 'KOTAKBANK', name: 'Kotak Bank',           base: 1800, niftyWeight: 2.58, sensexWeight: 3.11 },
+   587→  { symbol: 'ITC',       name: 'ITC Limited',          base: 470,  niftyWeight: 2.40, sensexWeight: 2.90 },
+   588→  { symbol: 'TCS',       name: 'Tata Consultancy',     base: 3900, niftyWeight: 2.16, sensexWeight: 2.60 },
+   589→  { symbol: 'ETERNAL',   name: 'Eternal Ltd',          base: 280,  niftyWeight: 2.06, sensexWeight: 2.49 },
+   590→  { symbol: 'TITAN',     name: 'Titan Company',        base: 3550, niftyWeight: 1.87, sensexWeight: 2.25 },
+   591→];
+   592→
+   593→export function generateDemoStocks(): StockQuickView[] {
+   594→  return STOCK_BASE_PRICES.map((s) => {
+   595→    const change = round2(rand(-s.base * 0.02, s.base * 0.02));
+   596→    const ltp = round2(s.base + change);
+   597→    const callOI = roundN(rand(100000, 5000000), 0);
+   598→    const putOI = roundN(rand(100000, 5000000), 0);
+   599→
+   600→    // Net Money Flow: Money In - Money Out
+   601→    // Higher weight stocks have larger absolute flows
+   602→    const moneyIn = roundN(rand(50, 500) * (s.base / 1000) * 10000000, 0);   // In ₹
+   603→    const moneyOut = roundN(rand(40, 480) * (s.base / 1000) * 10000000, 0);  // In ₹
+   604→    const netFlow = moneyIn - moneyOut;
+   605→    const netFlowCr = round2(netFlow / 10000000);
+   606→
+   607→    let intensity: NetMoneyFlow['intensity'];
+   608→    const ratio = netFlowCr / (moneyIn / 10000000);
+   609→    if (ratio > 0.15) intensity = 'heavy_inflow';
+   610→    else if (ratio > 0.05) intensity = 'inflow';
+   611→    else if (ratio > -0.05) intensity = 'neutral';
+   612→    else if (ratio > -0.15) intensity = 'outflow';
+   613→    else intensity = 'heavy_outflow';
+   614→
+   615→    // Dual exchange: NSE and BSE have slightly different prices
+   616→    // NSE typically has higher volume, BSE might have slight price difference
+   617→    const nseLTP = round2(ltp + rand(-2, 2));
+   618→    const bseLTP = round2(ltp + rand(-3, 1));  // BSE often slightly lower
+   619→    const nseBseDiff = round2(nseLTP - bseLTP);
+   620→
+   621→    return {
+   622→      symbol: s.symbol,
+   623→      name: s.name,
+   624→      ltp,
+   625→      change,
+   626→      changePercent: round2((change / s.base) * 100),
+   627→      callOI,
+   628→      putOI,
+   629→      pcr: round2(putOI / callOI),
+   630→      netMoneyFlow: {
+   631→        symbol: s.symbol,
+   632→        moneyIn,
+   633→        moneyOut,
+   634→        netFlow,
+   635→        netFlowCr,
+   636→        intensity,
+   637→      },
+   638→      nseLTP,
+   639→      bseLTP,
+   640→      nseBseDiff,
+   641→    };
+   642→  });
+   643→}
+   644→
+   645→// --- Net Money Flow for all top stocks ---
+   646→export function generateDemoNetMoneyFlow(): NetMoneyFlow[] {
+   647→  return STOCK_BASE_PRICES.map((s) => {
+   648→    const moneyIn = roundN(rand(50, 500) * (s.base / 1000) * 10000000, 0);
+   649→    const moneyOut = roundN(rand(40, 480) * (s.base / 1000) * 10000000, 0);
+   650→    const netFlow = moneyIn - moneyOut;
+   651→    const netFlowCr = round2(netFlow / 10000000);
+   652→
+   653→    let intensity: NetMoneyFlow['intensity'];
+   654→    const ratio = netFlowCr / (moneyIn / 10000000);
+   655→    if (ratio > 0.15) intensity = 'heavy_inflow';
+   656→    else if (ratio > 0.05) intensity = 'inflow';
+   657→    else if (ratio > -0.05) intensity = 'neutral';
+   658→    else if (ratio > -0.15) intensity = 'outflow';
+   659→    else intensity = 'heavy_outflow';
+   660→
+   661→    return {
+   662→      symbol: s.symbol,
+   663→      moneyIn,
+   664→      moneyOut,
+   665→      netFlow,
+   666→      netFlowCr,
+   667→      intensity,
+   668→    };
+   669→  });
+   670→}
+   671→
+   672→// --- Dual Exchange Stock Data ---
+   673→// Same stock, different buyers/sellers on NSE vs BSE
+   674→export function generateDemoDualExchangeStocks(): DualExchangeStock[] {
+   675→  return STOCK_BASE_PRICES.map((s) => {
+   676→    const change = round2(rand(-s.base * 0.02, s.base * 0.02));
+   677→    const baseLTP = round2(s.base + change);
+   678→
+   679→    // NSE: Higher volume, tighter spreads
+   680→    const nseLTP = round2(baseLTP + rand(-1, 1));
+   681→    const nseVolume = roundN(rand(500000, 15000000), 0);
+   682→    const nseBuyVol = roundN(nseVolume * rand(0.4, 0.6), 0);
+   683→    const nseSellVol = nseVolume - nseBuyVol;
+   684→    const nseMoneyIn = roundN(nseBuyVol * nseLTP * rand(0.95, 1.05), 0);
+   685→    const nseMoneyOut = roundN(nseSellVol * nseLTP * rand(0.95, 1.05), 0);
+   686→    const nseVWAP = round2((nseMoneyIn + nseMoneyOut) / nseVolume);
+   687→
+   688→    const nse: ExchangeStockData = {
+   689→      symbol: s.symbol,
+   690→      exchange: 'NSE',
+   691→      ltp: nseLTP,
+   692→      change: round2(nseLTP - s.base),
+   693→      changePercent: round2(((nseLTP - s.base) / s.base) * 100),
+   694→      volume: nseVolume,
+   695→      buyVolume: nseBuyVol,
+   696→      sellVolume: nseSellVol,
+   697→      moneyIn: nseMoneyIn,
+   698→      moneyOut: nseMoneyOut,
+   699→      netMoneyFlow: nseMoneyIn - nseMoneyOut,
+   700→      vwap: nseVWAP,
+   701→    };
+   702→
+   703→    // BSE: Lower volume, slightly different price (sometimes arbitrage opportunity)
+   704→    const bseLTP = round2(baseLTP + rand(-3, 1));  // BSE often slightly lower
+   705→    const bseVolume = roundN(rand(100000, 2000000), 0);  // Much lower volume
+   706→    const bseBuyVol = roundN(bseVolume * rand(0.35, 0.65), 0);
+   707→    const bseSellVol = bseVolume - bseBuyVol;
+   708→    const bseMoneyIn = roundN(bseBuyVol * bseLTP * rand(0.94, 1.06), 0);
+   709→    const bseMoneyOut = roundN(bseSellVol * bseLTP * rand(0.94, 1.06), 0);
+   710→    const bseVWAP = round2((bseMoneyIn + bseMoneyOut) / bseVolume);
+   711→
+   712→    const bse: ExchangeStockData = {
+   713→      symbol: s.symbol,
+   714→      exchange: 'BSE',
+   715→      ltp: bseLTP,
+   716→      change: round2(bseLTP - s.base),
+   717→      changePercent: round2(((bseLTP - s.base) / s.base) * 100),
+   718→      volume: bseVolume,
+   719→      buyVolume: bseBuyVol,
+   720→      sellVolume: bseSellVol,
+   721→      moneyIn: bseMoneyIn,
+   722→      moneyOut: bseMoneyOut,
+   723→      netMoneyFlow: bseMoneyIn - bseMoneyOut,
+   724→      vwap: bseVWAP,
+   725→    };
+   726→
+   727→    const combinedNetFlow = nse.netMoneyFlow + bse.netMoneyFlow;
+   728→    const nseBseDiff = round2(nseLTP - bseLTP);
+   729→    const totalMoneyIn = nseMoneyIn + bseMoneyIn;
+   730→    const totalMoneyOut = nseMoneyOut + bseMoneyOut;
+   731→
+   732→    const dominantExchange: 'NSE' | 'BSE' | 'both' =
+   733→      nseVolume > bseVolume * 5 ? 'NSE' :
+   734→      bseVolume > nseVolume * 2 ? 'BSE' : 'both';
+   735→
+   736→    return {
+   737→      symbol: s.symbol,
+   738→      name: s.name,
+   739→      nse,
+   740→      bse,
+   741→      combinedNetFlow,
+   742→      combinedNetFlowCr: round2(combinedNetFlow / 10000000),
+   743→      nseBseDiff,
+   744→      dominantExchange,
+   745→      totalMoneyIn,
+   746→      totalMoneyOut,
+   747→    };
+   748→  });
+   749→}
+   750→
+   751→// --- Weighted Cash Flow Bars ---
+   752→// Based on Pine Script: CashFlow = (Close-Open) × Volume × Weight%
+   753→// 4 bars per minute (every 15 seconds)
+   754→export function generateDemoWeightedCashFlowBars(numBars: number = 60): WeightedCashFlowBar[] {
+   755→  const bars: WeightedCashFlowBar[] = [];
+   756→  const now = new Date();
+   757→
+   758→  for (let i = numBars - 1; i >= 0; i--) {
+   759→    const ts = new Date(now.getTime() - i * 15000); // 15-second intervals
+   760→    const istH = ((ts.getUTCHours() + 5) % 24 + 24) % 24;
+   761→    const istM = ts.getUTCMinutes();
+   762→    const istS = ts.getUTCSeconds();
+   763→    const timeLabel = `${String(istH).padStart(2, '0')}:${String(istM).padStart(2, '0')}:${String(istS).padStart(2, '0')}`;
+   764→
+   765→    const stockFlows: WeightedCashFlowBar['stockFlows'] = [];
+   766→    let niftyWeightedCF = 0;
+   767→    let sensexWeightedCF = 0;
+   768→    let totalMoneyIn = 0;
+   769→    let totalMoneyOut = 0;
+   770→
+   771→    for (const stock of STOCK_BASE_PRICES) {
+   772→      const base = stock.base;
+   773→      // Simulate intra-bar price movement
+   774→      const openPrice = base + rand(-base * 0.002, base * 0.002);
+   775→      const closePrice = openPrice + rand(-base * 0.005, base * 0.005);
+   776→      const volume = randInt(50000, 2000000);
+   777→
+   778→      // Cash Flow = (Close - Open) × Volume  (Pine Script logic)
+   779→      const cashFlow = (closePrice - openPrice) * volume;
+   780→
+   781→      // Weighted Cash Flow = CashFlow × Weight%
+   782→      const niftyWeighted = cashFlow * (stock.niftyWeight / 100);
+   783→      const sensexWeighted = cashFlow * (stock.sensexWeight / 100);
+   784→
+   785→      // Money In / Money Out
+   786→      const moneyIn = cashFlow >= 0 ? cashFlow : 0;
+   787→      const moneyOut = cashFlow < 0 ? Math.abs(cashFlow) : 0;
+   788→
+   789→      stockFlows.push({
+   790→        symbol: stock.symbol,
+   791→        cashFlow: roundN(cashFlow, 0),
+   792→        niftyWeighted: roundN(niftyWeighted, 0),
+   793→        sensexWeighted: roundN(sensexWeighted, 0),
+   794→        weight: stock.niftyWeight,
+   795→        moneyIn: roundN(moneyIn, 0),
+   796→        moneyOut: roundN(moneyOut, 0),
+   797→      });
+   798→
+   799→      niftyWeightedCF += niftyWeighted;
+   800→      sensexWeightedCF += sensexWeighted;
+   801→      totalMoneyIn += moneyIn;
+   802→      totalMoneyOut += moneyOut;
+   803→    }
+   804→
+   805→    bars.push({
+   806→      timestamp: timeLabel,
+   807→      stockFlows,
+   808→      niftyWeightedCF: roundN(niftyWeightedCF, 0),
+   809→      sensexWeightedCF: roundN(sensexWeightedCF, 0),
+   810→      totalMoneyIn: roundN(totalMoneyIn, 0),
+   811→      totalMoneyOut: roundN(totalMoneyOut, 0),
+   812→      netFlow: roundN(totalMoneyIn - totalMoneyOut, 0),
+   813→      isStrongInflow: niftyWeightedCF > 0 && (totalMoneyIn / (totalMoneyOut || 1)) > 2,
+   814→      isStrongOutflow: niftyWeightedCF < 0 && (totalMoneyOut / (totalMoneyIn || 1)) > 2,
+   815→    });
+   816→  }
+   817→
+   818→  return bars;
+   819→}
+   820→
+   821→// --- Cash Flow Trend (with smoothing & bands from Pine Script) ---
+   822→export function generateDemoCashFlowTrend(): CashFlowTrend {
+   823→  const value = round2(rand(-5000000, 5000000));
+   824→  const smoothed = round2(value * rand(0.6, 0.9));
+   825→  const volatility = round2(Math.abs(value) * rand(0.1, 0.3));
+   826→
+   827→  return {
+   828→    currentValue: value,
+   829→    smoothed,
+   830→    upperBand: round2(smoothed + volatility * 0.5),
+   831→    lowerBand: round2(smoothed - volatility * 0.5),
+   832→    isStrongInflow: value > smoothed + volatility * 0.5 && value > 0,
+   833→    isStrongOutflow: value < smoothed - volatility * 0.5 && value < 0,
+   834→    isUptrend: value > smoothed,
+   835→    isDowntrend: value < smoothed,
+   836→    momentum: round2(rand(-2000000, 2000000)),
+   837→    signalStrength: round2(value > 0 ? Math.min(100, value / 50000) : Math.max(-100, value / 50000)),
+   838→    bearishDivergence: Math.random() < 0.1,
+   839→    bullishDivergence: Math.random() < 0.1,
+   840→  };
+   841→}
+   842→
+   843→// --- Market Status ---
+   844→export function getMarketStatus(): 'pre-open' | 'open' | 'closing' | 'closed' {
+   845→  const now = new Date();
+   846→  const istH = ((now.getUTCHours() + 5) % 24 + 24) % 24;
+   847→  const istM = now.getUTCMinutes() + 30;
+   848→  const totalMin = istH * 60 + (istM % 60);
+   849→  const day = now.getUTCDay();
+   850→
+   851→  if (day === 0 || day === 6) return 'closed';
+   852→  if (totalMin >= 570 && totalMin < 585) return 'pre-open';
+   853→  if (totalMin >= 585 && totalMin < 930) return 'open';
+   854→  if (totalMin >= 930 && totalMin < 935) return 'closing';
+   855→  return 'closed';
+   856→}
+   857→
+   858→// --- Format Helpers ---
+   859→export function formatNum(n: number): string {
+   860→  if (Math.abs(n) >= 10000000) return `${round2(n / 10000000).toFixed(2)} Cr`;
+   861→  if (Math.abs(n) >= 100000) return `${round2(n / 100000).toFixed(2)} L`;
+   862→  if (Math.abs(n) >= 1000) return n.toLocaleString('en-IN', { maximumFractionDigits: 0 });
+   863→  return n.toFixed(2);
+   864→}
+   865→
+   866→export function formatCr(n: number): string {
+   867→  return `${round2(n / 10000000).toFixed(1)} Cr`;
+   868→}
+   869→
+   870→export function formatLakh(n: number): string {
+   871→  return `${round2(n / 100000).toFixed(1)} L`;
+   872→}
+   873→

@@ -67,20 +67,100 @@ model BigTrade {
   createdAt   DateTime @default(now())
 }
 
+// =====================================================
+// INSTITUTIONAL FLOW DATA — After-Market NSE Release
+// Live market: Only MONEY FLOW visible (not WHO)
+// After ~5:30 PM IST: NSE releases participant-level data
+// We STORE ALL days, but SIGNAL ENGINE uses 3-day rolling window
+// =====================================================
 model InstitutionalFlow {
   id              String   @id @default(cuid())
-  date            String
-  fiiCashNet      Float    @default(0)
-  fiiFutNet       Float    @default(0)
-  fiiOptCallNet   Float    @default(0)
-  fiiOptPutNet    Float    @default(0)
-  diiCashNet      Float    @default(0)
-  propdeskCashNet Float    @default(0)
-  propdeskFutNet  Float    @default(0)
-  propdeskOptNet  Float    @default(0)
-  clientCashNet   Float    @default(0)
-  clientFutNet    Float    @default(0)
-  clientOptNet    Float    @default(0)
+  date            String   // YYYY-MM-DD — unique per day
+  // FII (Foreign Institutional Investors)
+  fiiCashBuy      Float    @default(0)  // ₹ Cr
+  fiiCashSell     Float    @default(0)
+  fiiFutBuy       Float    @default(0)
+  fiiFutSell      Float    @default(0)
+  fiiOptCallBuy   Float    @default(0)
+  fiiOptCallSell  Float    @default(0)
+  fiiOptPutBuy    Float    @default(0)
+  fiiOptPutSell   Float    @default(0)
+  // DII (Domestic Institutional Investors)
+  diiCashBuy      Float    @default(0)
+  diiCashSell     Float    @default(0)
+  diiFutBuy       Float    @default(0)
+  diiFutSell      Float    @default(0)
+  // PropDesk (Proprietary Trading)
+  propdeskCashBuy   Float    @default(0)
+  propdeskCashSell  Float    @default(0)
+  propdeskFutBuy    Float    @default(0)
+  propdeskFutSell   Float    @default(0)
+  propdeskOptCallBuy  Float    @default(0)
+  propdeskOptCallSell Float    @default(0)
+  propdeskOptPutBuy   Float    @default(0)
+  propdeskOptPutSell  Float    @default(0)
+  // Client (Retail + HNI)
+  clientCashBuy    Float    @default(0)
+  clientCashSell   Float    @default(0)
+  clientFutBuy     Float    @default(0)
+  clientFutSell    Float    @default(0)
+  clientOptCallBuy  Float    @default(0)
+  clientOptCallSell Float    @default(0)
+  clientOptPutBuy   Float    @default(0)
+  clientOptPutSell  Float    @default(0)
+  // Metadata
+  dataSource      String   @default("nse_official")  // nse_official, manual, demo
+  isActive3Day    Boolean  @default(true)   // Within 3-day rolling window?
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
+
+  @@unique([date])  // One record per trading day
+}
+
+// Live Money Flow Snapshots (every 15 seconds during market hours)
+// This is what we SEE during live market — not WHO, just FLOW
+model LiveMoneyFlowSnapshot {
+  id              String   @id @default(cuid())
+  timestamp       DateTime                // Exact time of snapshot
+  date            String                  // YYYY-MM-DD for easy querying
+  // Aggregate flow
+  totalMoneyIn    Float    @default(0)    // ₹
+  totalMoneyOut   Float    @default(0)
+  netFlow         Float    @default(0)
+  flowVelocity    Float    @default(0)    // Cr/min
+  likelyInstitutional Boolean @default(false)  // Flow too big for retail?
+  // Per-stock JSON breakdown (weighted by index)
+  stockFlowsJson  String?                // JSON of per-stock weighted flows
+  // Nifty50 & Sensex weighted combined
+  niftyWeightedCF   Float    @default(0)
+  sensexWeightedCF  Float    @default(0)
+  // Correlation (filled after-market when NSE data available)
+  correlatedFII      Float?   // What portion was likely FII
+  correlatedPropDesk Float?
+  correlatedDII      Float?
+  correlatedClient   Float?
+  correlationConfidence Float?  // 0-1
+  createdAt       DateTime @default(now())
+}
+
+// 3-Day Rolling Window Cache (rebuilt daily after NSE data release)
+model RollingWindowCache {
+  id                String   @id @default(cuid())
+  asOfDate          String   // The date this window was computed for
+  // 3-day aggregates
+  totalFIINet3D     Float    @default(0)
+  totalPropDeskNet3D Float   @default(0)
+  totalClientNet3D  Float    @default(0)
+  totalDIINet3D     Float    @default(0)
+  // Trends
+  fiiTrend          String   @default("neutral")   // accumulating, distributing, neutral
+  propdeskTrend     String   @default("neutral")
+  clientTrend       String   @default("neutral")   // contrarian_bullish, contrarian_bearish, neutral
+  // Day-by-day JSON
+  daysJson          String?  // JSON of InstitutionalNetFlows[] for 3 days
+  dataCompleteness  Float    @default(0)  // 0-1
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@unique([asOfDate])
 }

@@ -12,13 +12,14 @@ import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   LineChart, Line, Legend,
 } from 'recharts';
-import type { DayComparison, BigTradeEntry, NiftyDivergencePoint, InstrumentData, PlayerFlow, DualExchangeStock } from '@/lib/types';
+import type { DayComparison, BigTradeEntry, NiftyDivergencePoint, InstrumentData, PlayerFlow, DualExchangeStock, MarketDataContext } from '@/lib/types';
 import {
   generateDemo3DayComparison,
   generateDemoBigTrades,
   generateDemoNiftyDivergence,
   generateDemoInstrument,
   generateDemoDualExchangeStocks,
+  generateDemoMarketDataContext,
   formatNum,
   formatCr,
 } from '@/lib/demo-data';
@@ -30,6 +31,7 @@ export default function BigMoneyTab() {
   const [divergence, setDivergence] = useState<NiftyDivergencePoint[]>([]);
   const [instrument, setInstrument] = useState<InstrumentData | null>(null);
   const [dualExchangeStocks, setDualExchangeStocks] = useState<DualExchangeStock[]>([]);
+  const [marketContext, setMarketContext] = useState<MarketDataContext | null>(null);
 
   useEffect(() => {
     function refresh() {
@@ -38,6 +40,7 @@ export default function BigMoneyTab() {
       setDivergence(generateDemoNiftyDivergence());
       setInstrument(generateDemoInstrument('NIFTY', 'Nifty 50', 'index', 24350));
       setDualExchangeStocks(generateDemoDualExchangeStocks());
+      setMarketContext(generateDemoMarketDataContext());
     }
     refresh();
     const interval = setInterval(refresh, 30000);
@@ -81,6 +84,90 @@ export default function BigMoneyTab() {
 
   return (
     <div className="space-y-4">
+      {/* Data Awareness Card — Live vs After-Market */}
+      <Card className={`border-border/50 backdrop-blur-sm ${
+        marketContext?.availability === 'live_flow_only'
+          ? 'bg-amber-500/5 border-amber-500/30'
+          : 'bg-emerald-500/5 border-emerald-500/30 bg-card/80'
+      }`}>
+        <CardContent className="p-3">
+          <div className="flex flex-wrap items-start gap-3">
+            <div className="flex-1 min-w-[200px]">
+              <div className="flex items-center gap-2 mb-1">
+                <Badge className={`text-[10px] ${
+                  marketContext?.availability === 'live_flow_only'
+                    ? 'bg-amber-500/20 text-amber-300 border-amber-500/30'
+                    : 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30'
+                }`}>
+                  {marketContext?.availability === 'live_flow_only' ? '🔴 LIVE MARKET' : '🟢 AFTER-MARKET'}
+                </Badge>
+                <span className="text-xs text-muted-foreground">
+                  {marketContext?.availability === 'live_flow_only'
+                    ? 'Only Money Flow visible — WHO is behind it is unknown'
+                    : 'NSE participant data available — Full correlation possible'
+                  }
+                </span>
+              </div>
+              {marketContext?.correlationMessage && (
+                <div className="text-[10px] text-muted-foreground">
+                  {marketContext.correlationMessage}
+                </div>
+              )}
+            </div>
+            {marketContext?.availability === 'live_flow_only' && marketContext.liveInference && (
+              <div className="flex flex-wrap gap-3 text-xs">
+                <div>
+                  <span className="text-muted-foreground">Net Flow: </span>
+                  <span className={`font-mono font-bold ${marketContext.liveInference.netFlow >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                    {(marketContext.liveInference.netFlow / 10000000).toFixed(1)} Cr
+                  </span>
+                </div>
+                <div>
+                  <span className="text-muted-foreground">Velocity: </span>
+                  <span className="font-mono">{marketContext.liveInference.flowVelocity.toFixed(1)} Cr/min</span>
+                </div>
+                <div>
+                  <span className="text-muted-foreground">Institutional: </span>
+                  <span className={marketContext.liveInference.likelyInstitutional ? 'text-orange-400 font-bold' : 'text-muted-foreground'}>
+                    {marketContext.liveInference.likelyInstitutional ? 'LIKELY YES' : 'Uncertain'}
+                  </span>
+                </div>
+              </div>
+            )}
+            {marketContext?.availability === 'after_market_available' && marketContext.rollingWindow && (
+              <div className="flex flex-wrap gap-3 text-xs">
+                <div>
+                  <span className="text-muted-foreground">FII 3D: </span>
+                  <span className={`font-mono font-bold ${marketContext.rollingWindow.totalFIINet3D >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                    {marketContext.rollingWindow.totalFIINet3D >= 0 ? '+' : ''}{marketContext.rollingWindow.totalFIINet3D.toFixed(0)} Cr
+                  </span>
+                  <span className={`ml-1 text-[10px] ${marketContext.rollingWindow.fiiTrend === 'accumulating' ? 'text-emerald-400' : marketContext.rollingWindow.fiiTrend === 'distributing' ? 'text-red-400' : 'text-muted-foreground'}`}>
+                    ({marketContext.rollingWindow.fiiTrend})
+                  </span>
+                </div>
+                <div>
+                  <span className="text-muted-foreground">PropDesk: </span>
+                  <span className={`font-mono font-bold ${marketContext.rollingWindow.totalPropDeskNet3D >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                    {marketContext.rollingWindow.totalPropDeskNet3D >= 0 ? '+' : ''}{marketContext.rollingWindow.totalPropDeskNet3D.toFixed(0)} Cr
+                  </span>
+                </div>
+                <div>
+                  <span className="text-muted-foreground">Client: </span>
+                  <span className="font-mono">{marketContext.rollingWindow.totalClientNet3D.toFixed(0)} Cr</span>
+                  <span className={`ml-1 text-[10px] ${marketContext.rollingWindow.clientTrend === 'contrarian_bullish' ? 'text-emerald-400' : marketContext.rollingWindow.clientTrend === 'contrarian_bearish' ? 'text-red-400' : 'text-muted-foreground'}`}>
+                    ({marketContext.rollingWindow.clientTrend.replace('contrarian_', '')})
+                  </span>
+                </div>
+              </div>
+            )}
+            <div className="text-[10px] text-amber-400/70 max-w-md">
+              Retailers cannot move the market in minutes. Only big money flow indicates institutional activity.
+              3-day data tells the story — after NSE releases data, we correlate WHO did WHAT.
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
       {/* Section A: 3-Day Comparison Table */}
       <Card className="border-border/50 bg-card/80 backdrop-blur-sm">
         <CardHeader className="pb-3">

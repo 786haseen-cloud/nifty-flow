@@ -8,6 +8,7 @@ import {
   type DayComparison,
   type GlobalIndex,
   type PlayerFlow,
+  type MarketDataContext,
   SIGNAL_WEIGHTS,
 } from './types';
 
@@ -18,6 +19,7 @@ interface SignalContext {
   globalIndices: GlobalIndex[];
   daysToExpiry: number;
   stockSentiment: number; // -1 to 1
+  marketDataContext?: MarketDataContext; // NEW: Live vs after-market awareness
 }
 
 export function generateHolisticSignal(
@@ -27,14 +29,52 @@ export function generateHolisticSignal(
 ): Signal {
   const threshold = mode === 'aggressive' ? 30 : 50;
 
+  // Check data availability
+  const isLiveData = context.marketDataContext?.availability === 'live_flow_only';
+  const isAfterMarketData = context.marketDataContext?.availability === 'after_market_available';
+
   // 1. FII Flow Direction (25%)
-  const fiiFlowScore = calcFIIFlowScore(context.dayComparison);
+  // During live: Use money flow inference (we don't know WHO)
+  // After market: Use actual NSE participant data
+  let fiiFlowScore: number;
+  if (isLiveData && context.marketDataContext?.liveInference) {
+    // Live: Infer FII from money flow pattern
+    // Big positive flow + likely institutional = probable FII buying
+    const inference = context.marketDataContext.liveInference;
+    const flowDirection = inference.netFlow >= 0 ? 1 : -1;
+    const magnitude = Math.min(100, Math.abs(inference.netFlow / 10000000) * 2);
+    fiiFlowScore = flowDirection * magnitude * (inference.likelyInstitutional ? 0.8 : 0.3);
+  } else {
+    // After market or no inference: Use actual data
+    fiiFlowScore = calcFIIFlowScore(context.dayComparison);
+  }
 
   // 2. PropDesk Flow Direction (20%)
-  const propdeskFlowScore = calcPropDeskFlowScore(context.dayComparison);
+  let propdeskFlowScore: number;
+  if (isLiveData && context.marketDataContext?.liveInference) {
+    // During live: PropDesk follows FII often, use correlation from past 3 days
+    const inference = context.marketDataContext.liveInference;
+    const flowDirection = inference.netFlow >= 0 ? 1 : -1;
+    const magnitude = Math.min(100, Math.abs(inference.netFlow / 10000000) * 1.5);
+    propdeskFlowScore = flowDirection * magnitude * 0.5; // Lower confidence during live
+  } else {
+    propdeskFlowScore = calcPropDeskFlowScore(context.dayComparison);
+  }
 
   // 3. Client Contrarian (15%) — retail is usually wrong at extremes
-  const clientContrarianScore = calcClientContrarianScore(context.dayComparison);
+  let clientContrarianScore: number;
+  if (isLiveData) {
+    // During live: We can't know client activity, use 3-day data if available
+    const rollingWindow = context.marketDataContext?.rollingWindow;
+    if (rollingWindow) {
+      clientContrarianScore = rollingWindow.clientTrend === 'contrarian_bearish' ? -40
+        : rollingWindow.clientTrend === 'contrarian_bullish' ? 40 : 0;
+    } else {
+      clientContrarianScore = 0; // No data during live
+    }
+  } else {
+    clientContrarianScore = calcClientContrarianScore(context.dayComparison);
+  }
 
   // 4. 3-Day OI Trend (15%)
   const threeDayOITrendScore = calc3DayOITrendScore(instrument, context.dayComparison);
@@ -126,7 +166,8 @@ export function generateHolisticSignal(
   const details = buildReasoningDetails(
     fiiFlowScore, propdeskFlowScore, clientContrarianScore,
     threeDayOITrendScore, cashFutAlignScore, globalContextScore,
-    stockSentimentScore, totalScore, signalType
+    stockSentimentScore, totalScore, signalType,
+    isLiveData, isAfterMarketData
   );
 
   const reasoning: SignalReasoning = {
@@ -240,9 +281,17 @@ function calcGlobalContextScore(globalIndices: GlobalIndex[]): number {
 function buildReasoningDetails(
   fii: number, propdesk: number, client: number,
   oi3d: number, cashFut: number, globalCtx: number,
-  stockSent: number, total: number, signal: SignalType
+  stockSent: number, total: number, signal: SignalType,
+  isLiveData: boolean, isAfterMarketData: boolean
 ): string {
   const parts: string[] = [];
+
+  // Data availability context
+  if (isLiveData) {
+    parts.push('LIVE: Only money flow visible (FII/PropDesk inferred from flow patterns)');
+  } else if (isAfterMarketData) {
+    parts.push('AFTER-MARKET: NSE participant data available for correlation');
+  }
 
   if (Math.abs(fii) > 30) parts.push(`FII ${fii > 0 ? 'buying' : 'selling'} strongly`);
   if (Math.abs(propdesk) > 30) parts.push(`PropDesk ${propdesk > 0 ? 'bullish' : 'bearish'}`);

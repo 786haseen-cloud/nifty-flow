@@ -20,6 +20,7 @@ import {
 } from '@/lib/demo-data';
 import type { StockQuickView } from '@/lib/demo-data';
 import type { DualExchangeStock, NetMoneyFlow } from '@/lib/types';
+import MoneyFlowBars from './money-flow-bars';
 
 export default function LiveMonitor() {
   const [vix, setVix] = useState<VIXData | null>(null);
@@ -296,6 +297,9 @@ export default function LiveMonitor() {
           </CardContent>
         </Card>
       )}
+
+      {/* Weighted Money Flow Bar Visualization — Below Nifty50 Price Line */}
+      <MoneyFlowBars />
 
       {/* Top 15 Stocks with Net Money Flow + Dual Exchange */}
       <Card className="border-border/50 bg-card/80 backdrop-blur-sm">

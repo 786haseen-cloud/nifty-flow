@@ -303,6 +303,109 @@ export interface CashFlowTrend {
   bullishDivergence: boolean;
 }
 
+// =====================================================
+// INSTITUTIONAL DATA ARCHITECTURE
+// Live market: Only MONEY FLOW is visible — we don't know WHO is behind it
+// After market: NSE releases participant-level data (FII, DII, PropDesk, Client)
+// We CORRELATE after-market data with live money flow patterns
+// 3-day rolling window for signals, but ALL historical data stored
+// =====================================================
+
+// After-market NSE participant data (released ~5:30 PM IST daily)
+export interface InstitutionalDailyData {
+  date: string;                    // YYYY-MM-DD
+  // FII - Foreign Institutional Investors
+  fiiCashBuy: number;             // FII cash market buys (₹ Cr)
+  fiiCashSell: number;            // FII cash market sells (₹ Cr)
+  fiiFutBuy: number;
+  fiiFutSell: number;
+  fiiOptCallBuy: number;
+  fiiOptCallSell: number;
+  fiiOptPutBuy: number;
+  fiiOptPutSell: number;
+  // DII - Domestic Institutional Investors
+  diiCashBuy: number;
+  diiCashSell: number;
+  diiFutBuy: number;
+  diiFutSell: number;
+  // PropDesk - Proprietary Trading
+  propdeskCashBuy: number;
+  propdeskCashSell: number;
+  propdeskFutBuy: number;
+  propdeskFutSell: number;
+  propdeskOptCallBuy: number;
+  propdeskOptCallSell: number;
+  propdeskOptPutBuy: number;
+  propdeskOptPutSell: number;
+  // Client (Retail + HNI)
+  clientCashBuy: number;
+  clientCashSell: number;
+  clientFutBuy: number;
+  clientFutSell: number;
+  clientOptCallBuy: number;
+  clientOptCallSell: number;
+  clientOptPutBuy: number;
+  clientOptPutSell: number;
+}
+
+// Computed net values from InstitutionalDailyData
+export interface InstitutionalNetFlows {
+  date: string;
+  label: string;                   // 'Day-0', 'Day-1', 'Day-2', etc.
+  fii: PlayerFlow;
+  dii: PlayerFlow;
+  propdesk: PlayerFlow;
+  client: PlayerFlow;
+}
+
+// Live market inference — we can only see BIG money flow
+// Retailers can't move the market in minutes — only institutions can
+export interface LiveMoneyFlowInference {
+  timestamp: string;
+  // What we SEE during live market
+  totalMoneyIn: number;            // Big buy pressure
+  totalMoneyOut: number;           // Big sell pressure
+  netFlow: number;                 // Net = In - Out
+  // Inferred (not confirmed until after-market)
+  likelyInstitutional: boolean;    // Flow too big for retail
+  flowVelocity: number;            // Cr/minute — how fast money is moving
+  // After correlation (null during live, filled after-market)
+  correlatedFII?: number;          // What portion was likely FII
+  correlatedPropDesk?: number;     // What portion was likely PropDesk
+  correlatedDII?: number;
+  correlatedClient?: number;
+  correlationConfidence: number;   // 0-1, how confident in correlation
+}
+
+// 3-Day rolling window — signal engine uses only last 3 days
+// But we STORE all days for backtesting & pattern discovery
+export interface InstitutionalRollingWindow {
+  days: InstitutionalNetFlows[];   // Sorted Day-0, Day-1, Day-2
+  totalFIINet3D: number;           // Sum of FII net across 3 days
+  totalPropDeskNet3D: number;
+  totalClientNet3D: number;
+  totalDIINet3D: number;
+  // Trend detection
+  fiiTrend: 'accumulating' | 'distributing' | 'neutral';  // 3-day FII trend
+  propdeskTrend: 'accumulating' | 'distributing' | 'neutral';
+  clientTrend: 'contrarian_bullish' | 'contrarian_bearish' | 'neutral';
+  // Correlation quality
+  dataCompleteness: number;        // 0-1, do we have all 3 days?
+}
+
+// Live vs After-Market awareness
+export type DataAvailability = 'live_flow_only' | 'after_market_available';
+
+export interface MarketDataContext {
+  availability: DataAvailability;
+  // During live: Only money flow inference available
+  liveInference?: LiveMoneyFlowInference;
+  // After market: Actual participant data from NSE
+  rollingWindow?: InstitutionalRollingWindow;
+  // When after-market data becomes available, we correlate
+  correlationMessage?: string;     // e.g. "After-market data: FII was net buyer ₹2,400 Cr"
+}
+
 // Constants
 export const INDICES = [
   { symbol: 'NIFTY', name: 'Nifty 50', lotSize: 25, strikes: 11, step: 50, expiryDay: 2, expiryType: 'weekly' as ExpiryType },

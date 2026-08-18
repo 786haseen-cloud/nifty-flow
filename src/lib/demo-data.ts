@@ -18,6 +18,11 @@ import {
   type DualExchangeStock,
   type WeightedCashFlowBar,
   type CashFlowTrend,
+  type InstitutionalDailyData,
+  type InstitutionalNetFlows,
+  type LiveMoneyFlowInference,
+  type InstitutionalRollingWindow,
+  type MarketDataContext,
   GLOBAL_INDICES,
   INDICES,
   TOP_STOCKS,
@@ -837,6 +842,260 @@ export function generateDemoCashFlowTrend(): CashFlowTrend {
     signalStrength: round2(value > 0 ? Math.min(100, value / 50000) : Math.max(-100, value / 50000)),
     bearishDivergence: Math.random() < 0.1,
     bullishDivergence: Math.random() < 0.1,
+  };
+}
+
+// --- Weighted Bars (alias for component) ---
+export function generateDemoWeightedBars(numBars: number = 60): WeightedCashFlowBar[] {
+  return generateDemoWeightedCashFlowBars(numBars);
+}
+
+// --- Compute Cash Flow Trend from actual bars (not random) ---
+export function computeCashFlowTrend(bars: WeightedCashFlowBar[]): CashFlowTrend {
+  if (bars.length < 14) {
+    return {
+      currentValue: 0, smoothed: 0, upperBand: 0, lowerBand: 0,
+      isStrongInflow: false, isStrongOutflow: false,
+      isUptrend: false, isDowntrend: false,
+      momentum: 0, signalStrength: 0,
+      bearishDivergence: false, bullishDivergence: false,
+    };
+  }
+
+  // Use netFlow values from bars
+  const values = bars.map(b => b.netFlow);
+  const current = values[values.length - 1];
+
+  // SMA(14)
+  const smaWindow = values.slice(-14);
+  const smoothed = smaWindow.reduce((s, v) => s + v, 0) / smaWindow.length;
+
+  // Standard deviation
+  const variance = smaWindow.reduce((s, v) => s + Math.pow(v - smoothed, 2), 0) / smaWindow.length;
+  const stdev = Math.sqrt(variance);
+
+  const upperBand = smoothed + 0.5 * stdev;
+  const lowerBand = smoothed - 0.5 * stdev;
+
+  // Momentum (rate of change)
+  const prevSmoothed = values.length > 28
+    ? values.slice(-28, -14).reduce((s, v) => s + v, 0) / 14
+    : smoothed;
+  const momentum = current - prevSmoothed;
+
+  // Signal strength: -100 to +100
+  const signalStrength = Math.max(-100, Math.min(100, (smoothed / (stdev || 1)) * 20));
+
+  // Divergence detection
+  const recentPrices = bars.slice(-14).map(b => b.niftyWeightedCF);
+  const priceTrend = recentPrices[recentPrices.length - 1] - recentPrices[0];
+  const flowTrend = current - smoothed;
+  const bearishDivergence = priceTrend > 0 && flowTrend < 0 && Math.abs(flowTrend) > stdev;
+  const bullishDivergence = priceTrend < 0 && flowTrend > 0 && Math.abs(flowTrend) > stdev;
+
+  return {
+    currentValue: round2(current),
+    smoothed: round2(smoothed),
+    upperBand: round2(upperBand),
+    lowerBand: round2(lowerBand),
+    isStrongInflow: current > upperBand && current > 0,
+    isStrongOutflow: current < lowerBand && current < 0,
+    isUptrend: smoothed > 0,
+    isDowntrend: smoothed < 0,
+    momentum: round2(momentum),
+    signalStrength: round2(signalStrength),
+    bearishDivergence,
+    bullishDivergence,
+  };
+}
+
+// --- Institutional Data: After-Market NSE Participant Data ---
+// This data is ONLY available after NSE releases it (~5:30 PM IST)
+// During live market, we can only see MONEY FLOW, not WHO is behind it
+
+export function generateDemoInstitutionalDailyData(dateOffset: number = 0): InstitutionalDailyData {
+  const d = new Date();
+  d.setDate(d.getDate() - dateOffset);
+  const date = d.toISOString().split('T')[0];
+
+  // FII: Often the biggest driver
+  const fiiCashNet = rand(-2000, 2000);  // ₹ Cr
+  const fiiFutNet = rand(-1500, 1500);
+  const fiiOptCallNet = rand(-3000, 3000);
+  const fiiOptPutNet = rand(-3000, 3000);
+
+  return {
+    date,
+    fiiCashBuy: Math.max(0, fiiCashNet + rand(500, 3000)),
+    fiiCashSell: Math.max(0, -fiiCashNet + rand(500, 3000)),
+    fiiFutBuy: Math.max(0, fiiFutNet + rand(300, 2000)),
+    fiiFutSell: Math.max(0, -fiiFutNet + rand(300, 2000)),
+    fiiOptCallBuy: Math.max(0, fiiOptCallNet + rand(1000, 5000)),
+    fiiOptCallSell: Math.max(0, -fiiOptCallNet + rand(1000, 5000)),
+    fiiOptPutBuy: Math.max(0, fiiOptPutNet + rand(1000, 5000)),
+    fiiOptPutSell: Math.max(0, -fiiOptPutNet + rand(1000, 5000)),
+    // DII: Usually counter to FII in cash
+    diiCashBuy: Math.max(0, -fiiCashNet * 0.4 + rand(200, 1500)),
+    diiCashSell: Math.max(0, fiiCashNet * 0.4 + rand(200, 1500)),
+    diiFutBuy: rand(100, 800),
+    diiFutSell: rand(100, 800),
+    // PropDesk: Smart money, smaller but directional
+    propdeskCashBuy: Math.max(0, rand(-200, 400) + rand(50, 300)),
+    propdeskCashSell: Math.max(0, -rand(-200, 400) + rand(50, 300)),
+    propdeskFutBuy: Math.max(0, rand(-300, 500) + rand(50, 200)),
+    propdeskFutSell: Math.max(0, -rand(-300, 500) + rand(50, 200)),
+    propdeskOptCallBuy: Math.max(0, rand(-500, 800) + rand(100, 600)),
+    propdeskOptCallSell: Math.max(0, -rand(-500, 800) + rand(100, 600)),
+    propdeskOptPutBuy: Math.max(0, rand(-500, 800) + rand(100, 600)),
+    propdeskOptPutSell: Math.max(0, -rand(-500, 800) + rand(100, 600)),
+    // Client (Retail + HNI): Often contrarian
+    clientCashBuy: Math.max(0, rand(-1000, 1500) + rand(200, 2000)),
+    clientCashSell: Math.max(0, -rand(-1000, 1500) + rand(200, 2000)),
+    clientFutBuy: Math.max(0, rand(-800, 1200) + rand(100, 1000)),
+    clientFutSell: Math.max(0, -rand(-800, 1200) + rand(100, 1000)),
+    clientOptCallBuy: Math.max(0, rand(-2000, 3000) + rand(500, 3000)),
+    clientOptCallSell: Math.max(0, -rand(-2000, 3000) + rand(500, 3000)),
+    clientOptPutBuy: Math.max(0, rand(-2000, 3000) + rand(500, 3000)),
+    clientOptPutSell: Math.max(0, -rand(-2000, 3000) + rand(500, 3000)),
+  };
+}
+
+// Convert daily data to net flows for the rolling window
+export function toInstitutionalNetFlows(data: InstitutionalDailyData, label: string): InstitutionalNetFlows {
+  return {
+    date: data.date,
+    label,
+    fii: {
+      player: 'FII',
+      cashNet: data.fiiCashBuy - data.fiiCashSell,
+      futNet: data.fiiFutBuy - data.fiiFutSell,
+      optCallNet: data.fiiOptCallBuy - data.fiiOptCallSell,
+      optPutNet: data.fiiOptPutBuy - data.fiiOptPutSell,
+      totalNet: (data.fiiCashBuy - data.fiiCashSell) + (data.fiiFutBuy - data.fiiFutSell) +
+               (data.fiiOptCallBuy - data.fiiOptCallSell) + (data.fiiOptPutBuy - data.fiiOptPutSell),
+    },
+    dii: {
+      player: 'DII',
+      cashNet: data.diiCashBuy - data.diiCashSell,
+      futNet: data.diiFutBuy - data.diiFutSell,
+      optCallNet: 0, // DII mostly in cash
+      optPutNet: 0,
+      totalNet: (data.diiCashBuy - data.diiCashSell) + (data.diiFutBuy - data.diiFutSell),
+    },
+    propdesk: {
+      player: 'PROPDESK',
+      cashNet: data.propdeskCashBuy - data.propdeskCashSell,
+      futNet: data.propdeskFutBuy - data.propdeskFutSell,
+      optCallNet: data.propdeskOptCallBuy - data.propdeskOptCallSell,
+      optPutNet: data.propdeskOptPutBuy - data.propdeskOptPutSell,
+      totalNet: (data.propdeskCashBuy - data.propdeskCashSell) + (data.propdeskFutBuy - data.propdeskFutSell) +
+               (data.propdeskOptCallBuy - data.propdeskOptCallSell) + (data.propdeskOptPutBuy - data.propdeskOptPutSell),
+    },
+    client: {
+      player: 'CLIENT',
+      cashNet: data.clientCashBuy - data.clientCashSell,
+      futNet: data.clientFutBuy - data.clientFutSell,
+      optCallNet: data.clientOptCallBuy - data.clientOptCallSell,
+      optPutNet: data.clientOptPutBuy - data.clientOptPutSell,
+      totalNet: (data.clientCashBuy - data.clientCashSell) + (data.clientFutBuy - data.clientFutSell) +
+               (data.clientOptCallBuy - data.clientOptCallSell) + (data.clientOptPutBuy - data.clientOptPutSell),
+    },
+  };
+}
+
+// Generate 3-day rolling window
+export function generateDemoRollingWindow(): InstitutionalRollingWindow {
+  const days: InstitutionalNetFlows[] = [];
+  for (let i = 0; i < 3; i++) {
+    const data = generateDemoInstitutionalDailyData(i);
+    const label = `Day-${i}`;
+    days.push(toInstitutionalNetFlows(data, label));
+  }
+
+  const totalFIINet3D = days.reduce((s, d) => s + d.fii.totalNet, 0);
+  const totalPropDeskNet3D = days.reduce((s, d) => s + d.propdesk.totalNet, 0);
+  const totalClientNet3D = days.reduce((s, d) => s + d.client.totalNet, 0);
+  const totalDIINet3D = days.reduce((s, d) => s + d.dii.totalNet, 0);
+
+  // Trend detection
+  const fiiTrend = totalFIINet3D > 1000 ? 'accumulating' as const
+    : totalFIINet3D < -1000 ? 'distributing' as const
+    : 'neutral' as const;
+
+  const propdeskTrend = totalPropDeskNet3D > 500 ? 'accumulating' as const
+    : totalPropDeskNet3D < -500 ? 'distributing' as const
+    : 'neutral' as const;
+
+  // Client contrarian: if retail buying heavily → bearish signal
+  const clientTrend = totalClientNet3D > 1500 ? 'contrarian_bearish' as const
+    : totalClientNet3D < -1500 ? 'contrarian_bullish' as const
+    : 'neutral' as const;
+
+  return {
+    days,
+    totalFIINet3D: round2(totalFIINet3D),
+    totalPropDeskNet3D: round2(totalPropDeskNet3D),
+    totalClientNet3D: round2(totalClientNet3D),
+    totalDIINet3D: round2(totalDIINet3D),
+    fiiTrend,
+    propdeskTrend,
+    clientTrend,
+    dataCompleteness: 1.0,
+  };
+}
+
+// Generate live money flow inference
+export function generateDemoLiveInference(): LiveMoneyFlowInference {
+  const totalMoneyIn = roundN(rand(200, 800) * 10000000, 0);
+  const totalMoneyOut = roundN(rand(180, 750) * 10000000, 0);
+  const netFlow = totalMoneyIn - totalMoneyOut;
+  const flowVelocity = round2(Math.abs(netFlow) / 10000000 / 15 * 60); // Cr/min
+
+  // Big flow = likely institutional
+  const likelyInstitutional = Math.abs(netFlow / 10000000) > 50;
+
+  const now = new Date();
+  const istH = ((now.getUTCHours() + 5) % 24 + 24) % 24;
+  const istM = now.getUTCMinutes();
+  const istS = now.getUTCSeconds();
+  const timestamp = `${String(istH).padStart(2, '0')}:${String(istM).padStart(2, '0')}:${String(istS).padStart(2, '0')} IST`;
+
+  return {
+    timestamp,
+    totalMoneyIn,
+    totalMoneyOut,
+    netFlow,
+    likelyInstitutional,
+    flowVelocity,
+    correlationConfidence: 0, // 0 during live — no after-market data yet
+  };
+}
+
+// Generate market data context (live vs after-market)
+export function generateDemoMarketDataContext(): MarketDataContext {
+  const now = new Date();
+  const istH = ((now.getUTCHours() + 5) % 24 + 24) % 24;
+  const istM = now.getUTCMinutes() + 30;
+  const totalMin = istH * 60 + (istM % 60);
+
+  // After 5:30 PM IST, NSE releases participant data
+  const afterMarketDataAvailable = totalMin >= 1050; // 17:30 IST
+
+  if (afterMarketDataAvailable) {
+    const rollingWindow = generateDemoRollingWindow();
+    return {
+      availability: 'after_market_available',
+      rollingWindow,
+      correlationMessage: `After-market data available! FII 3-day net: ₹${rollingWindow.totalFIINet3D.toFixed(0)} Cr (${rollingWindow.fiiTrend})`,
+    };
+  }
+
+  // During live market: only money flow visible
+  const liveInference = generateDemoLiveInference();
+  return {
+    availability: 'live_flow_only',
+    liveInference,
+    correlationMessage: 'Live market: Only money flow visible. After ~5:30 PM IST, NSE releases participant data for correlation.',
   };
 }
 
