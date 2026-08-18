@@ -1,0 +1,115 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model KiteConfig {
+  id          String   @id @default(cuid())
+  apiKey      String
+  accessToken String
+  lastLogin   DateTime @default(now())
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model DailyActivity {
+  id          String   @id @default(cuid())
+  date        String
+  instrument  String
+  type        String
+  totalOI     Float    @default(0)
+  totalVolume Float    @default(0)
+  callOI      Float    @default(0)
+  putOI       Float    @default(0)
+  pcr         Float    @default(0)
+  vixOpen     Float?
+  vixHigh     Float?
+  vixLow      Float?
+  vixClose    Float?
+  signals     String?
+  summary     String?
+  fiiCashNet  Float    @default(0)
+  diiCashNet  Float    @default(0)
+  fiiFutNet   Float    @default(0)
+  diiFutNet   Float    @default(0)
+  fiiOptNet   Float    @default(0)
+  diiOptNet   Float    @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model SignalLog {
+  id            String   @id @default(cuid())
+  timestamp     DateTime @default(now())
+  instrument    String
+  signalType    String
+  mode          String
+  confidence    Float
+  strike        Float?
+  premium       Float?
+  stopLoss      Float?
+  target        Float?
+  reasoning     String?
+  vixValue      Float?
+  pcrValue      Float?
+  createdAt     DateTime @default(now())
+}
+
+model MinuteData {
+  id          String   @id @default(cuid())
+  timestamp   DateTime
+  instrument  String
+  strike      Float?
+  optionType  String?
+  ltp         Float
+  oi          Float
+  oiChange    Float    @default(0)
+  volume      Float    @default(0)
+  iv          Float?
+  delta       Float?
+  gamma       Float?
+  theta       Float?
+  vega        Float?
+  createdAt   DateTime @default(now())
+}
+
+model BigTrade {
+  id          String   @id @default(cuid())
+  timestamp   DateTime
+  instrument  String
+  tradeType   String
+  action      String
+  quantity    Float
+  value       Float
+  strike      Float?
+  ltp         Float?
+  impact      String
+  createdAt   DateTime @default(now())
+}
+
+model InstitutionalFlow {
+  id          String   @id @default(cuid())
+  date        String
+  fiiCashBuy  Float    @default(0)
+  fiiCashSell Float    @default(0)
+  fiiFutBuy   Float    @default(0)
+  fiiFutSell  Float    @default(0)
+  fiiOptCallBuy  Float @default(0)
+  fiiOptCallSell Float @default(0)
+  fiiOptPutBuy   Float @default(0)
+  fiiOptPutSell  Float @default(0)
+  diiCashBuy  Float    @default(0)
+  diiCashSell Float    @default(0)
+  diiFutBuy   Float    @default(0)
+  diiFutSell  Float    @default(0)
+  diiOptCallBuy  Float @default(0)
+  diiOptCallSell Float @default(0)
+  diiOptPutBuy   Float @default(0)
+  diiOptPutSell  Float @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
