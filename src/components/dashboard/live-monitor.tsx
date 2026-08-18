@@ -1,249 +1,320 @@
 'use client';
 
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import {
-  Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
-} from '@/components/ui/table';
-import { Activity, TrendingUp, TrendingDown, RefreshCw } from 'lucide-react';
-import { useStore } from '@/lib/store';
-import type { InstrumentData, VIXData, OptionStrike, BuiltUpType } from '@/lib/types';
-
-function formatNumber(n: number): string {
-  if (n >= 10000000) return (n / 10000000).toFixed(2) + 'Cr';
-  if (n >= 100000) return (n / 100000).toFixed(2) + 'L';
-  if (n >= 1000) return (n / 1000).toFixed(1) + 'K';
-  return n.toFixed(0);
-}
-
-function builtUpColor(type: BuiltUpType): string {
-  switch (type) {
-    case 'Long Build-up': return 'text-emerald-400';
-    case 'Short Build-up': return 'text-red-400';
-    case 'Long Unwinding': return 'text-yellow-400';
-    case 'Short Covering': return 'text-blue-400';
-    default: return 'text-muted-foreground';
-  }
-}
-
-function VIXCard({ vix }: { vix: VIXData | null }) {
-  if (!vix) return <Card className="border-border/50"><CardContent className="p-4"><span className="text-muted-foreground text-sm">Loading VIX...</span></CardContent></Card>;
-
-  const statusColors: Record<string, string> = {
-    low: 'bg-emerald-500/20 text-emerald-400',
-    normal: 'bg-emerald-500/20 text-emerald-400',
-    elevated: 'bg-yellow-500/20 text-yellow-400',
-    high: 'bg-orange-500/20 text-orange-400',
-    extreme: 'bg-red-500/20 text-red-400',
-  };
-
-  return (
-    <Card className="border-border/50">
-      <CardHeader className="pb-2 pt-3 px-4">
-        <CardTitle className="text-sm font-medium flex items-center gap-2">
-          <Activity className="h-4 w-4 text-yellow-500" />
-          India VIX
-          <Badge variant="secondary" className={`text-[10px] ${statusColors[vix.status]}`}>
-            {vix.status.toUpperCase()}
-          </Badge>
-        </CardTitle>
-      </CardHeader>
-      <CardContent className="px-4 pb-3">
-        <div className="flex items-baseline gap-3">
-          <span className="text-2xl font-mono font-bold text-yellow-500">{vix.value.toFixed(2)}</span>
-          <span className={`text-sm font-mono ${vix.change >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-            {vix.change >= 0 ? '+' : ''}{vix.change.toFixed(2)} ({vix.changePct >= 0 ? '+' : ''}{vix.changePct.toFixed(2)}%)
-          </span>
-        </div>
-        <div className="flex gap-4 mt-1 text-xs text-muted-foreground font-mono">
-          <span>H: {vix.dayHigh.toFixed(2)}</span>
-          <span>L: {vix.dayLow.toFixed(2)}</span>
-          <span>O: {vix.open.toFixed(2)}</span>
-        </div>
-      </CardContent>
-    </Card>
-  );
-}
-
-function IndexCard({ data }: { data: InstrumentData }) {
-  const isUp = data.change >= 0;
-  return (
-    <Card className="border-border/50">
-      <CardHeader className="pb-1 pt-3 px-4">
-        <CardTitle className="text-sm font-medium">{data.name}</CardTitle>
-      </CardHeader>
-      <CardContent className="px-4 pb-3">
-        <div className="flex items-baseline gap-2">
-          <span className="text-xl font-mono font-bold">{data.ltp.toFixed(2)}</span>
-          <span className={`text-sm font-mono flex items-center gap-0.5 ${isUp ? 'text-emerald-400' : 'text-red-400'}`}>
-            {isUp ? <TrendingUp className="h-3 w-3" /> : <TrendingDown className="h-3 w-3" />}
-            {isUp ? '+' : ''}{data.change.toFixed(2)} ({isUp ? '+' : ''}{data.changePct.toFixed(2)}%)
-          </span>
-        </div>
-        <div className="flex gap-3 mt-1 text-xs font-mono">
-          <span className="text-muted-foreground">PCR: <span className={data.pcr > 1 ? 'text-emerald-400' : 'text-red-400'}>{data.pcr.toFixed(2)}</span></span>
-          <span className="text-muted-foreground">MaxPain: <span className="text-yellow-400">{data.maxPain}</span></span>
-          <span className="text-muted-foreground">Fut OI: <span className="text-blue-400">{formatNumber(data.futuresOI)}</span></span>
-        </div>
-      </CardContent>
-    </Card>
-  );
-}
-
-function OptionChainTable({ strikes, atmStrike }: { strikes: OptionStrike[]; atmStrike: number }) {
-  return (
-    <Card className="border-border/50">
-      <CardHeader className="pb-2 pt-3 px-4">
-        <CardTitle className="text-sm font-medium">Option Chain — ATM {atmStrike}</CardTitle>
-      </CardHeader>
-      <CardContent className="px-2 pb-2">
-        <ScrollArea className="max-h-72">
-          <Table>
-            <TableHeader>
-              <TableRow className="text-[10px]">
-                <TableHead className="w-14 text-center p-1">C OI Chg</TableHead>
-                <TableHead className="w-14 text-center p-1">C OI</TableHead>
-                <TableHead className="w-14 text-center p-1">C LTP</TableHead>
-                <TableHead className="w-14 text-center p-1">C IV</TableHead>
-                <TableHead className="w-16 text-center p-1 font-bold">Strike</TableHead>
-                <TableHead className="w-14 text-center p-1">P IV</TableHead>
-                <TableHead className="w-14 text-center p-1">P LTP</TableHead>
-                <TableHead className="w-14 text-center p-1">P OI</TableHead>
-                <TableHead className="w-14 text-center p-1">P OI Chg</TableHead>
-                <TableHead className="w-20 text-center p-1">Build-up</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {strikes.map((s) => {
-                const isATM = s.strike === atmStrike;
-                const isITMCall = s.strike < atmStrike;
-                const isITMPut = s.strike > atmStrike;
-                return (
-                  <TableRow key={s.strike} className={`text-[10px] font-mono ${isATM ? 'bg-yellow-500/10' : ''}`}>
-                    <TableCell className={`text-center p-1 ${s.callOIChange > 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                      {formatNumber(s.callOIChange)}
-                    </TableCell>
-                    <TableCell className={`text-center p-1 ${isITMCall ? 'bg-emerald-500/5' : ''}`}>
-                      {formatNumber(s.callOI)}
-                    </TableCell>
-                    <TableCell className="text-center p-1">{s.callLTP.toFixed(1)}</TableCell>
-                    <TableCell className="text-center p-1 text-muted-foreground">{s.callIV.toFixed(1)}</TableCell>
-                    <TableCell className={`text-center p-1 font-bold ${isATM ? 'text-yellow-400' : ''}`}>{s.strike}</TableCell>
-                    <TableCell className="text-center p-1 text-muted-foreground">{s.putIV.toFixed(1)}</TableCell>
-                    <TableCell className="text-center p-1">{s.putLTP.toFixed(1)}</TableCell>
-                    <TableCell className={`text-center p-1 ${isITMPut ? 'bg-red-500/5' : ''}`}>
-                      {formatNumber(s.putOI)}
-                    </TableCell>
-                    <TableCell className={`text-center p-1 ${s.putOIChange > 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                      {formatNumber(s.putOIChange)}
-                    </TableCell>
-                    <TableCell className={`text-center p-1 ${builtUpColor(s.builtUpType)}`}>
-                      {s.builtUpType !== 'None' ? s.builtUpType : '—'}
-                    </TableCell>
-                  </TableRow>
-                );
-              })}
-            </TableBody>
-          </Table>
-        </ScrollArea>
-      </CardContent>
-    </Card>
-  );
-}
-
-function StockQuickView({ instruments }: { instruments: InstrumentData[] }) {
-  const stocks = instruments.filter((i) => i.type === 'STOCK');
-  return (
-    <Card className="border-border/50">
-      <CardHeader className="pb-2 pt-3 px-4">
-        <CardTitle className="text-sm font-medium">Top Stocks Quick View</CardTitle>
-      </CardHeader>
-      <CardContent className="px-2 pb-2">
-        <ScrollArea className="max-h-48">
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-1">
-            {stocks.map((s) => {
-              const isUp = s.change >= 0;
-              return (
-                <div key={s.symbol} className="flex items-center justify-between px-2 py-1 rounded text-[10px] font-mono hover:bg-muted/30">
-                  <span className="font-semibold truncate">{s.symbol}</span>
-                  <span className="ml-2">{s.ltp.toFixed(1)}</span>
-                  <span className={`ml-2 ${isUp ? 'text-emerald-400' : 'text-red-400'}`}>
-                    {isUp ? '+' : ''}{s.changePct.toFixed(2)}%
-                  </span>
-                  <span className={`ml-1 ${s.pcr > 1 ? 'text-emerald-400' : 'text-red-400'}`}>
-                    PCR:{s.pcr.toFixed(1)}
-                  </span>
-                </div>
-              );
-            })}
-          </div>
-        </ScrollArea>
-      </CardContent>
-    </Card>
-  );
-}
+  Activity, TrendingUp, TrendingDown, Info, Zap,
+  ShieldAlert, Thermometer,
+} from 'lucide-react';
+import type { InstrumentData, VIXData, OptionStrike } from '@/lib/types';
+import {
+  generateDemoInstrument,
+  generateDemoVIX,
+  generateDemoStocks,
+  formatNum,
+  getMarketStatus,
+} from '@/lib/demo-data';
+import type { StockQuickView } from '@/lib/demo-data';
 
 export default function LiveMonitor() {
-  const { instruments, setInstruments, vix, setVix, setLastRefresh, refreshInterval } = useStore();
-  const [loading, setLoading] = useState(false);
-
-  const fetchData = useCallback(async () => {
-    setLoading(true);
-    try {
-      const [dataRes, vixRes] = await Promise.all([
-        fetch('/api/data'),
-        fetch('/api/vix'),
-      ]);
-      const dataJson = await dataRes.json();
-      const vixJson = await vixRes.json();
-
-      if (dataJson.instruments) setInstruments(dataJson.instruments);
-      if (vixJson.vix) setVix(vixJson.vix);
-      setLastRefresh(new Date());
-    } catch {
-      // silent
-    } finally {
-      setLoading(false);
-    }
-  }, [setInstruments, setVix, setLastRefresh]);
+  const [vix, setVix] = useState<VIXData | null>(null);
+  const [nifty, setNifty] = useState<InstrumentData | null>(null);
+  const [sensex, setSensex] = useState<InstrumentData | null>(null);
+  const [bankNifty, setBankNifty] = useState<InstrumentData | null>(null);
+  const [finNifty, setFinNifty] = useState<InstrumentData | null>(null);
+  const [stocks, setStocks] = useState<StockQuickView[]>([]);
+  const [selectedIdx, setSelectedIdx] = useState<string>('NIFTY');
+  const [callMelting, setCallMelting] = useState(17.3);
+  const [putMelting, setPutMelting] = useState(6.1);
 
   useEffect(() => {
-    fetchData();
-    const interval = setInterval(fetchData, refreshInterval * 1000);
+    function refresh() {
+      setVix(generateDemoVIX());
+      setNifty(generateDemoInstrument('NIFTY', 'Nifty 50', 'index', 24350));
+      setSensex(generateDemoInstrument('SENSEX', 'Sensex', 'index', 80100));
+      setBankNifty(generateDemoInstrument('BANKNIFTY', 'Bank Nifty', 'index', 51800));
+      setFinNifty(generateDemoInstrument('FINNIFTY', 'Fin Nifty', 'index', 23200));
+      setStocks(generateDemoStocks());
+      setCallMelting(parseFloat((Math.random() * 20 + 5).toFixed(1)));
+      setPutMelting(parseFloat((Math.random() * 15 + 3).toFixed(1)));
+    }
+    refresh();
+    const interval = setInterval(refresh, 15000);
     return () => clearInterval(interval);
-  }, [fetchData, refreshInterval]);
+  }, []);
 
-  const indices = instruments.filter((i) => i.type === 'INDEX');
-  const selectedInstr = instruments.find((i) => i.symbol === useStore.getState().selectedInstrument) || indices[0];
+  const instruments = [nifty, sensex, bankNifty, finNifty].filter(Boolean) as InstrumentData[];
+  const selected = instruments.find(i => i.symbol === selectedIdx) || nifty;
+
+  const panicLevelColor = (level: string) => {
+    switch (level) {
+      case 'calm': return 'text-emerald-400';
+      case 'normal': return 'text-yellow-400';
+      case 'elevated': return 'text-orange-400';
+      case 'panic': return 'text-red-400';
+      default: return 'text-muted-foreground';
+    }
+  };
+
+  const panicBarColor = (level: string) => {
+    switch (level) {
+      case 'calm': return 'bg-emerald-500';
+      case 'normal': return 'bg-yellow-500';
+      case 'elevated': return 'bg-orange-500';
+      case 'panic': return 'bg-red-500';
+      default: return 'bg-gray-500';
+    }
+  };
+
+  const panicPercent = vix ? (vix.value / 30) * 100 : 50;
 
   return (
-    <div className="space-y-3">
-      <div className="flex items-center justify-between">
-        <h2 className="text-lg font-semibold">Live Market Monitor</h2>
-        <button onClick={fetchData} className="text-muted-foreground hover:text-foreground transition-colors" disabled={loading}>
-          <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
-        </button>
+    <div className="space-y-4">
+      {/* VIX + Panic Meter + Theta Melting */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        {/* VIX Card */}
+        <Card className="border-border/50 bg-card/80 backdrop-blur-sm">
+          <CardHeader className="pb-2">
+            <CardTitle className="flex items-center gap-2 text-sm">
+              <Activity className="h-4 w-4 text-red-400" />
+              India VIX
+              <Badge variant="outline" className="ml-auto text-[10px] border-amber-500/40 text-amber-300">
+                <Info className="mr-1 h-3 w-3" />Indicator Only
+              </Badge>
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            {vix && (
+              <div className="space-y-2">
+                <div className="flex items-baseline gap-2">
+                  <span className="text-3xl font-mono font-bold">{vix.value.toFixed(2)}</span>
+                  <span className={`text-sm font-mono ${vix.change >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                    {vix.change >= 0 ? '+' : ''}{vix.change.toFixed(2)} ({vix.changePercent >= 0 ? '+' : ''}{vix.changePercent.toFixed(2)}%)
+                  </span>
+                </div>
+                <div className="grid grid-cols-3 gap-2 text-xs text-muted-foreground">
+                  <div>Open: <span className="font-mono text-foreground">{vix.dayOpen.toFixed(2)}</span></div>
+                  <div>High: <span className="font-mono text-foreground">{vix.dayHigh.toFixed(2)}</span></div>
+                  <div>Low: <span className="font-mono text-foreground">{vix.dayLow.toFixed(2)}</span></div>
+                </div>
+                <div className="text-xs text-muted-foreground">
+                  Trend: <span className={`font-medium ${vix.trend === 'rising' ? 'text-red-400' : vix.trend === 'falling' ? 'text-emerald-400' : 'text-yellow-400'}`}>
+                    {vix.trend.toUpperCase()}
+                  </span>
+                  {' '}| Percentile: <span className="font-mono">{vix.percentile.toFixed(0)}th</span>
+                </div>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+
+        {/* Panic Meter */}
+        <Card className="border-border/50 bg-card/80 backdrop-blur-sm">
+          <CardHeader className="pb-2">
+            <CardTitle className="flex items-center gap-2 text-sm">
+              <ShieldAlert className="h-4 w-4 text-orange-400" />
+              Panic Meter
+              <Badge variant="outline" className="ml-auto text-[10px] border-amber-500/40 text-amber-300">
+                <Info className="mr-1 h-3 w-3" />Info Only
+              </Badge>
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            {vix && (
+              <div className="space-y-3">
+                <div className={`text-2xl font-bold ${panicLevelColor(vix.panicLevel)}`}>
+                  {vix.panicLevel.toUpperCase()}
+                </div>
+                <div className="relative h-4 rounded-full bg-muted overflow-hidden">
+                  <div className="absolute inset-y-0 left-0 w-1/4 bg-emerald-500/30 rounded-l-full" />
+                  <div className="absolute inset-y-0 left-1/4 w-1/6 bg-yellow-500/30" />
+                  <div className="absolute inset-y-0 left-[41%] w-1/6 bg-orange-500/30" />
+                  <div className="absolute inset-y-0 left-[58%] w-[42%] bg-red-500/30 rounded-r-full" />
+                  <div
+                    className={`absolute inset-y-0 ${panicBarColor(vix.panicLevel)} rounded-full transition-all duration-500`}
+                    style={{ width: `${Math.min(100, panicPercent)}%` }}
+                  />
+                </div>
+                <div className="flex justify-between text-[10px] text-muted-foreground">
+                  <span>Calm</span><span>Normal</span><span>Elevated</span><span>Panic</span>
+                </div>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+
+        {/* Theta Melting */}
+        <Card className="border-border/50 bg-card/80 backdrop-blur-sm">
+          <CardHeader className="pb-2">
+            <CardTitle className="flex items-center gap-2 text-sm">
+              <Thermometer className="h-4 w-4 text-cyan-400" />
+              Theta Melting Speed
+              <Badge variant="outline" className="ml-auto text-[10px] border-amber-500/40 text-amber-300">
+                <Info className="mr-1 h-3 w-3" />Info Only
+              </Badge>
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <div>
+                  <span className="text-xs text-muted-foreground">Call Side</span>
+                  <div className="text-lg font-mono font-bold text-emerald-400">
+                    ₹{callMelting}/day
+                    {callMelting > putMelting * 1.5 && <span className="text-orange-400 ml-1 text-xs">(FAST)</span>}
+                  </div>
+                </div>
+                <div className="text-muted-foreground">← →</div>
+                <div className="text-right">
+                  <span className="text-xs text-muted-foreground">Put Side</span>
+                  <div className="text-lg font-mono font-bold text-red-400">
+                    ₹{putMelting}/day
+                    {putMelting > callMelting * 1.5 && <span className="text-orange-400 ml-1 text-xs">(FAST)</span>}
+                  </div>
+                </div>
+              </div>
+              <div className="text-xs text-muted-foreground">
+                {callMelting > putMelting ? 'Call side melting faster → Put writers more confident' :
+                 putMelting > callMelting ? 'Put side melting faster → Call writers more confident' :
+                 'Both sides melting equally'}
+              </div>
+            </div>
+          </CardContent>
+        </Card>
       </div>
 
-      {/* VIX Card */}
-      <VIXCard vix={vix} />
-
-      {/* Index Cards */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-        {indices.map((idx) => (
-          <IndexCard key={idx.symbol} data={idx} />
+      {/* 4 Index Cards */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+        {instruments.map((inst) => (
+          <Card
+            key={inst.symbol}
+            className={`cursor-pointer transition-all border-border/50 bg-card/80 backdrop-blur-sm hover:border-primary/40 ${
+              selectedIdx === inst.symbol ? 'border-primary/60 ring-1 ring-primary/20' : ''
+            }`}
+            onClick={() => setSelectedIdx(inst.symbol)}
+          >
+            <CardContent className="p-3">
+              <div className="flex items-center justify-between mb-1">
+                <span className="font-medium text-sm">{inst.name}</span>
+                <span className={`text-xs ${inst.cashChange >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                  {inst.cashChange >= 0 ? <TrendingUp className="inline h-3 w-3" /> : <TrendingDown className="inline h-3 w-3" />}
+                </span>
+              </div>
+              <div className="text-xl font-mono font-bold">{inst.cashLTP.toLocaleString()}</div>
+              <div className={`text-xs font-mono ${inst.cashChange >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                {inst.cashChange >= 0 ? '+' : ''}{inst.cashChange.toFixed(2)} ({inst.cashChangePercent >= 0 ? '+' : ''}{inst.cashChangePercent.toFixed(2)}%)
+              </div>
+              <div className="grid grid-cols-2 gap-1 mt-2 text-[10px] text-muted-foreground">
+                <div>Fut: <span className="font-mono text-foreground">{inst.futureLTP.toLocaleString()}</span></div>
+                <div>Basis: <span className={`font-mono ${inst.futureBasis >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>{inst.futureBasis >= 0 ? '+' : ''}{inst.futureBasis.toFixed(0)}</span></div>
+                <div>PCR: <span className="font-mono text-foreground">{inst.pcr.toFixed(2)}</span></div>
+                <div>MaxPain: <span className="font-mono text-foreground">{inst.maxPainStrike.toLocaleString()}</span></div>
+              </div>
+            </CardContent>
+          </Card>
         ))}
       </div>
 
       {/* Option Chain */}
-      {selectedInstr && (
-        <OptionChainTable strikes={selectedInstr.strikes} atmStrike={selectedInstr.atmStrike} />
+      {selected && (
+        <Card className="border-border/50 bg-card/80 backdrop-blur-sm">
+          <CardHeader className="pb-3">
+            <CardTitle className="flex items-center gap-2 text-base">
+              <Zap className="h-4 w-4 text-yellow-400" />
+              {selected.name} Option Chain
+              <Badge variant="outline" className="ml-2 text-xs">ATM: {selected.atmStrike.toLocaleString()}</Badge>
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <ScrollArea className="h-80">
+              <table className="w-full text-[11px]">
+                <thead>
+                  <tr className="border-b border-border/40 text-muted-foreground">
+                    <th colSpan={6} className="py-1.5 text-center text-emerald-400/70 font-medium bg-emerald-500/5">CALLS</th>
+                    <th className="py-1.5 text-center font-medium bg-primary/10">Strike</th>
+                    <th colSpan={6} className="py-1.5 text-center text-red-400/70 font-medium bg-red-500/5">PUTS</th>
+                  </tr>
+                  <tr className="border-b border-border/30 text-muted-foreground">
+                    <th className="py-1 pr-1 text-right bg-emerald-500/5">OI</th>
+                    <th className="py-1 pr-1 text-right bg-emerald-500/5">Chg</th>
+                    <th className="py-1 pr-1 text-right bg-emerald-500/5">Vol</th>
+                    <th className="py-1 pr-1 text-right bg-emerald-500/5">IV</th>
+                    <th className="py-1 pr-1 text-right bg-emerald-500/5">LTP</th>
+                    <th className="py-1 pr-1 text-right bg-emerald-500/5">Δ</th>
+                    <th className="py-1 text-center bg-primary/10">₹</th>
+                    <th className="py-1 pl-1 text-left bg-red-500/5">Δ</th>
+                    <th className="py-1 pl-1 text-left bg-red-500/5">LTP</th>
+                    <th className="py-1 pl-1 text-left bg-red-500/5">IV</th>
+                    <th className="py-1 pl-1 text-left bg-red-500/5">Vol</th>
+                    <th className="py-1 pl-1 text-left bg-red-500/5">Chg</th>
+                    <th className="py-1 pl-1 text-left bg-red-500/5">OI</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {selected.strikes.map((s: OptionStrike) => (
+                    <tr
+                      key={s.strike}
+                      className={`border-b border-border/15 ${
+                        s.isATM ? 'bg-primary/10 font-medium' : 'hover:bg-muted/20'
+                      }`}
+                    >
+                      <td className={`py-1 pr-1 text-right font-mono ${s.callOIChg > 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                        {formatNum(s.callOI)}
+                      </td>
+                      <td className={`py-1 pr-1 text-right font-mono ${s.callOIChg > 0 ? 'text-emerald-400/70' : 'text-red-400/70'}`}>
+                        {s.callOIChg > 0 ? '+' : ''}{formatNum(s.callOIChg)}
+                      </td>
+                      <td className="py-1 pr-1 text-right font-mono text-muted-foreground">{formatNum(s.callVolume)}</td>
+                      <td className="py-1 pr-1 text-right font-mono">{s.callIV.toFixed(1)}</td>
+                      <td className="py-1 pr-1 text-right font-mono font-medium">{s.callLTP.toFixed(1)}</td>
+                      <td className="py-1 pr-1 text-right font-mono text-muted-foreground">{s.callDelta.toFixed(2)}</td>
+                      <td className={`py-1 text-center font-mono font-bold ${s.isATM ? 'text-yellow-400' : s.callITM ? 'text-emerald-400' : s.putITM ? 'text-red-400' : 'text-foreground'}`}>
+                        {s.strike.toLocaleString()}
+                      </td>
+                      <td className="py-1 pl-1 text-left font-mono text-muted-foreground">{s.putDelta.toFixed(2)}</td>
+                      <td className="py-1 pl-1 text-left font-mono font-medium">{s.putLTP.toFixed(1)}</td>
+                      <td className="py-1 pl-1 text-left font-mono">{s.putIV.toFixed(1)}</td>
+                      <td className="py-1 pl-1 text-left font-mono text-muted-foreground">{formatNum(s.putVolume)}</td>
+                      <td className={`py-1 pl-1 text-left font-mono ${s.putOIChg > 0 ? 'text-emerald-400/70' : 'text-red-400/70'}`}>
+                        {s.putOIChg > 0 ? '+' : ''}{formatNum(s.putOIChg)}
+                      </td>
+                      <td className={`py-1 pl-1 text-left font-mono ${s.putOIChg > 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                        {formatNum(s.putOI)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </ScrollArea>
+          </CardContent>
+        </Card>
       )}
 
-      {/* Stock Quick View */}
-      <StockQuickView instruments={instruments} />
+      {/* Top 15 Stocks */}
+      <Card className="border-border/50 bg-card/80 backdrop-blur-sm">
+        <CardHeader className="pb-3">
+          <CardTitle className="text-base">Top 15 F&amp;O Stocks</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-2">
+            {stocks.map((s) => (
+              <div key={s.symbol} className="p-2 rounded-md border border-border/30 hover:bg-muted/30 transition-colors">
+                <div className="font-medium text-xs">{s.symbol}</div>
+                <div className="font-mono text-sm font-bold">{s.ltp.toLocaleString()}</div>
+                <div className={`text-[10px] font-mono ${s.change >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                  {s.change >= 0 ? '+' : ''}{s.change.toFixed(2)} ({s.changePercent >= 0 ? '+' : ''}{s.changePercent.toFixed(2)}%)
+                </div>
+                <div className="text-[10px] text-muted-foreground mt-0.5">
+                  PCR: <span className="font-mono">{s.pcr.toFixed(2)}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </CardContent>
+      </Card>
     </div>
   );
 }

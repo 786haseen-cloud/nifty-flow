@@ -1,11 +1,14 @@
 import { NextResponse } from 'next/server';
-import { generateAllDemoInstruments } from '@/lib/demo-data';
+import { generateDemoInstrument } from '@/lib/demo-data';
+import { INDICES } from '@/lib/types';
 
 export async function GET() {
   try {
-    const instruments = generateAllDemoInstruments();
+    const instruments = INDICES.map(idx =>
+      generateDemoInstrument(idx.symbol, idx.name, 'index', idx.symbol === 'NIFTY' ? 24350 : idx.symbol === 'SENSEX' ? 80100 : idx.symbol === 'BANKNIFTY' ? 51800 : 23200)
+    );
     return NextResponse.json({ instruments, timestamp: new Date().toISOString() });
-  } catch (error) {
+  } catch {
     return NextResponse.json({ error: 'Failed to generate data' }, { status: 500 });
   }
 }

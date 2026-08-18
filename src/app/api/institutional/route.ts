@@ -2,16 +2,16 @@ import { NextResponse } from 'next/server';
 import {
   generateDemoInstitutionalFlow,
   generateDemoBigTrades,
-  generateDemoTimeSeries,
-  generateDemoOIBuildupEvents,
+  generateDemoNiftyDivergence,
+  generateDemo3DayComparison,
 } from '@/lib/demo-data';
 
 export async function GET() {
   try {
     const institutionalFlow = generateDemoInstitutionalFlow();
     const bigTrades = generateDemoBigTrades();
-    const timeSeries = generateDemoTimeSeries();
-    const oiBuildupEvents = generateDemoOIBuildupEvents();
+    const divergence = generateDemoNiftyDivergence();
+    const dayComparison = generateDemo3DayComparison();
 
     return NextResponse.json({
       institutionalFlow,
@@ -19,11 +19,11 @@ export async function GET() {
         ...t,
         timestamp: t.timestamp.toISOString(),
       })),
-      timeSeries,
-      oiBuildupEvents,
+      divergence,
+      dayComparison,
       timestamp: new Date().toISOString(),
     });
-  } catch (error) {
+  } catch {
     return NextResponse.json({ error: 'Failed to get institutional data' }, { status: 500 });
   }
 }

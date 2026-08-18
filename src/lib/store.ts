@@ -1,20 +1,24 @@
-// ============================================================
-// Zustand Store — Global State
-// ============================================================
-
 import { create } from 'zustand';
 import type {
   InstrumentData,
   VIXData,
   Signal,
   SignalMode,
-  InstitutionalFlow,
-  BigTrade,
-  TimeSeriesPoint,
-  OIBuildupEvent,
-  DailySummary,
-  KiteConfigData,
+  DayComparison,
+  BigTradeEntry,
+  NiftyDivergencePoint,
+  GlobalIndex,
+  GIFTNifty,
+  NextMonthFutures,
+  ExpiryInfo,
+  NewsEvent,
 } from './types';
+
+interface KiteConfigData {
+  apiKey: string;
+  accessToken: string;
+  isConnected: boolean;
+}
 
 interface DashboardStore {
   // Connection & Mode
@@ -22,7 +26,7 @@ interface DashboardStore {
   setIsLive: (v: boolean) => void;
   lastRefresh: Date;
   setLastRefresh: (d: Date) => void;
-  refreshInterval: number; // seconds
+  refreshInterval: number;
   setRefreshInterval: (n: number) => void;
 
   // Selected Instrument
@@ -39,30 +43,41 @@ interface DashboardStore {
 
   // Signals
   signals: Signal[];
-  addSignal: (s: Signal) => void;
-  clearSignals: () => void;
+  setSignals: (s: Signal[]) => void;
   signalMode: SignalMode;
   setSignalMode: (m: SignalMode) => void;
 
-  // Institutional Flow
-  institutionalFlow: InstitutionalFlow | null;
-  setInstitutionalFlow: (f: InstitutionalFlow) => void;
+  // 3-Day Comparison
+  dayComparison: DayComparison[];
+  setDayComparison: (d: DayComparison[]) => void;
 
   // Big Trades
-  bigTrades: BigTrade[];
-  setBigTrades: (t: BigTrade[]) => void;
+  bigTrades: BigTradeEntry[];
+  setBigTrades: (t: BigTradeEntry[]) => void;
 
-  // Time Series (for divergence chart)
-  timeSeries: TimeSeriesPoint[];
-  setTimeSeries: (t: TimeSeriesPoint[]) => void;
+  // Nifty Divergence
+  niftyDivergence: NiftyDivergencePoint[];
+  setNiftyDivergence: (d: NiftyDivergencePoint[]) => void;
 
-  // OI Buildup Events
-  oiBuildupEvents: OIBuildupEvent[];
-  setOiBuildupEvents: (e: OIBuildupEvent[]) => void;
+  // Global Indices
+  globalIndices: GlobalIndex[];
+  setGlobalIndices: (g: GlobalIndex[]) => void;
 
-  // Daily Summaries
-  dailySummaries: DailySummary[];
-  setDailySummaries: (s: DailySummary[]) => void;
+  // GIFT Nifty
+  giftNifty: GIFTNifty | null;
+  setGiftNifty: (g: GIFTNifty) => void;
+
+  // Next Month Futures
+  nextMonthFutures: NextMonthFutures | null;
+  setNextMonthFutures: (f: NextMonthFutures) => void;
+
+  // Expiry Info
+  expiryInfo: ExpiryInfo[];
+  setExpiryInfo: (e: ExpiryInfo[]) => void;
+
+  // News
+  news: NewsEvent[];
+  setNews: (n: NewsEvent[]) => void;
 
   // Kite Config
   kiteConfig: KiteConfigData;
@@ -72,13 +87,17 @@ interface DashboardStore {
   activeTab: string;
   setActiveTab: (t: string) => void;
 
-  // Loading states
+  // Loading
   isLoading: boolean;
   setIsLoading: (b: boolean) => void;
+
+  // Theta info
+  callMelting: number;
+  putMelting: number;
+  setMeltingSpeed: (call: number, put: number) => void;
 }
 
 export const useStore = create<DashboardStore>((set) => ({
-  // Connection & Mode
   isLive: false,
   setIsLive: (v) => set({ isLive: v }),
   lastRefresh: new Date(),
@@ -86,54 +105,54 @@ export const useStore = create<DashboardStore>((set) => ({
   refreshInterval: 15,
   setRefreshInterval: (n) => set({ refreshInterval: n }),
 
-  // Selected Instrument
   selectedInstrument: 'NIFTY',
   setSelectedInstrument: (s) => set({ selectedInstrument: s }),
 
-  // VIX
   vix: null,
   setVix: (v) => set({ vix: v }),
 
-  // Instruments
   instruments: [],
   setInstruments: (arr) => set({ instruments: arr }),
 
-  // Signals
   signals: [],
-  addSignal: (s) => set((state) => ({ signals: [s, ...state.signals].slice(0, 50) })),
-  clearSignals: () => set({ signals: [] }),
+  setSignals: (s) => set({ signals: s }),
   signalMode: 'aggressive',
   setSignalMode: (m) => set({ signalMode: m }),
 
-  // Institutional Flow
-  institutionalFlow: null,
-  setInstitutionalFlow: (f) => set({ institutionalFlow: f }),
+  dayComparison: [],
+  setDayComparison: (d) => set({ dayComparison: d }),
 
-  // Big Trades
   bigTrades: [],
   setBigTrades: (t) => set({ bigTrades: t }),
 
-  // Time Series
-  timeSeries: [],
-  setTimeSeries: (t) => set({ timeSeries: t }),
+  niftyDivergence: [],
+  setNiftyDivergence: (d) => set({ niftyDivergence: d }),
 
-  // OI Buildup Events
-  oiBuildupEvents: [],
-  setOiBuildupEvents: (e) => set({ oiBuildupEvents: e }),
+  globalIndices: [],
+  setGlobalIndices: (g) => set({ globalIndices: g }),
 
-  // Daily Summaries
-  dailySummaries: [],
-  setDailySummaries: (s) => set({ dailySummaries: s }),
+  giftNifty: null,
+  setGiftNifty: (g) => set({ giftNifty: g }),
 
-  // Kite Config
+  nextMonthFutures: null,
+  setNextMonthFutures: (f) => set({ nextMonthFutures: f }),
+
+  expiryInfo: [],
+  setExpiryInfo: (e) => set({ expiryInfo: e }),
+
+  news: [],
+  setNews: (n) => set({ news: n }),
+
   kiteConfig: { apiKey: '', accessToken: '', isConnected: false },
   setKiteConfig: (c) => set({ kiteConfig: c }),
 
-  // Active Tab
-  activeTab: 'live',
+  activeTab: 'birds-eye',
   setActiveTab: (t) => set({ activeTab: t }),
 
-  // Loading
   isLoading: false,
   setIsLoading: (b) => set({ isLoading: b }),
+
+  callMelting: 0,
+  putMelting: 0,
+  setMeltingSpeed: (call, put) => set({ callMelting: call, putMelting: put }),
 }));

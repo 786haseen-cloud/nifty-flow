@@ -15,7 +15,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Indian Options Trading Dashboard V2",
+  title: "Indian Options Trading Dashboard V3",
   description: "Real-time options trading dashboard for Indian markets with Big Money Footprint, Greeks, Signals, and Institutional Flow tracking.",
 };
 

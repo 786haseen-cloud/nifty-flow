@@ -2,201 +2,259 @@
 
 import { useState } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Switch } from '@/components/ui/switch';
 import { Badge } from '@/components/ui/badge';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Switch } from '@/components/ui/switch';
+import { Button } from '@/components/ui/button';
+import { Slider } from '@/components/ui/slider';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Separator } from '@/components/ui/separator';
-import { Settings, Key, RefreshCw, Zap, Shield, Save, Wifi, WifiOff } from 'lucide-react';
-import { useStore } from '@/lib/store';
+import {
+  Settings, Key, RefreshCw, Target, Sliders, Wifi, WifiOff,
+} from 'lucide-react';
+import { INDICES, TOP_STOCKS } from '@/lib/types';
 
 export default function SettingsConfig() {
-  const {
-    kiteConfig, setKiteConfig,
-    isLive, setIsLive,
-    refreshInterval, setRefreshInterval,
-    signalMode, setSignalMode,
-    selectedInstrument, setSelectedInstrument,
-  } = useStore();
+  const [apiKey, setApiKey] = useState('');
+  const [accessToken, setAccessToken] = useState('');
+  const [isConnected, setIsConnected] = useState(false);
+  const [refreshInterval, setRefreshInterval] = useState(15);
+  const [signalThreshold, setSignalThreshold] = useState(50);
+  const [selectedInstruments, setSelectedInstruments] = useState<string[]>(['NIFTY', 'BANKNIFTY']);
+  const [autoRefresh, setAutoRefresh] = useState(true);
+  const [darkMode, setDarkMode] = useState(true);
 
-  const [apiKey, setApiKey] = useState(kiteConfig.apiKey);
-  const [accessToken, setAccessToken] = useState(kiteConfig.accessToken);
-  const [saved, setSaved] = useState(false);
+  const handleConnect = () => {
+    if (apiKey && accessToken) {
+      setIsConnected(true);
+    }
+  };
 
-  const handleSave = () => {
-    setKiteConfig({ apiKey, accessToken, isConnected: isLive });
-    setSaved(true);
-    setTimeout(() => setSaved(false), 2000);
+  const toggleInstrument = (symbol: string) => {
+    setSelectedInstruments(prev =>
+      prev.includes(symbol)
+        ? prev.filter(s => s !== symbol)
+        : [...prev, symbol]
+    );
   };
 
   return (
     <div className="space-y-4">
-      <h2 className="text-lg font-semibold flex items-center gap-2">
-        <Settings className="h-5 w-5 text-muted-foreground" />
-        Settings
-      </h2>
-
-      {/* Kite/Zerodha API Config */}
-      <Card className="border-border/50">
-        <CardHeader className="pb-2 pt-3 px-4">
-          <CardTitle className="text-sm font-medium flex items-center gap-2">
-            <Key className="h-4 w-4 text-yellow-400" />
-            Kite / Zerodha API
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="px-4 pb-3 space-y-3">
-          <div className="flex items-center gap-2">
-            <Badge variant={kiteConfig.isConnected ? 'default' : 'secondary'} className="text-[10px]">
-              {kiteConfig.isConnected ? <Wifi className="h-3 w-3 mr-1" /> : <WifiOff className="h-3 w-3 mr-1" />}
-              {kiteConfig.isConnected ? 'Connected' : 'Disconnected'}
+      {/* Kite API Config */}
+      <Card className="border-border/50 bg-card/80 backdrop-blur-sm">
+        <CardHeader className="pb-3">
+          <CardTitle className="flex items-center gap-2 text-base">
+            <Key className="h-4 w-4 text-amber-400" />
+            Kite API Configuration
+            <Badge variant="outline" className={`ml-auto text-xs ${isConnected ? 'border-emerald-500/40 text-emerald-300' : 'border-red-500/40 text-red-300'}`}>
+              {isConnected ? <><Wifi className="mr-1 h-3 w-3" />Connected</> : <><WifiOff className="mr-1 h-3 w-3" />Disconnected</>}
             </Badge>
-          </div>
-          <div className="space-y-2">
-            <label className="text-xs text-muted-foreground">API Key</label>
-            <Input
-              value={apiKey}
-              onChange={(e) => setApiKey(e.target.value)}
-              placeholder="Enter Kite API Key"
-              type="password"
-              className="text-xs font-mono"
-            />
-          </div>
-          <div className="space-y-2">
-            <label className="text-xs text-muted-foreground">Access Token</label>
-            <Input
-              value={accessToken}
-              onChange={(e) => setAccessToken(e.target.value)}
-              placeholder="Enter Kite Access Token"
-              type="password"
-              className="text-xs font-mono"
-            />
-          </div>
-          <Button size="sm" onClick={handleSave} className="gap-1">
-            <Save className="h-3 w-3" />
-            {saved ? 'Saved!' : 'Save Credentials'}
-          </Button>
-        </CardContent>
-      </Card>
-
-      {/* Live/Demo Mode */}
-      <Card className="border-border/50">
-        <CardHeader className="pb-2 pt-3 px-4">
-          <CardTitle className="text-sm font-medium flex items-center gap-2">
-            <RefreshCw className="h-4 w-4 text-blue-400" />
-            Data Mode
           </CardTitle>
         </CardHeader>
-        <CardContent className="px-4 pb-3 space-y-3">
-          <div className="flex items-center justify-between">
-            <div>
-              <span className="text-sm">Demo Mode</span>
-              <span className="text-xs text-muted-foreground ml-2">(simulated data)</span>
+        <CardContent className="space-y-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <Label className="text-xs">API Key</Label>
+              <Input
+                type="password"
+                placeholder="Enter your Kite API key"
+                value={apiKey}
+                onChange={(e) => setApiKey(e.target.value)}
+                className="font-mono text-sm"
+              />
             </div>
-            <Switch
-              checked={isLive}
-              onCheckedChange={setIsLive}
-            />
-            <div>
-              <span className="text-sm">Live Mode</span>
-              <span className="text-xs text-muted-foreground ml-2">(Kite API)</span>
-            </div>
-          </div>
-          <div className="text-xs text-yellow-400">
-            ⚠ Live mode requires valid Kite credentials
-          </div>
-        </CardContent>
-      </Card>
-
-      {/* Refresh Interval */}
-      <Card className="border-border/50">
-        <CardHeader className="pb-2 pt-3 px-4">
-          <CardTitle className="text-sm font-medium">Refresh Interval</CardTitle>
-        </CardHeader>
-        <CardContent className="px-4 pb-3">
-          <Select
-            value={refreshInterval.toString()}
-            onValueChange={(v) => setRefreshInterval(parseInt(v))}
-          >
-            <SelectTrigger className="w-40 text-xs">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="5">5 seconds</SelectItem>
-              <SelectItem value="10">10 seconds</SelectItem>
-              <SelectItem value="15">15 seconds (default)</SelectItem>
-              <SelectItem value="30">30 seconds</SelectItem>
-              <SelectItem value="60">60 seconds</SelectItem>
-            </SelectContent>
-          </Select>
-        </CardContent>
-      </Card>
-
-      {/* Signal Configuration */}
-      <Card className="border-border/50">
-        <CardHeader className="pb-2 pt-3 px-4">
-          <CardTitle className="text-sm font-medium flex items-center gap-2">
-            <Zap className="h-4 w-4 text-yellow-400" />
-            Signal Configuration
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="px-4 pb-3 space-y-3">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-1">
-              <Shield className="h-3 w-3 text-blue-400" />
-              <span className="text-xs">Conservative</span>
-            </div>
-            <Switch
-              checked={signalMode === 'aggressive'}
-              onCheckedChange={(checked) => setSignalMode(checked ? 'aggressive' : 'conservative')}
-            />
-            <div className="flex items-center gap-1">
-              <Zap className="h-3 w-3 text-yellow-400" />
-              <span className="text-xs">Aggressive</span>
+            <div className="space-y-2">
+              <Label className="text-xs">Access Token</Label>
+              <Input
+                type="password"
+                placeholder="Enter access token"
+                value={accessToken}
+                onChange={(e) => setAccessToken(e.target.value)}
+                className="font-mono text-sm"
+              />
             </div>
           </div>
-          <Separator />
+          <div className="flex gap-3">
+            <Button onClick={handleConnect} disabled={!apiKey || !accessToken} className="text-xs">
+              <Wifi className="mr-2 h-3 w-3" />
+              Connect
+            </Button>
+            <Button variant="outline" onClick={() => { setIsConnected(false); setApiKey(''); setAccessToken(''); }} className="text-xs">
+              Disconnect
+            </Button>
+          </div>
           <div className="text-xs text-muted-foreground">
-            <strong>Aggressive:</strong> More signals, lower confidence threshold
-            <br />
-            <strong>Conservative:</strong> Fewer signals, higher confidence required
+            Note: Without Kite API connection, the dashboard uses realistic demo data for all indicators and signals.
           </div>
         </CardContent>
       </Card>
 
-      {/* Default Instrument */}
-      <Card className="border-border/50">
-        <CardHeader className="pb-2 pt-3 px-4">
-          <CardTitle className="text-sm font-medium">Default Instrument</CardTitle>
+      {/* Instrument Selection */}
+      <Card className="border-border/50 bg-card/80 backdrop-blur-sm">
+        <CardHeader className="pb-3">
+          <CardTitle className="flex items-center gap-2 text-base">
+            <Target className="h-4 w-4 text-blue-400" />
+            Instrument Selection
+          </CardTitle>
         </CardHeader>
-        <CardContent className="px-4 pb-3">
-          <Select value={selectedInstrument} onValueChange={setSelectedInstrument}>
-            <SelectTrigger className="w-48 text-xs">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="NIFTY">NIFTY 50</SelectItem>
-              <SelectItem value="BANKNIFTY">BANK NIFTY</SelectItem>
-              <SelectItem value="FINNIFTY">FIN NIFTY</SelectItem>
-              <SelectItem value="MIDCPNIFTY">MIDCP NIFTY</SelectItem>
-              <SelectItem value="RELIANCE">RELIANCE</SelectItem>
-              <SelectItem value="HDFCBANK">HDFCBANK</SelectItem>
-              <SelectItem value="TCS">TCS</SelectItem>
-              <SelectItem value="INFY">INFY</SelectItem>
-              <SelectItem value="ICICIBANK">ICICIBANK</SelectItem>
-              <SelectItem value="SBIN">SBIN</SelectItem>
-            </SelectContent>
-          </Select>
+        <CardContent>
+          <div className="space-y-3">
+            <Label className="text-xs font-medium">Indices</Label>
+            <div className="flex flex-wrap gap-2">
+              {INDICES.map((idx) => (
+                <Badge
+                  key={idx.symbol}
+                  variant={selectedInstruments.includes(idx.symbol) ? 'default' : 'outline'}
+                  className={`cursor-pointer text-xs transition-colors ${
+                    selectedInstruments.includes(idx.symbol) ? 'bg-primary text-primary-foreground' : 'hover:bg-muted/50'
+                  }`}
+                  onClick={() => toggleInstrument(idx.symbol)}
+                >
+                  {idx.name}
+                </Badge>
+              ))}
+            </div>
+            <Label className="text-xs font-medium mt-3">Top F&amp;O Stocks</Label>
+            <div className="flex flex-wrap gap-2">
+              {TOP_STOCKS.map((stock) => (
+                <Badge
+                  key={stock.symbol}
+                  variant={selectedInstruments.includes(stock.symbol) ? 'default' : 'outline'}
+                  className={`cursor-pointer text-[10px] transition-colors ${
+                    selectedInstruments.includes(stock.symbol) ? 'bg-primary text-primary-foreground' : 'hover:bg-muted/50'
+                  }`}
+                  onClick={() => toggleInstrument(stock.symbol)}
+                >
+                  {stock.symbol}
+                </Badge>
+              ))}
+            </div>
+          </div>
         </CardContent>
       </Card>
 
-      {/* About */}
-      <Card className="border-border/50">
-        <CardContent className="p-4 text-xs text-muted-foreground space-y-1">
-          <div className="font-semibold text-sm text-foreground">Indian Options Trading Dashboard V2</div>
-          <div>Built for options traders in Jeddah trading Indian markets via Kite/Zerodha API</div>
-          <div>Includes: Live Monitor, Greeks, Signal Engine, Big Money Footprint, Daily Activity</div>
-          <div className="mt-2 font-mono">Risk-Free Rate: 7.0% (India 10Y Bond)</div>
+      {/* Signal Threshold Tuning */}
+      <Card className="border-border/50 bg-card/80 backdrop-blur-sm">
+        <CardHeader className="pb-3">
+          <CardTitle className="flex items-center gap-2 text-base">
+            <Sliders className="h-4 w-4 text-purple-400" />
+            Signal Threshold Tuning
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-5">
+          <div className="space-y-2">
+            <div className="flex justify-between text-xs">
+              <Label>Signal Confidence Threshold</Label>
+              <span className="font-mono text-foreground">{signalThreshold}%</span>
+            </div>
+            <Slider
+              value={[signalThreshold]}
+              onValueChange={(v) => setSignalThreshold(v[0])}
+              min={20}
+              max={90}
+              step={5}
+              className="w-full"
+            />
+            <div className="flex justify-between text-[10px] text-muted-foreground">
+              <span>Aggressive (20%)</span><span>Conservative (90%)</span>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
+            <div className="p-2 rounded border border-border/30">
+              <span className="text-muted-foreground">FII Flow</span>
+              <div className="font-mono font-bold">25%</div>
+            </div>
+            <div className="p-2 rounded border border-border/30">
+              <span className="text-muted-foreground">PropDesk Flow</span>
+              <div className="font-mono font-bold">20%</div>
+            </div>
+            <div className="p-2 rounded border border-border/30">
+              <span className="text-muted-foreground">Client Contrarian</span>
+              <div className="font-mono font-bold">15%</div>
+            </div>
+            <div className="p-2 rounded border border-border/30">
+              <span className="text-muted-foreground">3-Day OI Trend</span>
+              <div className="font-mono font-bold">15%</div>
+            </div>
+            <div className="p-2 rounded border border-border/30">
+              <span className="text-muted-foreground">Cash+Fut Align</span>
+              <div className="font-mono font-bold">10%</div>
+            </div>
+            <div className="p-2 rounded border border-border/30">
+              <span className="text-muted-foreground">Global Context</span>
+              <div className="font-mono font-bold">10%</div>
+            </div>
+            <div className="p-2 rounded border border-border/30">
+              <span className="text-muted-foreground">Stock Sentiment</span>
+              <div className="font-mono font-bold">5%</div>
+            </div>
+            <div className="p-2 rounded border border-amber-500/30 bg-amber-500/10">
+              <span className="text-amber-300">Theta + VIX</span>
+              <div className="font-mono font-bold text-amber-300">0% (Info)</div>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Refresh Settings */}
+      <Card className="border-border/50 bg-card/80 backdrop-blur-sm">
+        <CardHeader className="pb-3">
+          <CardTitle className="flex items-center gap-2 text-base">
+            <RefreshCw className="h-4 w-4 text-cyan-400" />
+            Refresh Settings
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="space-y-2">
+            <div className="flex justify-between text-xs">
+              <Label>Auto-Refresh Interval</Label>
+              <span className="font-mono text-foreground">{refreshInterval}s</span>
+            </div>
+            <Slider
+              value={[refreshInterval]}
+              onValueChange={(v) => setRefreshInterval(v[0])}
+              min={5}
+              max={60}
+              step={5}
+              className="w-full"
+            />
+            <div className="flex justify-between text-[10px] text-muted-foreground">
+              <span>5s (Fast)</span><span>60s (Slow)</span>
+            </div>
+          </div>
+
+          <div className="flex items-center justify-between">
+            <Label className="text-xs">Auto-Refresh Enabled</Label>
+            <Switch checked={autoRefresh} onCheckedChange={setAutoRefresh} />
+          </div>
+
+          <div className="flex items-center justify-between">
+            <Label className="text-xs">Dark Mode</Label>
+            <Switch checked={darkMode} onCheckedChange={(v) => {
+              setDarkMode(v);
+              document.documentElement.classList.toggle('dark', v);
+            }} />
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Data Source Info */}
+      <Card className="border-border/50 bg-card/80 backdrop-blur-sm">
+        <CardHeader className="pb-3">
+          <CardTitle className="flex items-center gap-2 text-base">
+            <Settings className="h-4 w-4 text-muted-foreground" />
+            Data Source
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="text-xs text-muted-foreground space-y-1">
+            <p>• <span className="text-foreground font-medium">Demo Mode</span>: Using realistic simulated data based on Indian market patterns</p>
+            <p>• <span className="text-foreground font-medium">Kite API</span>: Connect Zerodha Kite API for live market data</p>
+            <p>• <span className="text-foreground font-medium">Signal Engine</span>: FII/PropDesk flow weighted, Client contrarian, no Theta/VIX in scores</p>
+            <p>• <span className="text-foreground font-medium">DII</span>: Cash-only player — does not participate in options markets</p>
+            <p>• <span className="text-foreground font-medium">FII + PropDesk</span>: Contrarian to retail — they trade ATM+ITM strikes</p>
+          </div>
         </CardContent>
       </Card>
     </div>
