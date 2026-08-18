@@ -157,7 +157,7 @@ export default function OptionsFlowTab() {
   const latestFut = visFut[visFut.length - 1];
 
   // Scale calculations
-  const cashMaxAbs = Math.max(1, ...visCash.map(b => Math.max(Math.abs(b.totalMoneyIn), Math.abs(b.totalMoneyOut))));
+  const cashMaxAbs = Math.max(1, ...visCash.map(b => Math.max(Math.abs(b.totalMoneyIn), Math.abs(b.totalMoneyOut), Math.abs(b.netFlow))));
   const idxOptMax = Math.max(1, ...visOpt.map(b => Math.max(b.indexBullishFlow, b.indexBearishFlow)));
   const stkOptMax = Math.max(1, ...visOpt.map(b => Math.max(b.stockBullishFlow, b.stockBearishFlow)));
   const idxFutMax = Math.max(1, ...visFut.map(b => Math.max(Math.abs(b.indexFutBuy), Math.abs(b.indexFutSell))));
@@ -285,6 +285,9 @@ export default function OptionsFlowTab() {
             <span className="text-muted-foreground font-normal">| Every 15s | {VISIBLE_BARS} bars visible</span>
             {/* Mini legend */}
             <div className="ml-auto flex items-center gap-2 text-[9px]">
+              <span className="flex items-center gap-0.5"><span className="inline-block w-2 h-1.5 rounded-sm bg-emerald-500/50" />Buy</span>
+              <span className="flex items-center gap-0.5"><span className="inline-block w-2 h-1.5 rounded-sm bg-red-500/50" />Sell</span>
+              <span className="flex items-center gap-0.5"><span className="inline-block w-2 h-1.5 rounded-sm bg-blue-500" />Net</span>
               <span className="flex items-center gap-0.5"><span className="inline-block w-2 h-1.5 rounded-sm" style={{ background: C.callBuy }} />CB</span>
               <span className="flex items-center gap-0.5"><span className="inline-block w-2 h-1.5 rounded-sm" style={{ background: C.putWrite }} />PW</span>
               <span className="flex items-center gap-0.5"><span className="inline-block w-2 h-1.5 rounded-sm" style={{ background: C.putBuy }} />PB</span>
@@ -393,28 +396,40 @@ export default function OptionsFlowTab() {
             </div>
           </div>
 
-          {/* ── LAYER 2: CASH FLOW BARS ── */}
+          {/* ── LAYER 2: CASH FLOW BARS (Green=Buy, Red=Sell, Blue=Net) ── */}
           <FlowChartRow
             label="CASH"
             labelColor="text-emerald-400"
-            subtitle="NSE+BSE weighted"
+            subtitle="Green=Buy | Red=Sell | Blue=Net | NSE+BSE"
             maxAbs={cashMaxAbs}
             unit="Cr"
             unitDivisor={10000000}
           >
             {visCash.map((bar, i) => {
-              const inH = Math.max(0.5, (bar.totalMoneyIn / cashMaxAbs) * (CHART_H * 0.4));
-              const outH = Math.max(0.5, (bar.totalMoneyOut / cashMaxAbs) * (CHART_H * 0.4));
+              const inH = Math.max(0.5, (bar.totalMoneyIn / cashMaxAbs) * (CHART_H * 0.3));
+              const outH = Math.max(0.5, (bar.totalMoneyOut / cashMaxAbs) * (CHART_H * 0.3));
+              const netH = Math.max(0.5, (Math.abs(bar.netFlow) / cashMaxAbs) * (CHART_H * 0.45));
+              const netPos = bar.netFlow >= 0;
               return (
                 <div key={i} className="flex flex-col items-center justify-center" style={{ width: BAR_WIDTH, height: '100%' }}>
-                  <div className="w-full flex-1 flex items-end">
-                    <div className="w-full bg-emerald-500/70" style={{ height: inH }}
-                      title={`In: ${(bar.totalMoneyIn / 10000000).toFixed(2)} Cr`}
+                  {/* Buy pressure (green) — above center */}
+                  <div className="w-full flex-1 flex flex-col items-end justify-end">
+                    <div className="w-full bg-emerald-500/50" style={{ height: inH }}
+                      title={`Buy: +${(bar.totalMoneyIn / 10000000).toFixed(2)} Cr`}
                     />
                   </div>
-                  <div className="w-full flex-1">
-                    <div className="w-full bg-red-500/60" style={{ height: outH }}
-                      title={`Out: ${(bar.totalMoneyOut / 10000000).toFixed(2)} Cr`}
+                  {/* Net flow (blue) — dominant bar showing direction */}
+                  <div className="w-full flex justify-center" style={{ height: CHART_H * 0.08 }}>
+                    <div
+                      className={`w-full rounded-sm ${netPos ? 'bg-blue-500' : 'bg-blue-600'}`}
+                      style={{ height: Math.min(netH, CHART_H * 0.45) }}
+                      title={`Net: ${netPos ? '+' : ''}${(bar.netFlow / 10000000).toFixed(2)} Cr | Buy: +${(bar.totalMoneyIn / 10000000).toFixed(2)} Cr | Sell: -${(bar.totalMoneyOut / 10000000).toFixed(2)} Cr`}
+                    />
+                  </div>
+                  {/* Sell pressure (red) — below center */}
+                  <div className="w-full flex-1 flex flex-col items-start">
+                    <div className="w-full bg-red-500/50" style={{ height: outH }}
+                      title={`Sell: -${(bar.totalMoneyOut / 10000000).toFixed(2)} Cr`}
                     />
                   </div>
                 </div>
