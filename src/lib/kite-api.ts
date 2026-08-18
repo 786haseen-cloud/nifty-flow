@@ -260,16 +260,17 @@ export async function getCandles(
 
 /**
  * Get option chain for an index or stock
- * Uses InstrumentSpec for correct exchange, segment, lot size, strike step
+ * Uses InstrumentSpec for correct exchange, segment
+ * Fetches lot size + strike step DYNAMICALLY from Kite CSV
  * Returns all CE + PE instruments for the current expiry near ATM
  */
 export async function getOptionInstruments(
   symbol: string,
   spotPrice: number,
   strikesAroundOverride?: number,
-): Promise<KiteInstrument[]> {
+): Promise<{ instruments: KiteInstrument[]; meta: InstrumentMeta }> {
   const spec = getInstrumentSpec(symbol);
-  if (!spec) return [];
+  if (!spec) return { instruments: [], meta: { lotSize: 1, strikeStep: 50 } };
 
   // Fetch instruments from the correct exchange (NSE or BSE)
   const instruments = await getInstruments(spec.exchange);
@@ -282,7 +283,7 @@ export async function getOptionInstruments(
      i.tradingSymbol.toUpperCase().includes(symbol.toUpperCase()))
   );
 
-  if (indexOptions.length === 0) return [];
+  if (indexOptions.length === 0) return { instruments: [], meta: { lotSize: 1, strikeStep: 50 } };
 
   // Get unique expiries, sort by nearest
   const expiries = [...new Set(indexOptions.map(i => i.expiry))].sort();
@@ -294,28 +295,47 @@ export async function getOptionInstruments(
   // Filter to nearest expiry
   const expiryOptions = indexOptions.filter(i => i.expiry === nearestExpiry);
 
-  // Round ATM strike using the CORRECT strike step for this instrument
-  const step = spec.strikeStep;
-  const atmStrike = Math.round(spotPrice / step) * step;
+  // Get lot size from first option (all same for same underlying)
+  const lotSize = expiryOptions[0]?.lotSize || 1;
 
-  // Get strikes around ATM (spec-based)
+  // Derive strike step DYNAMICALLY from actual strike gaps
+  const strikes = [...new Set(expiryOptions.map(i => i.strike))].sort((a, b) => a - b);
+  let strikeStep = 50;
+  if (strikes.length >= 2) {
+    const gaps: Record<number, number> = {};
+    for (let i = 1; i < strikes.length; i++) {
+      const gap = Math.round((strikes[i] - strikes[i - 1]) * 100) / 100; // handle 2.5 etc
+      gaps[gap] = (gaps[gap] || 0) + 1;
+    }
+    strikeStep = parseFloat(Object.entries(gaps).sort((a, b) => b[1] - a[1])[0][0]) || 50;
+  }
+
+  // Round ATM strike using the DYNAMIC strike step
+  const atmStrike = Math.round(spotPrice / strikeStep) * strikeStep;
+
+  // Get strikes around ATM
   const strikesAround = strikesAroundOverride ?? spec.strikesAround;
-  const strikes = Array.from({ length: strikesAround * 2 + 1 }, (_, i) =>
-    atmStrike - strikesAround * step + i * step
+  const strikeList = Array.from({ length: strikesAround * 2 + 1 }, (_, i) =>
+    atmStrike - strikesAround * strikeStep + i * strikeStep
   );
 
-  return expiryOptions.filter(i => strikes.includes(i.strike));
+  const filtered = expiryOptions.filter(i => strikeList.includes(i.strike));
+
+  return {
+    instruments: filtered,
+    meta: { lotSize, strikeStep },
+  };
 }
 
 /**
  * Build options flow data from quotes + OI changes
- * Uses InstrumentSpec for correct lot size and strike step
+ * Lot size and strike step come DYNAMICALLY from Kite's CSV
  */
 export async function getOptionsFlow(symbol: string, spotPrice: number) {
   const spec = getInstrumentSpec(symbol);
   if (!spec) return null;
 
-  const optInstruments = await getOptionInstruments(symbol, spotPrice);
+  const { instruments: optInstruments, meta } = await getOptionInstruments(symbol, spotPrice);
   if (optInstruments.length === 0) return null;
 
   // Build instrument keys for batch quote
@@ -328,8 +348,8 @@ export async function getOptionsFlow(symbol: string, spotPrice: number) {
   // Group by strike → build flow data
   const strikes = new Map<number, { callBuy: number; putBuy: number; callWrite: number; putWrite: number; callOI: number; putOI: number; callVol: number; putVol: number; }>();
 
-  // Use correct strike step from spec
-  const atmStrike = Math.round(spotPrice / spec.strikeStep) * spec.strikeStep;
+  // Use DYNAMIC strike step and lot size from CSV
+  const atmStrike = Math.round(spotPrice / meta.strikeStep) * meta.strikeStep;
 
   for (const inst of optInstruments) {
     const key = `${inst.exchange}:${inst.tradingSymbol}`;
@@ -341,8 +361,8 @@ export async function getOptionsFlow(symbol: string, spotPrice: number) {
     }
     const s = strikes.get(inst.strike)!;
 
-    // Flow = volume × lotSize × avgPrice (real money flow)
-    const flow = q.volume * spec.lotSize * q.averagePrice;
+    // Flow = volume × lotSize (from CSV) × avgPrice (real money flow)
+    const flow = q.volume * meta.lotSize * q.averagePrice;
 
     if (inst.tradingSymbol.endsWith('CE')) {
       s.callBuy = flow * 0.6;
@@ -380,9 +400,10 @@ export const KITE_INDEX_INSTRUMENTS = {
 // Nifty 50 instrument token for historical candles
 export const NIFTY50_TOKEN = 256265;
 
-// ─── Instrument Specifications: Lot Size + Strike Step + Exchanges ───
-// Every index and stock has DIFFERENT lot size and strike step.
-// This is critical for correct options flow calculation.
+// ─── Instrument Specifications ───
+// Lot sizes and strike steps are fetched DYNAMICALLY from Kite's master CSV.
+// They change with every NSE revision — so we never hardcode them.
+// Here we only define exchange, segment, and how many strikes around ATM.
 
 export interface InstrumentSpec {
   symbol: string;
@@ -390,85 +411,109 @@ export interface InstrumentSpec {
   exchange: 'NSE' | 'BSE';
   segment: string;           // NFO = NSE F&O, BFO = BSE F&O
   instrumentType: string;    // OPTIDX / OPTSTK
-  lotSize: number;
-  strikeStep: number;        // Gap between consecutive strikes
   strikesAround: number;     // How many strikes around ATM (±N)
   kiteSymbol: string;        // Kite quote symbol
 }
 
 // ═══ INDEX SPECIFICATIONS ═══
 export const INDEX_SPECS: InstrumentSpec[] = [
-  {
-    symbol: 'NIFTY',
-    name: 'Nifty 50',
-    exchange: 'NSE',
-    segment: 'NFO',
-    instrumentType: 'OPTIDX',
-    lotSize: 25,
-    strikeStep: 50,
-    strikesAround: 5,        // 11 strikes: ATM ±5
-    kiteSymbol: 'NSE:NIFTY 50',
-  },
-  {
-    symbol: 'SENSEX',
-    name: 'Sensex',
-    exchange: 'BSE',
-    segment: 'BFO',          // BSE F&O segment
-    instrumentType: 'OPTIDX',
-    lotSize: 15,
-    strikeStep: 100,
-    strikesAround: 5,
-    kiteSymbol: 'BSE:SENSEX',
-  },
-  {
-    symbol: 'BANKNIFTY',
-    name: 'Bank Nifty',
-    exchange: 'NSE',
-    segment: 'NFO',
-    instrumentType: 'OPTIDX',
-    lotSize: 15,
-    strikeStep: 100,
-    strikesAround: 5,
-    kiteSymbol: 'NSE:NIFTY BANK',
-  },
-  {
-    symbol: 'FINNIFTY',
-    name: 'Fin Nifty',
-    exchange: 'NSE',
-    segment: 'NFO',
-    instrumentType: 'OPTIDX',
-    lotSize: 25,
-    strikeStep: 50,
-    strikesAround: 5,
-    kiteSymbol: 'NSE:NIFTY FIN SERVICE',
-  },
+  { symbol: 'NIFTY',      name: 'Nifty 50',          exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTIDX', strikesAround: 5, kiteSymbol: 'NSE:NIFTY 50' },
+  { symbol: 'SENSEX',     name: 'Sensex',            exchange: 'BSE', segment: 'BFO', instrumentType: 'OPTIDX', strikesAround: 5, kiteSymbol: 'BSE:SENSEX' },
+  { symbol: 'BANKNIFTY',  name: 'Bank Nifty',        exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTIDX', strikesAround: 5, kiteSymbol: 'NSE:NIFTY BANK' },
+  { symbol: 'FINNIFTY',   name: 'Fin Nifty',         exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTIDX', strikesAround: 5, kiteSymbol: 'NSE:NIFTY FIN SERVICE' },
 ];
 
 // ═══ STOCK F&O SPECIFICATIONS ═══
-// 15 major NSE F&O stocks with their lot sizes and strike steps
 // BSE has NO stock options — only NSE
 export const STOCK_SPECS: InstrumentSpec[] = [
-  { symbol: 'RELIANCE',   name: 'Reliance Industries', exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTSTK', lotSize: 250, strikeStep: 20,  strikesAround: 4, kiteSymbol: 'NSE:RELIANCE' },
-  { symbol: 'TCS',        name: 'Tata Consultancy',    exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTSTK', lotSize: 150, strikeStep: 40,  strikesAround: 4, kiteSymbol: 'NSE:TCS' },
-  { symbol: 'HDFCBANK',   name: 'HDFC Bank',           exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTSTK', lotSize: 550, strikeStep: 10,  strikesAround: 4, kiteSymbol: 'NSE:HDFCBANK' },
-  { symbol: 'INFY',       name: 'Infosys',             exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTSTK', lotSize: 300, strikeStep: 20,  strikesAround: 4, kiteSymbol: 'NSE:INFY' },
-  { symbol: 'ICICIBANK',  name: 'ICICI Bank',          exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTSTK', lotSize: 350, strikeStep: 10,  strikesAround: 4, kiteSymbol: 'NSE:ICICIBANK' },
-  { symbol: 'HINDUNILVR', name: 'Hindustan Unilever',  exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTSTK', lotSize: 300, strikeStep: 20,  strikesAround: 4, kiteSymbol: 'NSE:HINDUNILVR' },
-  { symbol: 'SBIN',       name: 'State Bank of India', exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTSTK', lotSize: 750, strikeStep: 5,   strikesAround: 4, kiteSymbol: 'NSE:SBIN' },
-  { symbol: 'BHARTIARTL', name: 'Bharti Airtel',       exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTSTK', lotSize: 1250,strikeStep: 5,   strikesAround: 4, kiteSymbol: 'NSE:BHARTIARTL' },
-  { symbol: 'ITC',        name: 'ITC Limited',          exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTSTK', lotSize: 1600,strikeStep: 2.5, strikesAround: 4, kiteSymbol: 'NSE:ITC' },
-  { symbol: 'KOTAKBANK',  name: 'Kotak Mahindra Bank', exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTSTK', lotSize: 300, strikeStep: 10,  strikesAround: 4, kiteSymbol: 'NSE:KOTAKBANK' },
-  { symbol: 'LT',         name: 'Larsen & Toubro',     exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTSTK', lotSize: 150, strikeStep: 20,  strikesAround: 4, kiteSymbol: 'NSE:LT' },
-  { symbol: 'AXISBANK',   name: 'Axis Bank',            exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTSTK', lotSize: 900, strikeStep: 5,   strikesAround: 4, kiteSymbol: 'NSE:AXISBANK' },
-  { symbol: 'BAJFINANCE', name: 'Bajaj Finance',       exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTSTK', lotSize: 125, strikeStep: 50,  strikesAround: 4, kiteSymbol: 'NSE:BAJFINANCE' },
-  { symbol: 'MARUTI',     name: 'Maruti Suzuki',       exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTSTK', lotSize: 50,  strikeStep: 100, strikesAround: 4, kiteSymbol: 'NSE:MARUTI' },
-  { symbol: 'TATAMOTORS', name: 'Tata Motors',         exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTSTK', lotSize: 275, strikeStep: 10,  strikesAround: 4, kiteSymbol: 'NSE:TATAMOTORS' },
+  { symbol: 'RELIANCE',   name: 'Reliance Industries', exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTSTK', strikesAround: 4, kiteSymbol: 'NSE:RELIANCE' },
+  { symbol: 'TCS',        name: 'Tata Consultancy',    exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTSTK', strikesAround: 4, kiteSymbol: 'NSE:TCS' },
+  { symbol: 'HDFCBANK',   name: 'HDFC Bank',           exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTSTK', strikesAround: 4, kiteSymbol: 'NSE:HDFCBANK' },
+  { symbol: 'INFY',       name: 'Infosys',             exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTSTK', strikesAround: 4, kiteSymbol: 'NSE:INFY' },
+  { symbol: 'ICICIBANK',  name: 'ICICI Bank',          exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTSTK', strikesAround: 4, kiteSymbol: 'NSE:ICICIBANK' },
+  { symbol: 'HINDUNILVR', name: 'Hindustan Unilever',  exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTSTK', strikesAround: 4, kiteSymbol: 'NSE:HINDUNILVR' },
+  { symbol: 'SBIN',       name: 'State Bank of India', exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTSTK', strikesAround: 4, kiteSymbol: 'NSE:SBIN' },
+  { symbol: 'BHARTIARTL', name: 'Bharti Airtel',       exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTSTK', strikesAround: 4, kiteSymbol: 'NSE:BHARTIARTL' },
+  { symbol: 'ITC',        name: 'ITC Limited',          exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTSTK', strikesAround: 4, kiteSymbol: 'NSE:ITC' },
+  { symbol: 'KOTAKBANK',  name: 'Kotak Mahindra Bank', exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTSTK', strikesAround: 4, kiteSymbol: 'NSE:KOTAKBANK' },
+  { symbol: 'LT',         name: 'Larsen & Toubro',     exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTSTK', strikesAround: 4, kiteSymbol: 'NSE:LT' },
+  { symbol: 'AXISBANK',   name: 'Axis Bank',            exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTSTK', strikesAround: 4, kiteSymbol: 'NSE:AXISBANK' },
+  { symbol: 'BAJFINANCE', name: 'Bajaj Finance',       exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTSTK', strikesAround: 4, kiteSymbol: 'NSE:BAJFINANCE' },
+  { symbol: 'MARUTI',     name: 'Maruti Suzuki',       exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTSTK', strikesAround: 4, kiteSymbol: 'NSE:MARUTI' },
+  { symbol: 'TATAMOTORS', name: 'Tata Motors',         exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTSTK', strikesAround: 4, kiteSymbol: 'NSE:TATAMOTORS' },
 ];
 
 // Helper: get spec by symbol
 export function getInstrumentSpec(symbol: string): InstrumentSpec | undefined {
   return INDEX_SPECS.find(s => s.symbol === symbol) ||
          STOCK_SPECS.find(s => s.symbol === symbol);
+}
+
+// ─── Dynamic Lot Size + Strike Step from Kite CSV ───
+// Lot sizes change with NSE revisions (e.g., Nifty went from 50→25→75→65 etc.)
+// Strike steps can also change.
+// We derive BOTH from Kite's instrument master CSV at runtime.
+
+export interface InstrumentMeta {
+  lotSize: number;
+  strikeStep: number;
+}
+
+/**
+ * Derive lot size and strike step from Kite instruments CSV
+ * - lotSize: from the option instrument's lot_size field
+ * - strikeStep: derived from the gap between adjacent strikes
+ */
+export async function getInstrumentMeta(
+  symbol: string,
+  spotPrice: number,
+): Promise<InstrumentMeta> {
+  const spec = getInstrumentSpec(symbol);
+  if (!spec) return { lotSize: 1, strikeStep: 50 }; // fallback
+
+  // Fetch all instruments for this symbol's exchange
+  const allInstruments = await getInstruments(spec.exchange);
+
+  // Filter to this symbol's options for current/near expiry
+  const symbolOpts = allInstruments.filter(i =>
+    i.segment === spec.segment &&
+    i.instrumentType === spec.instrumentType &&
+    (i.name.toUpperCase().includes(symbol.toUpperCase()) ||
+     i.tradingSymbol.toUpperCase().includes(symbol.toUpperCase()))
+  );
+
+  if (symbolOpts.length === 0) {
+    return { lotSize: 1, strikeStep: 50 }; // fallback
+  }
+
+  // Get lot size from the first matching option (all have same lot size for same underlying)
+  const lotSize = symbolOpts[0].lotSize || 1;
+
+  // Derive strike step from unique sorted strikes near ATM
+  const nearestExpiry = [...new Set(symbolOpts.map(i => i.expiry))].sort()
+    .find(e => new Date(e) >= new Date(new Date().toDateString()));
+
+  const expiryOpts = nearestExpiry
+    ? symbolOpts.filter(i => i.expiry === nearestExpiry)
+    : symbolOpts;
+
+  // Get unique strikes, sorted
+  const strikes = [...new Set(expiryOpts.map(i => i.strike))].sort((a, b) => a - b);
+
+  // Find strikes near ATM and compute step from adjacent gaps
+  let strikeStep = 50; // default fallback
+  if (strikes.length >= 2) {
+    // Use the most common gap between adjacent strikes
+    const gaps: Record<number, number> = {};
+    for (let i = 1; i < strikes.length; i++) {
+      const gap = Math.round(strikes[i] - strikes[i - 1]);
+      gaps[gap] = (gaps[gap] || 0) + 1;
+    }
+    // Most frequent gap = the strike step
+    strikeStep = parseInt(Object.entries(gaps).sort((a, b) => b[1] - a[1])[0][0]) || 50;
+  }
+
+  return { lotSize, strikeStep };
 }
 
 // Stock F&O list (symbols only, for backwards compat)
