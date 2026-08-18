@@ -186,73 +186,107 @@ export default function BirdsEye() {
                   </div>
                   <div className="text-xs">
                     <span className="text-muted-foreground">Cash: </span>
-                    <span className={nseSession.isMarketOpen ? 'text-emerald-400' : 'text-red-400'}>
-                      {nseSession.currentSession === 'closed' ? 'Closed' : 'Open'}
+                    <span className={nseSession.isCashActive ? 'text-emerald-400' : nseSession.isCASActive ? 'text-orange-400 font-semibold' : 'text-red-400'}>
+                      {nseSession.isCashActive ? '● Active' : nseSession.isCASActive ? '⛔ PAUSED (CAS)' : 'Closed'}
                     </span>
                   </div>
                   <div className="text-xs">
-                    <span className="text-muted-foreground">Derivatives: </span>
-                    <span className={nseSession.isDerivativesOpen ? 'text-emerald-400' : 'text-red-400'}>
-                      {nseSession.isDerivativesOpen ? 'Open (till 3:40 PM)' : 'Closed'}
+                    <span className="text-muted-foreground">F&O: </span>
+                    <span className={nseSession.isDerivativesOpen ? 'text-emerald-400 font-semibold' : 'text-red-400'}>
+                      {nseSession.isDerivativesOpen ? '✅ Active' : 'Closed'}
                     </span>
                   </div>
                   <div className="text-xs">
                     <span className="text-muted-foreground">CAS: </span>
                     <span className={nseSession.isCASActive ? 'text-orange-400 font-semibold' : 'text-muted-foreground'}>
-                      {nseSession.isCASActive ? 'ACTIVE (3:15-3:35 PM)' : 'Not Active'}
+                      {nseSession.isCASActive ? 'ACTIVE (3:15-3:35)' : 'Not Active'}
                     </span>
                   </div>
                 </div>
               </div>
 
-              {/* CAS Alert - Big money uses CAS! */}
+              {/* CAS Alert - Cash paused but F&O continues! */}
               {nseSession.isCASActive && (
                 <div className="p-2 rounded-md bg-orange-500/10 border border-orange-500/30 text-xs text-orange-200">
                   <ShieldAlert className="inline h-3 w-3 mr-1" />
-                  <strong>Smart Money Alert:</strong> Closing Auction Session is active. FII/PropDesk often execute large orders during CAS. Monitor Big Money tab for CAS activity.
+                  <strong>CAS Active:</strong> Cash trading PAUSED (3:15-3:35 PM). But <strong>Options & Futures CONTINUE trading!</strong> FII/PropDesk often execute large F&O orders during CAS. Monitor Big Money tab.
                 </div>
               )}
 
-              {/* Session Timings Table */}
+              {/* Session Timings Table with Cash/F&O Status */}
               <div className="overflow-x-auto">
                 <table className="w-full text-[11px]">
                   <thead>
                     <tr className="border-b border-border/40 text-muted-foreground">
                       <th className="py-1.5 pr-2 text-left font-medium">Session</th>
                       <th className="py-1.5 pr-2 text-left font-medium">Time</th>
+                      <th className="py-1.5 pr-2 text-center font-medium">Cash</th>
+                      <th className="py-1.5 pr-2 text-center font-medium">F&O</th>
                       <th className="py-1.5 text-left font-medium">Description</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {sessionTimings.map((s, i) => (
-                      <tr key={i} className={`border-b border-border/20 ${
-                        s.type === nseSession.currentSession ? 'bg-orange-500/10 font-semibold' : ''
-                      }`}>
-                        <td className="py-1 pr-2">
-                          {s.type === nseSession.currentSession && <Activity className="inline h-3 w-3 mr-1 text-orange-400" />}
-                          {s.session}
-                        </td>
-                        <td className="py-1 pr-2 font-mono">{s.time}</td>
-                        <td className="py-1 text-muted-foreground">{s.description}</td>
-                      </tr>
-                    ))}
+                    {sessionTimings.map((s, i) => {
+                      const cashSt = (s as Record<string, unknown>).cashStatus as string;
+                      const foSt = (s as Record<string, unknown>).foStatus as string;
+                      return (
+                        <tr key={i} className={`border-b border-border/20 ${
+                          s.type === nseSession.currentSession ? 'bg-orange-500/10 font-semibold' : ''
+                        }`}>
+                          <td className="py-1 pr-2">
+                            {s.type === nseSession.currentSession && <Activity className="inline h-3 w-3 mr-1 text-orange-400" />}
+                            {s.session}
+                          </td>
+                          <td className="py-1 pr-2 font-mono">{s.time}</td>
+                          <td className="py-1 pr-2 text-center">
+                            <span className={
+                              cashSt === 'Active' ? 'text-emerald-400' :
+                              cashSt === 'PAUSED' ? 'text-orange-400 font-semibold' :
+                              cashSt === 'Done' ? 'text-muted-foreground' :
+                              'text-red-400/70'
+                            }>
+                              {cashSt === 'Active' ? '●' : cashSt === 'PAUSED' ? '⛔' : cashSt === 'Done' ? '—' : '○'}
+                              {' '}{cashSt}
+                            </span>
+                          </td>
+                          <td className="py-1 pr-2 text-center">
+                            <span className={
+                              foSt === 'Active' ? 'text-emerald-400 font-semibold' :
+                              foSt === 'N/A' ? 'text-muted-foreground' :
+                              foSt.startsWith('Till') ? 'text-emerald-400' :
+                              'text-red-400/70'
+                            }>
+                              {foSt === 'Active' ? '✅' : foSt === 'N/A' ? '—' : foSt === 'Done' ? '○' : '✅'}
+                              {' '}{foSt}
+                            </span>
+                          </td>
+                          <td className="py-1 text-muted-foreground">{s.description}</td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
 
               {/* Key CAS Rules */}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[10px] text-muted-foreground">
+                <div className="p-2 rounded border border-emerald-500/20 bg-emerald-500/5">
+                  <strong className="text-emerald-400">F&O DURING CAS:</strong> Options & Futures CONTINUE trading during CAS (3:15-3:35). Only CASH stops!
+                </div>
+                <div className="p-2 rounded border border-orange-500/20 bg-orange-500/5">
+                  <strong className="text-orange-400">CASH DURING CAS:</strong> Cash PAUSED 3:15-3:35 PM. CAS auction determines closing price for F&O stocks.
+                </div>
                 <div className="p-2 rounded border border-border/30">
                   <strong className="text-foreground">CAS Applicability:</strong> Phase 1 — Only stocks with derivative contracts (F&O stocks)
                 </div>
                 <div className="p-2 rounded border border-border/30">
-                  <strong className="text-foreground">Random Close:</strong> 3:28-3:30 PM — system can close order entry anytime
+                  <strong className="text-foreground">Random Close:</strong> 3:28-3:30 PM — system can close cash order entry anytime
                 </div>
                 <div className="p-2 rounded border border-border/30">
-                  <strong className="text-foreground">Non-CAS Stocks:</strong> Trade continuously till 3:30 PM
+                  <strong className="text-foreground">Non-CAS Stocks:</strong> Cash trades continuously till 3:30 PM
                 </div>
                 <div className="p-2 rounded border border-border/30">
-                  <strong className="text-foreground">Derivatives:</strong> Equity derivatives now open till 3:40 PM (was 3:30 PM)
+                  <strong className="text-foreground">Derivatives:</strong> Equity derivatives open till 3:40 PM (even after CAS ends)
                 </div>
               </div>
             </div>

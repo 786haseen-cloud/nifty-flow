@@ -14,7 +14,8 @@ import BigMoneyTab from '@/components/dashboard/big-money-tab';
 import GreeksDecay from '@/components/dashboard/greeks-decay';
 import SettingsConfig from '@/components/dashboard/settings-config';
 import { generateDemoVIX, getMarketStatus } from '@/lib/demo-data';
-import type { VIXData } from '@/lib/types';
+import type { VIXData, NSESessionInfo } from '@/lib/types';
+import { getNSESession } from '@/lib/nse-sessions';
 
 export default function DashboardPage() {
   const [activeTab, setActiveTab] = useState('birds-eye');
@@ -22,6 +23,7 @@ export default function DashboardPage() {
   const [jeddahTime, setJeddahTime] = useState('');
   const [vix, setVix] = useState<VIXData | null>(null);
   const [marketStatus, setMarketStatus] = useState<string>('closed');
+  const [nseSession, setNseSession] = useState<NSESessionInfo | null>(null);
 
   useEffect(() => {
     function updateTime() {
@@ -35,6 +37,7 @@ export default function DashboardPage() {
       setJeddahTime(jeddah.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit', timeZone: 'UTC', hour12: false }));
 
       setMarketStatus(getMarketStatus());
+      setNseSession(getNSESession());
     }
 
     function refreshVix() {
@@ -53,6 +56,8 @@ export default function DashboardPage() {
   }, []);
 
   const statusColor = () => {
+    // During CAS: show orange (cash paused, F&O active)
+    if (nseSession?.isCASActive) return 'border-orange-500/40 text-orange-400';
     switch (marketStatus) {
       case 'open': return 'border-emerald-500/40 text-emerald-400';
       case 'pre-open': return 'border-amber-500/40 text-amber-400';
@@ -62,6 +67,7 @@ export default function DashboardPage() {
   };
 
   const statusLabel = () => {
+    if (nseSession?.isCASActive) return '⛔ CAS — F&O Active';
     switch (marketStatus) {
       case 'open': return '● MARKET OPEN';
       case 'pre-open': return '◐ PRE-OPEN';
@@ -95,6 +101,17 @@ export default function DashboardPage() {
               <Badge variant="outline" className={`text-[10px] ${statusColor()}`}>
                 {statusLabel()}
               </Badge>
+              {/* Cash/F&O status during CAS */}
+              {nseSession?.isCASActive && (
+                <div className="flex items-center gap-1.5">
+                  <Badge variant="outline" className="text-[9px] border-orange-500/40 text-orange-300 px-1.5 py-0">
+                    ⛔ Cash PAUSED
+                  </Badge>
+                  <Badge variant="outline" className="text-[9px] border-emerald-500/40 text-emerald-300 px-1.5 py-0">
+                    ✅ F&O Active
+                  </Badge>
+                </div>
+              )}
             </div>
 
             {/* Right: Times + VIX + Connection */}
@@ -201,7 +218,7 @@ export default function DashboardPage() {
       {/* Footer */}
       <footer className="border-t border-border/30 bg-card/50 mt-auto">
         <div className="px-4 py-2 flex items-center justify-between text-[10px] text-muted-foreground">
-          <span>Options Trading Dashboard V3 — Signal Engine: FII 25% | PropDesk 20% | Client Contrarian 15% | OI Trend 15% | Cash+Fut 10% | Global 10% | Stocks 5% | <span className="text-amber-400">Theta+VIX = Info Only</span></span>
+          <span>Options Trading Dashboard V3 — FII 25% | PropDesk 20% | Client Contrarian 15% | OI Trend 15% | Cash+Fut 10% | Global 10% | Stocks 5% | <span className="text-amber-400">Theta+VIX = Info Only</span> | <span className="text-blue-400">Net Money Flow (NSE+BSE)</span> | <span className="text-orange-400">CAS: Cash PAUSED, F&O Continues</span></span>
           <span className="font-mono">Auto-refresh: 15s | Demo Mode</span>
         </div>
       </footer>

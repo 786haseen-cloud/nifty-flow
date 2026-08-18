@@ -13,8 +13,12 @@ import {
   type NiftyDivergencePoint,
   type InstrumentType,
   type BuiltUpType,
+  type NetMoneyFlow,
+  type ExchangeStockData,
+  type DualExchangeStock,
   GLOBAL_INDICES,
   INDICES,
+  TOP_STOCKS,
 } from './types';
 
 function rand(min: number, max: number): number {
@@ -550,7 +554,7 @@ export function generateDemoNiftyDivergence(): NiftyDivergencePoint[] {
   return data;
 }
 
-// --- Top Stocks Quick View ---
+// --- Top Stocks Quick View (with Net Money Flow) ---
 export interface StockQuickView {
   symbol: string;
   name: string;
@@ -560,32 +564,58 @@ export interface StockQuickView {
   callOI: number;
   putOI: number;
   pcr: number;
+  netMoneyFlow: NetMoneyFlow;    // Money In - Money Out
+  nseLTP: number;                 // NSE price
+  bseLTP: number;                 // BSE price
+  nseBseDiff: number;             // NSE - BSE difference
 }
 
-export function generateDemoStocks(): StockQuickView[] {
-  const stockData = [
-    { symbol: 'RELIANCE', name: 'RELIANCE', base: 2950 },
-    { symbol: 'TCS', name: 'TCS', base: 3900 },
-    { symbol: 'HDFCBANK', name: 'HDFCBANK', base: 1680 },
-    { symbol: 'INFY', name: 'INFY', base: 1580 },
-    { symbol: 'ICICIBANK', name: 'ICICIBANK', base: 1250 },
-    { symbol: 'HINDUNILVR', name: 'HINDUNILVR', base: 2520 },
-    { symbol: 'SBIN', name: 'SBIN', base: 830 },
-    { symbol: 'BHARTIARTL', name: 'BHARTIARTL', base: 1620 },
-    { symbol: 'ITC', name: 'ITC', base: 470 },
-    { symbol: 'KOTAKBANK', name: 'KOTAKBANK', base: 1800 },
-    { symbol: 'LT', name: 'LT', base: 3600 },
-    { symbol: 'AXISBANK', name: 'AXISBANK', base: 1170 },
-    { symbol: 'BAJFINANCE', name: 'BAJFINANCE', base: 7200 },
-    { symbol: 'MARUTI', name: 'MARUTI', base: 12500 },
-    { symbol: 'TITAN', name: 'TITAN', base: 3550 },
-  ];
+const STOCK_BASE_PRICES = [
+  { symbol: 'RELIANCE', name: 'Reliance Industries', base: 2950 },
+  { symbol: 'TCS', name: 'Tata Consultancy', base: 3900 },
+  { symbol: 'HDFCBANK', name: 'HDFC Bank', base: 1680 },
+  { symbol: 'INFY', name: 'Infosys', base: 1580 },
+  { symbol: 'ICICIBANK', name: 'ICICI Bank', base: 1250 },
+  { symbol: 'HINDUNILVR', name: 'Hindustan Unilever', base: 2520 },
+  { symbol: 'SBIN', name: 'State Bank India', base: 830 },
+  { symbol: 'BHARTIARTL', name: 'Bharti Airtel', base: 1620 },
+  { symbol: 'ITC', name: 'ITC Limited', base: 470 },
+  { symbol: 'KOTAKBANK', name: 'Kotak Bank', base: 1800 },
+  { symbol: 'LT', name: 'Larsen & Toubro', base: 3600 },
+  { symbol: 'AXISBANK', name: 'Axis Bank', base: 1170 },
+  { symbol: 'BAJFINANCE', name: 'Bajaj Finance', base: 7200 },
+  { symbol: 'MARUTI', name: 'Maruti Suzuki', base: 12500 },
+  { symbol: 'TITAN', name: 'Titan Company', base: 3550 },
+];
 
-  return stockData.map((s) => {
+export function generateDemoStocks(): StockQuickView[] {
+  return STOCK_BASE_PRICES.map((s) => {
     const change = round2(rand(-s.base * 0.02, s.base * 0.02));
     const ltp = round2(s.base + change);
     const callOI = roundN(rand(100000, 5000000), 0);
     const putOI = roundN(rand(100000, 5000000), 0);
+
+    // Net Money Flow: Money In - Money Out
+    // Higher weight stocks have larger absolute flows
+    const moneyIn = roundN(rand(50, 500) * (s.base / 1000) * 10000000, 0);   // In ₹
+    const moneyOut = roundN(rand(40, 480) * (s.base / 1000) * 10000000, 0);  // In ₹
+    const netFlow = moneyIn - moneyOut;
+    const netFlowCr = round2(netFlow / 10000000);
+
+    let intensity: NetMoneyFlow['intensity'];
+    const ratio = netFlowCr / (moneyIn / 10000000);
+    if (ratio > 0.15) intensity = 'heavy_inflow';
+    else if (ratio > 0.05) intensity = 'inflow';
+    else if (ratio > -0.05) intensity = 'neutral';
+    else if (ratio > -0.15) intensity = 'outflow';
+    else intensity = 'heavy_outflow';
+
+    // Dual exchange: NSE and BSE have slightly different prices
+    // NSE typically has higher volume, BSE might have slight price difference
+    const nseLTP = round2(ltp + rand(-2, 2));
+    const bseLTP = round2(ltp + rand(-3, 1));  // BSE often slightly lower
+    const nseBseDiff = round2(nseLTP - bseLTP);
+
     return {
       symbol: s.symbol,
       name: s.name,
@@ -595,6 +625,123 @@ export function generateDemoStocks(): StockQuickView[] {
       callOI,
       putOI,
       pcr: round2(putOI / callOI),
+      netMoneyFlow: {
+        symbol: s.symbol,
+        moneyIn,
+        moneyOut,
+        netFlow,
+        netFlowCr,
+        intensity,
+      },
+      nseLTP,
+      bseLTP,
+      nseBseDiff,
+    };
+  });
+}
+
+// --- Net Money Flow for all top stocks ---
+export function generateDemoNetMoneyFlow(): NetMoneyFlow[] {
+  return STOCK_BASE_PRICES.map((s) => {
+    const moneyIn = roundN(rand(50, 500) * (s.base / 1000) * 10000000, 0);
+    const moneyOut = roundN(rand(40, 480) * (s.base / 1000) * 10000000, 0);
+    const netFlow = moneyIn - moneyOut;
+    const netFlowCr = round2(netFlow / 10000000);
+
+    let intensity: NetMoneyFlow['intensity'];
+    const ratio = netFlowCr / (moneyIn / 10000000);
+    if (ratio > 0.15) intensity = 'heavy_inflow';
+    else if (ratio > 0.05) intensity = 'inflow';
+    else if (ratio > -0.05) intensity = 'neutral';
+    else if (ratio > -0.15) intensity = 'outflow';
+    else intensity = 'heavy_outflow';
+
+    return {
+      symbol: s.symbol,
+      moneyIn,
+      moneyOut,
+      netFlow,
+      netFlowCr,
+      intensity,
+    };
+  });
+}
+
+// --- Dual Exchange Stock Data ---
+// Same stock, different buyers/sellers on NSE vs BSE
+export function generateDemoDualExchangeStocks(): DualExchangeStock[] {
+  return STOCK_BASE_PRICES.map((s) => {
+    const change = round2(rand(-s.base * 0.02, s.base * 0.02));
+    const baseLTP = round2(s.base + change);
+
+    // NSE: Higher volume, tighter spreads
+    const nseLTP = round2(baseLTP + rand(-1, 1));
+    const nseVolume = roundN(rand(500000, 15000000), 0);
+    const nseBuyVol = roundN(nseVolume * rand(0.4, 0.6), 0);
+    const nseSellVol = nseVolume - nseBuyVol;
+    const nseMoneyIn = roundN(nseBuyVol * nseLTP * rand(0.95, 1.05), 0);
+    const nseMoneyOut = roundN(nseSellVol * nseLTP * rand(0.95, 1.05), 0);
+    const nseVWAP = round2((nseMoneyIn + nseMoneyOut) / nseVolume);
+
+    const nse: ExchangeStockData = {
+      symbol: s.symbol,
+      exchange: 'NSE',
+      ltp: nseLTP,
+      change: round2(nseLTP - s.base),
+      changePercent: round2(((nseLTP - s.base) / s.base) * 100),
+      volume: nseVolume,
+      buyVolume: nseBuyVol,
+      sellVolume: nseSellVol,
+      moneyIn: nseMoneyIn,
+      moneyOut: nseMoneyOut,
+      netMoneyFlow: nseMoneyIn - nseMoneyOut,
+      vwap: nseVWAP,
+    };
+
+    // BSE: Lower volume, slightly different price (sometimes arbitrage opportunity)
+    const bseLTP = round2(baseLTP + rand(-3, 1));  // BSE often slightly lower
+    const bseVolume = roundN(rand(100000, 2000000), 0);  // Much lower volume
+    const bseBuyVol = roundN(bseVolume * rand(0.35, 0.65), 0);
+    const bseSellVol = bseVolume - bseBuyVol;
+    const bseMoneyIn = roundN(bseBuyVol * bseLTP * rand(0.94, 1.06), 0);
+    const bseMoneyOut = roundN(bseSellVol * bseLTP * rand(0.94, 1.06), 0);
+    const bseVWAP = round2((bseMoneyIn + bseMoneyOut) / bseVolume);
+
+    const bse: ExchangeStockData = {
+      symbol: s.symbol,
+      exchange: 'BSE',
+      ltp: bseLTP,
+      change: round2(bseLTP - s.base),
+      changePercent: round2(((bseLTP - s.base) / s.base) * 100),
+      volume: bseVolume,
+      buyVolume: bseBuyVol,
+      sellVolume: bseSellVol,
+      moneyIn: bseMoneyIn,
+      moneyOut: bseMoneyOut,
+      netMoneyFlow: bseMoneyIn - bseMoneyOut,
+      vwap: bseVWAP,
+    };
+
+    const combinedNetFlow = nse.netMoneyFlow + bse.netMoneyFlow;
+    const nseBseDiff = round2(nseLTP - bseLTP);
+    const totalMoneyIn = nseMoneyIn + bseMoneyIn;
+    const totalMoneyOut = nseMoneyOut + bseMoneyOut;
+
+    const dominantExchange: 'NSE' | 'BSE' | 'both' =
+      nseVolume > bseVolume * 5 ? 'NSE' :
+      bseVolume > nseVolume * 2 ? 'BSE' : 'both';
+
+    return {
+      symbol: s.symbol,
+      name: s.name,
+      nse,
+      bse,
+      combinedNetFlow,
+      combinedNetFlowCr: round2(combinedNetFlow / 10000000),
+      nseBseDiff,
+      dominantExchange,
+      totalMoneyIn,
+      totalMoneyOut,
     };
   });
 }

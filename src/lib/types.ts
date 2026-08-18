@@ -20,8 +20,9 @@ export interface NSESessionInfo {
   currentSession: NSESessionType;
   currentTimeIST: string;
   isMarketOpen: boolean;
-  isCASActive: boolean;        // Is Closing Auction Session active?
-  isDerivativesOpen: boolean;  // Derivatives trade till 3:40 PM
+  isCashActive: boolean;        // Cash trading active? FALSE during CAS (3:15-3:35)
+  isDerivativesOpen: boolean;   // F&O continues during CAS! Till 3:40 PM
+  isCASActive: boolean;         // Is Closing Auction Session active?
   isRandomCloseWindow: boolean; // 3:28-3:30 PM random closure possible
   nextSessionStart: string;     // When next session starts
   sessionLabel: string;         // Human-readable label
@@ -213,6 +214,47 @@ export interface BigTradeEntry {
   quantity: number;
   value: number;
   strike?: number;
+}
+
+// Net Money Flow for stocks: Money In - Money Out
+// This is NOT just price change — it tracks actual capital flow
+export interface NetMoneyFlow {
+  symbol: string;
+  moneyIn: number;       // Total buy value (price × quantity for all buys)
+  moneyOut: number;      // Total sell value (price × quantity for all sells)
+  netFlow: number;      // moneyIn - moneyOut: positive = inflow, negative = outflow
+  netFlowCr: number;    // In Crores
+  intensity: 'heavy_inflow' | 'inflow' | 'neutral' | 'outflow' | 'heavy_outflow';
+}
+
+// Dual exchange stock data — same stock, different buyers/sellers on NSE vs BSE
+export interface ExchangeStockData {
+  symbol: string;
+  exchange: 'NSE' | 'BSE';
+  ltp: number;
+  change: number;
+  changePercent: number;
+  volume: number;          // Total volume on this exchange
+  buyVolume: number;       // Volume at bid (buyers)
+  sellVolume: number;      // Volume at ask (sellers)
+  moneyIn: number;        // Buy value on this exchange
+  moneyOut: number;       // Sell value on this exchange
+  netMoneyFlow: number;   // moneyIn - moneyOut on this exchange
+  vwap: number;           // Volume Weighted Average Price
+}
+
+// Combined dual exchange stock view
+export interface DualExchangeStock {
+  symbol: string;
+  name: string;
+  nse: ExchangeStockData;  // NSE data
+  bse: ExchangeStockData;  // BSE data
+  combinedNetFlow: number; // NSE netFlow + BSE netFlow
+  combinedNetFlowCr: number;
+  nseBseDiff: number;      // Price difference between exchanges (arbitrage opportunity)
+  dominantExchange: 'NSE' | 'BSE' | 'both'; // Which exchange has more volume/flow
+  totalMoneyIn: number;    // NSE moneyIn + BSE moneyIn
+  totalMoneyOut: number;   // NSE moneyOut + BSE moneyOut
 }
 
 export interface NiftyDivergencePoint {

@@ -14,10 +14,12 @@ import {
   generateDemoInstrument,
   generateDemoVIX,
   generateDemoStocks,
+  generateDemoDualExchangeStocks,
   formatNum,
   getMarketStatus,
 } from '@/lib/demo-data';
 import type { StockQuickView } from '@/lib/demo-data';
+import type { DualExchangeStock, NetMoneyFlow } from '@/lib/types';
 
 export default function LiveMonitor() {
   const [vix, setVix] = useState<VIXData | null>(null);
@@ -26,6 +28,7 @@ export default function LiveMonitor() {
   const [bankNifty, setBankNifty] = useState<InstrumentData | null>(null);
   const [finNifty, setFinNifty] = useState<InstrumentData | null>(null);
   const [stocks, setStocks] = useState<StockQuickView[]>([]);
+  const [dualExchangeStocks, setDualExchangeStocks] = useState<DualExchangeStock[]>([]);
   const [selectedIdx, setSelectedIdx] = useState<string>('NIFTY');
   const [callMelting, setCallMelting] = useState(17.3);
   const [putMelting, setPutMelting] = useState(6.1);
@@ -38,6 +41,7 @@ export default function LiveMonitor() {
       setBankNifty(generateDemoInstrument('BANKNIFTY', 'Bank Nifty', 'index', 51800));
       setFinNifty(generateDemoInstrument('FINNIFTY', 'Fin Nifty', 'index', 23200));
       setStocks(generateDemoStocks());
+      setDualExchangeStocks(generateDemoDualExchangeStocks());
       setCallMelting(parseFloat((Math.random() * 20 + 5).toFixed(1)));
       setPutMelting(parseFloat((Math.random() * 15 + 3).toFixed(1)));
     }
@@ -293,25 +297,73 @@ export default function LiveMonitor() {
         </Card>
       )}
 
-      {/* Top 15 Stocks */}
+      {/* Top 15 Stocks with Net Money Flow + Dual Exchange */}
       <Card className="border-border/50 bg-card/80 backdrop-blur-sm">
         <CardHeader className="pb-3">
-          <CardTitle className="text-base">Top 15 F&amp;O Stocks</CardTitle>
+          <CardTitle className="flex items-center gap-2 text-base">
+            <TrendingUp className="h-4 w-4 text-emerald-400" />
+            Top 15 F&amp;O Stocks — Net Money Flow
+            <Badge variant="outline" className="ml-auto text-[10px] border-blue-500/40 text-blue-300">
+              NSE + BSE
+            </Badge>
+          </CardTitle>
         </CardHeader>
         <CardContent>
-          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-2">
-            {stocks.map((s) => (
-              <div key={s.symbol} className="p-2 rounded-md border border-border/30 hover:bg-muted/30 transition-colors">
-                <div className="font-medium text-xs">{s.symbol}</div>
-                <div className="font-mono text-sm font-bold">{s.ltp.toLocaleString()}</div>
-                <div className={`text-[10px] font-mono ${s.change >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                  {s.change >= 0 ? '+' : ''}{s.change.toFixed(2)} ({s.changePercent >= 0 ? '+' : ''}{s.changePercent.toFixed(2)}%)
-                </div>
-                <div className="text-[10px] text-muted-foreground mt-0.5">
-                  PCR: <span className="font-mono">{s.pcr.toFixed(2)}</span>
-                </div>
-              </div>
-            ))}
+          <ScrollArea className="h-96">
+            <table className="w-full text-[11px]">
+              <thead>
+                <tr className="border-b border-border/40 text-muted-foreground">
+                  <th className="py-1.5 pr-2 text-left font-medium">Stock</th>
+                  <th className="py-1.5 pr-2 text-right font-medium">NSE</th>
+                  <th className="py-1.5 pr-2 text-right font-medium">BSE</th>
+                  <th className="py-1.5 pr-2 text-right font-medium">Diff</th>
+                  <th className="py-1.5 pr-2 text-right font-medium">Money In</th>
+                  <th className="py-1.5 pr-2 text-right font-medium">Money Out</th>
+                  <th className="py-1.5 pr-2 text-right font-medium">Net Flow</th>
+                  <th className="py-1.5 text-center font-medium">Intensity</th>
+                </tr>
+              </thead>
+              <tbody>
+                {dualExchangeStocks.map((s) => {
+                  const flowColor = s.combinedNetFlow >= 0 ? 'text-emerald-400' : 'text-red-400';
+                  const intensityColor = s.combinedNetFlow > 0
+                    ? (s.combinedNetFlowCr > 100 ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30' : 'bg-emerald-500/10 text-emerald-400/70 border-emerald-500/20')
+                    : (s.combinedNetFlowCr < -100 ? 'bg-red-500/20 text-red-300 border-red-500/30' : 'bg-red-500/10 text-red-400/70 border-red-500/20');
+                  const intensityLabel = s.combinedNetFlowCr > 100 ? 'Heavy In' : s.combinedNetFlowCr > 20 ? 'In' : s.combinedNetFlowCr > -20 ? 'Neutral' : s.combinedNetFlowCr > -100 ? 'Out' : 'Heavy Out';
+
+                  return (
+                    <tr key={s.symbol} className="border-b border-border/15 hover:bg-muted/20 transition-colors">
+                      <td className="py-1.5 pr-2 font-medium">{s.symbol}</td>
+                      <td className="py-1.5 pr-2 text-right font-mono">{s.nse.ltp.toLocaleString()}</td>
+                      <td className="py-1.5 pr-2 text-right font-mono">{s.bse.ltp.toLocaleString()}</td>
+                      <td className={`py-1.5 pr-2 text-right font-mono ${Math.abs(s.nseBseDiff) > 2 ? 'text-amber-400' : 'text-muted-foreground'}`}>
+                        {s.nseBseDiff > 0 ? '+' : ''}{s.nseBseDiff.toFixed(1)}
+                        {Math.abs(s.nseBseDiff) > 3 && <span className="text-amber-400 ml-0.5">!</span>}
+                      </td>
+                      <td className="py-1.5 pr-2 text-right font-mono text-emerald-400/70">
+                        {(s.totalMoneyIn / 10000000).toFixed(1)} Cr
+                      </td>
+                      <td className="py-1.5 pr-2 text-right font-mono text-red-400/70">
+                        {(s.totalMoneyOut / 10000000).toFixed(1)} Cr
+                      </td>
+                      <td className={`py-1.5 pr-2 text-right font-mono font-bold ${flowColor}`}>
+                        {s.combinedNetFlowCr >= 0 ? '+' : ''}{s.combinedNetFlowCr.toFixed(1)} Cr
+                      </td>
+                      <td className="py-1.5 text-center">
+                        <Badge variant="outline" className={`text-[9px] ${intensityColor}`}>
+                          {intensityLabel}
+                        </Badge>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </ScrollArea>
+          <div className="mt-2 text-xs text-muted-foreground">
+            <strong>Net Money Flow</strong> = Total Money In − Total Money Out across NSE + BSE.
+            {' '}<span className="text-amber-400">!</span> = NSE-BSE price difference &gt; ₹3 (potential arbitrage).
+            {' '}Same stock has different buyers/sellers on each exchange.
           </div>
         </CardContent>
       </Card>

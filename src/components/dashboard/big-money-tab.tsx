@@ -12,12 +12,13 @@ import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   LineChart, Line, Legend,
 } from 'recharts';
-import type { DayComparison, BigTradeEntry, NiftyDivergencePoint, InstrumentData, PlayerFlow } from '@/lib/types';
+import type { DayComparison, BigTradeEntry, NiftyDivergencePoint, InstrumentData, PlayerFlow, DualExchangeStock } from '@/lib/types';
 import {
   generateDemo3DayComparison,
   generateDemoBigTrades,
   generateDemoNiftyDivergence,
   generateDemoInstrument,
+  generateDemoDualExchangeStocks,
   formatNum,
   formatCr,
 } from '@/lib/demo-data';
@@ -27,6 +28,7 @@ export default function BigMoneyTab() {
   const [bigTrades, setBigTrades] = useState<BigTradeEntry[]>([]);
   const [divergence, setDivergence] = useState<NiftyDivergencePoint[]>([]);
   const [instrument, setInstrument] = useState<InstrumentData | null>(null);
+  const [dualExchangeStocks, setDualExchangeStocks] = useState<DualExchangeStock[]>([]);
 
   useEffect(() => {
     function refresh() {
@@ -34,6 +36,7 @@ export default function BigMoneyTab() {
       setBigTrades(generateDemoBigTrades());
       setDivergence(generateDemoNiftyDivergence());
       setInstrument(generateDemoInstrument('NIFTY', 'Nifty 50', 'index', 24350));
+      setDualExchangeStocks(generateDemoDualExchangeStocks());
     }
     refresh();
     const interval = setInterval(refresh, 30000);
@@ -302,6 +305,98 @@ export default function BigMoneyTab() {
               ))}
             </div>
           </ScrollArea>
+        </CardContent>
+      </Card>
+
+      {/* Section F: Net Money Flow Summary — Heavy Weight Stocks */}
+      <Card className="border-border/50 bg-card/80 backdrop-blur-sm">
+        <CardHeader className="pb-3">
+          <CardTitle className="flex items-center gap-2 text-base">
+            <TrendingUp className="h-4 w-4 text-blue-400" />
+            Net Money Flow — Heavy Weight Stocks (NSE + BSE)
+            <Badge variant="outline" className="ml-2 text-[10px]">Money In − Money Out</Badge>
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          {dualExchangeStocks.length > 0 && (
+            <>
+              {/* Total Net Flow */}
+              <div className="grid grid-cols-3 gap-3 mb-4">
+                {(() => {
+                  const totalIn = dualExchangeStocks.reduce((s, d) => s + d.totalMoneyIn, 0);
+                  const totalOut = dualExchangeStocks.reduce((s, d) => s + d.totalMoneyOut, 0);
+                  const totalNet = totalIn - totalOut;
+                  return (
+                    <>
+                      <div className="p-2 rounded-md border border-emerald-500/20 bg-emerald-500/5 text-center">
+                        <div className="text-[10px] text-emerald-400">Total Money In</div>
+                        <div className="text-sm font-mono font-bold text-emerald-400">{(totalIn / 10000000).toFixed(1)} Cr</div>
+                      </div>
+                      <div className="p-2 rounded-md border border-red-500/20 bg-red-500/5 text-center">
+                        <div className="text-[10px] text-red-400">Total Money Out</div>
+                        <div className="text-sm font-mono font-bold text-red-400">{(totalOut / 10000000).toFixed(1)} Cr</div>
+                      </div>
+                      <div className={`p-2 rounded-md border text-center ${totalNet >= 0 ? 'border-emerald-500/30 bg-emerald-500/10' : 'border-red-500/30 bg-red-500/10'}`}>
+                        <div className={`text-[10px] ${totalNet >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>Net Money Flow</div>
+                        <div className={`text-sm font-mono font-bold ${totalNet >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                          {totalNet >= 0 ? '+' : ''}{(totalNet / 10000000).toFixed(1)} Cr
+                        </div>
+                      </div>
+                    </>
+                  );
+                })()}
+              </div>
+
+              {/* Per-stock breakdown */}
+              <div className="overflow-x-auto">
+                <table className="w-full text-[11px]">
+                  <thead>
+                    <tr className="border-b border-border/40 text-muted-foreground">
+                      <th className="py-1.5 pr-2 text-left font-medium">Stock</th>
+                      <th className="py-1.5 pr-2 text-right font-medium">NSE Net</th>
+                      <th className="py-1.5 pr-2 text-right font-medium">BSE Net</th>
+                      <th className="py-1.5 pr-2 text-right font-medium">Combined</th>
+                      <th className="py-1.5 pr-2 text-right font-medium">NSE-BSE</th>
+                      <th className="py-1.5 text-center font-medium">Dominant</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {dualExchangeStocks.map((s) => (
+                      <tr key={s.symbol} className="border-b border-border/15 hover:bg-muted/20">
+                        <td className="py-1 pr-2 font-medium">{s.symbol}</td>
+                        <td className={`py-1 pr-2 text-right font-mono ${s.nse.netMoneyFlow >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                          {(s.nse.netMoneyFlow / 10000000).toFixed(1)} Cr
+                        </td>
+                        <td className={`py-1 pr-2 text-right font-mono ${s.bse.netMoneyFlow >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                          {(s.bse.netMoneyFlow / 10000000).toFixed(1)} Cr
+                        </td>
+                        <td className={`py-1 pr-2 text-right font-mono font-bold ${s.combinedNetFlow >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                          {s.combinedNetFlowCr >= 0 ? '+' : ''}{s.combinedNetFlowCr.toFixed(1)} Cr
+                        </td>
+                        <td className={`py-1 pr-2 text-right font-mono ${Math.abs(s.nseBseDiff) > 2 ? 'text-amber-400' : 'text-muted-foreground'}`}>
+                          {s.nseBseDiff > 0 ? '+' : ''}{s.nseBseDiff.toFixed(1)}
+                        </td>
+                        <td className="py-1 text-center">
+                          <Badge variant="outline" className={`text-[9px] ${
+                            s.dominantExchange === 'NSE' ? 'border-blue-500/30 text-blue-300' :
+                            s.dominantExchange === 'BSE' ? 'border-purple-500/30 text-purple-300' :
+                            'border-gray-500/30 text-gray-400'
+                          }`}>
+                            {s.dominantExchange}
+                          </Badge>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          )}
+          <div className="mt-3 text-xs text-muted-foreground">
+            <strong>Net Money Flow</strong> tracks actual capital moving in/out of each stock across <strong>NSE + BSE</strong>.
+            Same stock (e.g., Reliance) has <strong>different buyers &amp; sellers</strong> on each exchange.
+            NSE-BSE price differences &gt; ₹2 may indicate arbitrage opportunity.
+          </div>
         </CardContent>
       </Card>
     </div>
