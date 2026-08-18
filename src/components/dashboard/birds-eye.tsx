@@ -7,8 +7,9 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import {
   Globe, Clock, TrendingUp, TrendingDown, Minus,
   AlertTriangle, Newspaper, ArrowUpRight, ArrowDownRight,
+  Timer, ShieldAlert, Activity,
 } from 'lucide-react';
-import type { GlobalIndex, GIFTNifty, NextMonthFutures, ExpiryInfo, NewsEvent } from '@/lib/types';
+import type { GlobalIndex, GIFTNifty, NextMonthFutures, ExpiryInfo, NewsEvent, NSESessionInfo } from '@/lib/types';
 import {
   generateDemoGlobalIndices,
   generateDemoGIFTNifty,
@@ -17,6 +18,7 @@ import {
   generateDemoNews,
   formatNum,
 } from '@/lib/demo-data';
+import { getNSESession, getNSESessionTimings } from '@/lib/nse-sessions';
 
 export default function BirdsEye() {
   const [globalIndices, setGlobalIndices] = useState<GlobalIndex[]>([]);
@@ -25,6 +27,8 @@ export default function BirdsEye() {
   const [expiryInfo, setExpiryInfo] = useState<ExpiryInfo[]>([]);
   const [news, setNews] = useState<NewsEvent[]>([]);
   const [istTime, setIstTime] = useState('');
+  const [nseSession, setNseSession] = useState<NSESessionInfo | null>(null);
+  const sessionTimings = getNSESessionTimings();
 
   useEffect(() => {
     function refresh() {
@@ -33,13 +37,14 @@ export default function BirdsEye() {
       setNextMonthFut(generateDemoNextMonthFutures());
       setExpiryInfo(generateDemoExpiryInfo());
       setNews(generateDemoNews());
+      setNseSession(getNSESession());
 
       const now = new Date();
       const ist = new Date(now.getTime() + 5.5 * 60 * 60 * 1000);
       setIstTime(ist.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit', timeZone: 'UTC' }));
     }
     refresh();
-    const interval = setInterval(refresh, 30000);
+    const interval = setInterval(refresh, 10000); // Update every 10s for session tracking
     return () => clearInterval(interval);
   }, []);
 
@@ -143,6 +148,115 @@ export default function BirdsEye() {
               </tbody>
             </table>
           </div>
+        </CardContent>
+      </Card>
+
+      {/* NSE Session & CAS Info */}
+      <Card className="border-border/50 bg-card/80 backdrop-blur-sm">
+        <CardHeader className="pb-3">
+          <CardTitle className="flex items-center gap-2 text-base">
+            <Timer className="h-4 w-4 text-orange-400" />
+            NSE Session Status
+            {nseSession && (
+              <Badge className={`ml-2 text-[10px] ${
+                nseSession.isCASActive ? 'bg-orange-500/20 text-orange-300 border-orange-500/30' :
+                nseSession.isMarketOpen ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30' :
+                'bg-red-500/20 text-red-300 border-red-500/30'
+              }`}>
+                {nseSession.isCASActive ? '⚠️ CAS ACTIVE' : nseSession.isMarketOpen ? '● OPEN' : '○ CLOSED'}
+              </Badge>
+            )}
+            {nseSession?.isRandomCloseWindow && (
+              <Badge className="ml-1 text-[10px] bg-red-500/30 text-red-200 border-red-500/40 animate-pulse">
+                <ShieldAlert className="mr-1 h-3 w-3" /> RANDOM CLOSE WINDOW
+              </Badge>
+            )}
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          {nseSession && (
+            <div className="space-y-3">
+              {/* Current Session */}
+              <div className="p-3 rounded-lg border border-border/40 bg-muted/30">
+                <div className="text-sm font-medium">{nseSession.sessionLabel}</div>
+                <div className="flex flex-wrap gap-3 mt-2">
+                  <div className="text-xs">
+                    <span className="text-muted-foreground">IST: </span>
+                    <span className="font-mono font-semibold">{nseSession.currentTimeIST}</span>
+                  </div>
+                  <div className="text-xs">
+                    <span className="text-muted-foreground">Cash: </span>
+                    <span className={nseSession.isMarketOpen ? 'text-emerald-400' : 'text-red-400'}>
+                      {nseSession.currentSession === 'closed' ? 'Closed' : 'Open'}
+                    </span>
+                  </div>
+                  <div className="text-xs">
+                    <span className="text-muted-foreground">Derivatives: </span>
+                    <span className={nseSession.isDerivativesOpen ? 'text-emerald-400' : 'text-red-400'}>
+                      {nseSession.isDerivativesOpen ? 'Open (till 3:40 PM)' : 'Closed'}
+                    </span>
+                  </div>
+                  <div className="text-xs">
+                    <span className="text-muted-foreground">CAS: </span>
+                    <span className={nseSession.isCASActive ? 'text-orange-400 font-semibold' : 'text-muted-foreground'}>
+                      {nseSession.isCASActive ? 'ACTIVE (3:15-3:35 PM)' : 'Not Active'}
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              {/* CAS Alert - Big money uses CAS! */}
+              {nseSession.isCASActive && (
+                <div className="p-2 rounded-md bg-orange-500/10 border border-orange-500/30 text-xs text-orange-200">
+                  <ShieldAlert className="inline h-3 w-3 mr-1" />
+                  <strong>Smart Money Alert:</strong> Closing Auction Session is active. FII/PropDesk often execute large orders during CAS. Monitor Big Money tab for CAS activity.
+                </div>
+              )}
+
+              {/* Session Timings Table */}
+              <div className="overflow-x-auto">
+                <table className="w-full text-[11px]">
+                  <thead>
+                    <tr className="border-b border-border/40 text-muted-foreground">
+                      <th className="py-1.5 pr-2 text-left font-medium">Session</th>
+                      <th className="py-1.5 pr-2 text-left font-medium">Time</th>
+                      <th className="py-1.5 text-left font-medium">Description</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {sessionTimings.map((s, i) => (
+                      <tr key={i} className={`border-b border-border/20 ${
+                        s.type === nseSession.currentSession ? 'bg-orange-500/10 font-semibold' : ''
+                      }`}>
+                        <td className="py-1 pr-2">
+                          {s.type === nseSession.currentSession && <Activity className="inline h-3 w-3 mr-1 text-orange-400" />}
+                          {s.session}
+                        </td>
+                        <td className="py-1 pr-2 font-mono">{s.time}</td>
+                        <td className="py-1 text-muted-foreground">{s.description}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              {/* Key CAS Rules */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[10px] text-muted-foreground">
+                <div className="p-2 rounded border border-border/30">
+                  <strong className="text-foreground">CAS Applicability:</strong> Phase 1 — Only stocks with derivative contracts (F&O stocks)
+                </div>
+                <div className="p-2 rounded border border-border/30">
+                  <strong className="text-foreground">Random Close:</strong> 3:28-3:30 PM — system can close order entry anytime
+                </div>
+                <div className="p-2 rounded border border-border/30">
+                  <strong className="text-foreground">Non-CAS Stocks:</strong> Trade continuously till 3:30 PM
+                </div>
+                <div className="p-2 rounded border border-border/30">
+                  <strong className="text-foreground">Derivatives:</strong> Equity derivatives now open till 3:40 PM (was 3:30 PM)
+                </div>
+              </div>
+            </div>
+          )}
         </CardContent>
       </Card>
 

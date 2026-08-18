@@ -5,6 +5,48 @@ export type InstrumentType = 'index' | 'stock';
 export type BuiltUpType = 'Call Writing' | 'Call Long Cvr.' | 'Put Writing' | 'Put Long Cvr.' | 'Put Short Cvr.' | 'None';
 export type PlayerType = 'FII' | 'DII' | 'PROPDESK' | 'CLIENT';
 export type ExpiryType = 'weekly' | 'monthly';
+export type NSESessionType =
+  | 'pre_open'        // 9:00 - 9:15 AM
+  | 'continuous'      // 9:15 - 3:15 PM (CAS stocks) / 9:15 - 3:30 PM (non-CAS)
+  | 'cas_transition'  // 3:15 - 3:20 PM (ref price calc)
+  | 'cas_order_entry' // 3:20 - 3:30 PM (order entry, random close 3:28-3:30)
+  | 'cas_matching'    // 3:30 - 3:35 PM (order matching)
+  | 'cas_transition_post' // 3:35 - 3:50 PM
+  | 'post_close'      // 3:50 - 4:00 PM
+  | 'derivatives'     // 9:15 - 3:40 PM (equity derivatives segment)
+  | 'closed';         // After 4:00 PM or before 9:00 AM
+
+export interface NSESessionInfo {
+  currentSession: NSESessionType;
+  currentTimeIST: string;
+  isMarketOpen: boolean;
+  isCASActive: boolean;        // Is Closing Auction Session active?
+  isDerivativesOpen: boolean;  // Derivatives trade till 3:40 PM
+  isRandomCloseWindow: boolean; // 3:28-3:30 PM random closure possible
+  nextSessionStart: string;     // When next session starts
+  sessionLabel: string;         // Human-readable label
+  casApplicable: boolean;       // CAS applies to derivative stocks
+}
+
+// NSE Session Timings (as per new rules)
+export const NSE_SESSIONS = {
+  PRE_OPEN_START: '09:00',
+  PRE_OPEN_END: '09:15',
+  CTS_START: '09:15',
+  CTS_END_CAS: '15:15',        // Continuous Trading ends for CAS stocks
+  CTS_END_NON_CAS: '15:30',   // Non-CAS stocks trade till 3:30 PM
+  CAS_TRANSITION_START: '15:15',
+  CAS_TRANSITION_END: '15:20',
+  CAS_ORDER_ENTRY_START: '15:20',
+  CAS_ORDER_ENTRY_END: '15:30', // Random close 3:28-3:30
+  CAS_RANDOM_CLOSE_START: '15:28',
+  CAS_MATCHING_START: '15:30',
+  CAS_MATCHING_END: '15:35',
+  CAS_POST_TRANSITION_END: '15:50',
+  POST_CLOSE_START: '15:50',
+  POST_CLOSE_END: '16:00',
+  DERIVATIVES_END: '15:40',    // Equity derivatives till 3:40 PM
+} as const;
 
 export interface OptionStrike {
   strike: number;
