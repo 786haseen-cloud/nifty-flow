@@ -18,7 +18,7 @@ import type { VIXData, NSESessionInfo } from '@/lib/types';
 import { getNSESession } from '@/lib/nse-sessions';
 
 export default function DashboardPage() {
-  const [activeTab, setActiveTab] = useState('birds-eye');
+  const [activeTab, setActiveTab] = useState('live'); // LIVE is the HERO — options + cash movement drives decisions
   const [istTime, setIstTime] = useState('');
   const [jeddahTime, setJeddahTime] = useState('');
   const [vix, setVix] = useState<VIXData | null>(null);
@@ -157,25 +157,27 @@ export default function DashboardPage() {
       <main className="flex-1 p-4">
         <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
           <TabsList className="mb-4 w-full flex h-10 bg-muted/50">
-            <TabsTrigger value="birds-eye" className="flex-1 text-xs gap-1.5 data-[state=active]:bg-orange-500/20 data-[state=active]:text-orange-300">
-              <Globe className="h-3.5 w-3.5" />
-              <span className="hidden sm:inline">Bird&apos;s Eye</span>
-              <span className="sm:hidden">🌍</span>
-            </TabsTrigger>
-            <TabsTrigger value="live" className="flex-1 text-xs gap-1.5 data-[state=active]:bg-emerald-500/20 data-[state=active]:text-emerald-300">
+            {/* LIVE is PRIMARY — Options + Cash movement drives index direction */}
+            <TabsTrigger value="live" className="flex-1 text-xs gap-1.5 data-[state=active]:bg-emerald-500/20 data-[state=active]:text-emerald-300 font-bold">
               <Activity className="h-3.5 w-3.5" />
-              <span className="hidden sm:inline">Live</span>
-              <span className="sm:hidden">📊</span>
+              <span className="hidden sm:inline">⚡ LIVE</span>
+              <span className="sm:hidden">⚡</span>
             </TabsTrigger>
             <TabsTrigger value="signals" className="flex-1 text-xs gap-1.5 data-[state=active]:bg-amber-500/20 data-[state=active]:text-amber-300">
               <Target className="h-3.5 w-3.5" />
               <span className="hidden sm:inline">Signals</span>
               <span className="sm:hidden">🎯</span>
             </TabsTrigger>
+            {/* Big Money / 3-Day = PREDICTION compass — just alignment check */}
             <TabsTrigger value="big-money" className="flex-1 text-xs gap-1.5 data-[state=active]:bg-red-500/20 data-[state=active]:text-red-300">
               <Landmark className="h-3.5 w-3.5" />
-              <span className="hidden sm:inline">Big Money</span>
-              <span className="sm:hidden">💰</span>
+              <span className="hidden sm:inline">3-Day Pred</span>
+              <span className="sm:hidden">🔮</span>
+            </TabsTrigger>
+            <TabsTrigger value="birds-eye" className="flex-1 text-xs gap-1.5 data-[state=active]:bg-orange-500/20 data-[state=active]:text-orange-300">
+              <Globe className="h-3.5 w-3.5" />
+              <span className="hidden sm:inline">Context</span>
+              <span className="sm:hidden">🌍</span>
             </TabsTrigger>
             <TabsTrigger value="greeks" className="flex-1 text-xs gap-1.5 data-[state=active]:bg-cyan-500/20 data-[state=active]:text-cyan-300">
               <Thermometer className="h-3.5 w-3.5" />
@@ -189,10 +191,7 @@ export default function DashboardPage() {
             </TabsTrigger>
           </TabsList>
 
-          <TabsContent value="birds-eye" className="mt-0">
-            <BirdsEye />
-          </TabsContent>
-
+          {/* LIVE FIRST — Options + Cash = index movement */}
           <TabsContent value="live" className="mt-0">
             <LiveMonitor />
           </TabsContent>
@@ -201,8 +200,13 @@ export default function DashboardPage() {
             <SignalEngineTab />
           </TabsContent>
 
+          {/* 3-Day Prediction — just alignment, not the main driver */}
           <TabsContent value="big-money" className="mt-0">
             <BigMoneyTab />
+          </TabsContent>
+
+          <TabsContent value="birds-eye" className="mt-0">
+            <BirdsEye />
           </TabsContent>
 
           <TabsContent value="greeks" className="mt-0">
@@ -218,7 +222,12 @@ export default function DashboardPage() {
       {/* Footer */}
       <footer className="border-t border-border/30 bg-card/50 mt-auto">
         <div className="px-4 py-2 flex items-center justify-between text-[10px] text-muted-foreground">
-          <span>Options Trading Dashboard V3 — FII 25% | PropDesk 20% | Client Contrarian 15% | OI Trend 15% | Cash+Fut 10% | Global 10% | Stocks 5% | <span className="text-amber-400">Theta+VIX = Info Only</span> | <span className="text-blue-400">Net Money Flow (NSE+BSE)</span> | <span className="text-orange-400">CAS: Cash PAUSED, F&O Continues</span></span>
+          <span>
+            <span className="text-emerald-400 font-semibold">LIVE = PRIMARY</span> — Options OI + Cash Flow + Money Flow drives index direction |
+            <span className="text-amber-400 ml-1">3-Day = Prediction compass</span> (alignment check only) |
+            <span className="text-blue-400 ml-1">Net Money Flow (NSE+BSE)</span> |
+            <span className="text-orange-400 ml-1">CAS: Cash PAUSED, F&O Continues</span>
+          </span>
           <span className="font-mono">Auto-refresh: 15s | Demo Mode</span>
         </div>
       </footer>

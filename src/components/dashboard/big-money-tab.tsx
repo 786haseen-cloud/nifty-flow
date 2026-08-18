@@ -168,13 +168,15 @@ export default function BigMoneyTab() {
         </CardContent>
       </Card>
 
-      {/* Section A: 3-Day Comparison Table */}
+      {/* Section A: 3-Day Prediction Compass — NOT the main driver */}
       <Card className="border-border/50 bg-card/80 backdrop-blur-sm">
         <CardHeader className="pb-3">
           <CardTitle className="flex items-center gap-2 text-base">
-            <Landmark className="h-4 w-4 text-red-400" />
-            3-Day Institutional Flow Comparison
-            <Badge variant="outline" className="ml-auto text-[10px] text-amber-300 border-amber-500/30">MOST IMPORTANT</Badge>
+            <Landmark className="h-4 w-4 text-amber-400" />
+            3-Day Prediction Compass
+            <Badge variant="outline" className="ml-auto text-[10px] text-amber-300 border-amber-500/30">
+              ALIGNMENT CHECK ONLY
+            </Badge>
           </CardTitle>
         </CardHeader>
         <CardContent>
@@ -222,6 +224,12 @@ export default function BigMoneyTab() {
               </tbody>
             </table>
           </ScrollArea>
+          <div className="mt-2 p-2 rounded-md bg-amber-500/5 border border-amber-500/20 text-[10px] text-amber-300/80">
+            <strong>⚠️ This is PREDICTION only, not action.</strong> 3-day data tells you where market <em>should</em> go.
+            LIVE options OI + cash flow tell you where it <em>actually</em> goes.
+            Use this as alignment: if LIVE direction matches 3-day prediction → trade with confidence.
+            If CONFLICT → wait or trade smaller. Live data is always the primary driver.
+          </div>
         </CardContent>
       </Card>
 

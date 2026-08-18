@@ -43,3 +43,24 @@ Stage Summary:
 - Pine Script Nifty12→15: Fully converted — 15 stocks with actual Nifty50/Sensex weights, weighted CF = CF × Weight%
 - Both NSE+BSE tracked: Same stock has different buyers/sellers on each exchange
 - Python engine tested successfully with dual exchange output
+
+---
+Task ID: 3
+Agent: Main
+Task: Restructure dashboard to make LIVE primary, 3-day as prediction compass
+
+Work Log:
+- Changed default tab from 'birds-eye' to 'live' — LIVE is the HERO
+- Reordered tabs: ⚡ LIVE → Signals → 3-Day Pred → Context → Greeks → Settings
+- Created live-alignment.tsx: Shows LIVE direction vs 3-Day prediction with ALIGNED/CONFLICT status
+- Added LiveAlignmentIndicator as top hero section in Live Monitor
+- Updated Big Money tab: Renamed "3-Day Institutional Flow" → "3-Day Prediction Compass" with "ALIGNMENT CHECK ONLY" badge
+- Added warning in 3-day section: "This is PREDICTION only, not action. LIVE tells you where market actually goes."
+- Updated footer: "LIVE = PRIMARY — Options OI + Cash Flow + Money Flow drives index direction | 3-Day = Prediction compass"
+- Build verified: zero errors
+
+Stage Summary:
+- Dashboard priority: LIVE > Signals > 3-Day Prediction > Context
+- 3-day data = just a compass: "where should market go?" → alignment check
+- LIVE options OI + cash flow = where market ACTUALLY goes → primary decision driver
+- Live Alignment shows: ALIGNED = trade with confidence, CONFLICT = wait/reduce size

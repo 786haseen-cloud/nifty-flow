@@ -21,6 +21,7 @@ import {
 import type { StockQuickView } from '@/lib/demo-data';
 import type { DualExchangeStock, NetMoneyFlow } from '@/lib/types';
 import MoneyFlowBars from './money-flow-bars';
+import LiveAlignmentIndicator from './live-alignment';
 
 export default function LiveMonitor() {
   const [vix, setVix] = useState<VIXData | null>(null);
@@ -78,6 +79,9 @@ export default function LiveMonitor() {
 
   return (
     <div className="space-y-4">
+      {/* ═══ LIVE = PRIMARY ═══ Options + Cash = Index Direction ═══ */}
+      <LiveAlignmentIndicator />
+
       {/* VIX + Panic Meter + Theta Melting */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         {/* VIX Card */}
