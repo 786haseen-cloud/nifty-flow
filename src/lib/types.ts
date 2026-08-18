@@ -515,6 +515,72 @@ export interface OptionsFlowBar {
   stockNetFlow: number;
 }
 
+// =====================================================
+// FUTURES MONEY FLOW
+// Futures = leveraged directional bets by institutions
+// Index futures: Nifty, Sensex, BankNifty, FinNifty
+// Stock futures: 15 F&O stocks (NSE only — BSE F&O volume negligible)
+// =====================================================
+
+export interface FuturesFlowBar {
+  timestamp: string;
+  // Index futures
+  indexFutBuy: number;     // Total buy value of index futures (₹)
+  indexFutSell: number;    // Total sell value of index futures
+  indexFutNet: number;     // Net = buy - sell
+  indexFutOI: number;      // Open interest change
+  indexFutBasis: number;   // Average basis (future price - spot)
+  // Stock futures (NSE only)
+  stockFutBuy: number;
+  stockFutSell: number;
+  stockFutNet: number;
+  stockFutOI: number;
+  stockFutBasis: number;
+  // Per-index breakdown
+  indexBreakdown: {
+    symbol: string;
+    futBuy: number;
+    futSell: number;
+    futNet: number;
+    basis: number;
+    oiChg: number;
+  }[];
+}
+
+// =====================================================
+// COMPOSITE TRADE SIGNAL
+// Combines ALL layers: price trend + cash flow + options flow + futures flow
+// This is the final signal the trader acts on
+// =====================================================
+
+export type TradeAction = 'BUY_CALL' | 'BUY_PUT' | 'WAIT' | 'EXIT';
+
+export interface CompositeSignal {
+  timestamp: string;
+  action: TradeAction;
+  confidence: number;        // 0-100
+  score: number;             // -100 to +100 (negative = bearish, positive = bullish)
+  // Component scores
+  priceTrendScore: number;   // -100 to +100
+  cashFlowScore: number;     // -100 to +100
+  idxOptScore: number;       // -100 to +100
+  stkOptScore: number;       // -100 to +100
+  idxFutScore: number;       // -100 to +100
+  stkFutScore: number;       // -100 to +100
+  // Suggested trade details
+  suggestedStrike: number;
+  suggestedPremium: number;
+  stopLoss: number;
+  target1: number;
+  target2: number;
+  riskReward: number;
+  // Reasoning
+  reasoning: string;
+  // Divergence alerts
+  cashOptDivergence: boolean;
+  futCashDivergence: boolean;
+}
+
 export const SIGNAL_WEIGHTS = {
   fiiFlow: 0.25,
   propdeskFlow: 0.20,

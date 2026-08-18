@@ -64,3 +64,22 @@ Stage Summary:
 - 3-day data = just a compass: "where should market go?" → alignment check
 - LIVE options OI + cash flow = where market ACTUALLY goes → primary decision driver
 - Live Alignment shows: ALIGNED = trade with confidence, CONFLICT = wait/reduce size
+
+---
+Task ID: 2
+Agent: main
+Task: Enhanced Options Flow tab with Nifty50 price/score line, futures flow, composite signal
+
+Work Log:
+- Added FuturesFlowBar, CompositeSignal, TradeAction types to types.ts
+- Added generateDemoFuturesFlowBar, generateDemoFuturesFlowBars, computeCompositeSignal to demo-data.ts
+- Completely rewrote options-flow-tab.tsx with 6-layer single-screen layout
+- Added FlowChartRow, FourColorBar, ScoreBar sub-components for reusability
+- Build verification: npx next build passes with zero errors
+
+Stage Summary:
+- 6 stacked charts: Price+Score → Cash → Idx Options → Stk Options → Idx Futures → Stk Futures
+- Composite signal with BUY CALL / BUY PUT / WAIT actions and confidence scoring
+- Signal markers (green/red triangles) on price chart
+- Futures breakdown with basis + OI change
+- Practical trading tips framework

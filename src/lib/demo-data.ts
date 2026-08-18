@@ -26,6 +26,9 @@ import {
   type StrikeOptionsFlow,
   type InstrumentOptionsFlow,
   type OptionsFlowBar,
+  type FuturesFlowBar,
+  type CompositeSignal,
+  type TradeAction,
   GLOBAL_INDICES,
   INDICES,
   TOP_STOCKS,
@@ -1348,4 +1351,166 @@ export function generateDemoOptionsFlowBars(numBars: number = 60): OptionsFlowBa
     bars.push(generateDemoOptionsFlowBar());
   }
   return bars;
+}
+
+// =====================================================
+// FUTURES MONEY FLOW DEMO DATA
+// Futures = leveraged directional bets by institutions
+// Index futures + Stock futures (NSE only)
+// =====================================================
+
+export function generateDemoFuturesFlowBar(): FuturesFlowBar {
+  const now = new Date();
+  const istH = ((now.getUTCHours() + 5) % 24 + 24) % 24;
+  const istM = now.getUTCMinutes();
+  const istS = now.getUTCSeconds();
+  const timestamp = `${String(istH).padStart(2, '0')}:${String(istM).padStart(2, '0')}:${String(istS).padStart(2, '0')} IST`;
+
+  // Index futures — big institutional bets
+  const niftyFutNet = roundN(rand(-800, 800) * 100000, 0);
+  const sensexFutNet = roundN(rand(-500, 500) * 100000, 0);
+  const bankNiftyFutNet = roundN(rand(-400, 400) * 100000, 0);
+  const finNiftyFutNet = roundN(rand(-200, 200) * 100000, 0);
+
+  const indexBreakdown = [
+    { symbol: 'NIFTY', futBuy: Math.max(0, niftyFutNet + rand(1000000, 5000000)), futSell: Math.max(0, -niftyFutNet + rand(1000000, 5000000)), futNet: niftyFutNet, basis: round2(rand(-5, 25)), oiChg: roundN(rand(-50000, 50000), 0) },
+    { symbol: 'SENSEX', futBuy: Math.max(0, sensexFutNet + rand(500000, 3000000)), futSell: Math.max(0, -sensexFutNet + rand(500000, 3000000)), futNet: sensexFutNet, basis: round2(rand(-5, 20)), oiChg: roundN(rand(-30000, 30000), 0) },
+    { symbol: 'BANKNIFTY', futBuy: Math.max(0, bankNiftyFutNet + rand(500000, 3000000)), futSell: Math.max(0, -bankNiftyFutNet + rand(500000, 3000000)), futNet: bankNiftyFutNet, basis: round2(rand(-3, 15)), oiChg: roundN(rand(-40000, 40000), 0) },
+    { symbol: 'FINNIFTY', futBuy: Math.max(0, finNiftyFutNet + rand(200000, 1500000)), futSell: Math.max(0, -finNiftyFutNet + rand(200000, 1500000)), futNet: finNiftyFutNet, basis: round2(rand(-2, 10)), oiChg: roundN(rand(-15000, 15000), 0) },
+  ];
+
+  const indexFutBuy = indexBreakdown.reduce((s, x) => s + x.futBuy, 0);
+  const indexFutSell = indexBreakdown.reduce((s, x) => s + x.futSell, 0);
+  const indexFutNet = indexBreakdown.reduce((s, x) => s + x.futNet, 0);
+
+  // Stock futures — 15 NSE F&O stocks
+  const stockFutNet = roundN(rand(-1200, 1200) * 100000, 0);
+  const stockFutBuy = Math.max(0, stockFutNet + rand(2000000, 10000000));
+  const stockFutSell = Math.max(0, -stockFutNet + rand(2000000, 10000000));
+
+  return {
+    timestamp,
+    indexFutBuy,
+    indexFutSell,
+    indexFutNet,
+    indexFutOI: indexBreakdown.reduce((s, x) => s + x.oiChg, 0),
+    indexFutBasis: round2(indexBreakdown.reduce((s, x) => s + x.basis, 0) / 4),
+    stockFutBuy,
+    stockFutSell,
+    stockFutNet: stockFutBuy - stockFutSell,
+    stockFutOI: roundN(rand(-100000, 100000), 0),
+    stockFutBasis: round2(rand(-2, 8)),
+    indexBreakdown,
+  };
+}
+
+export function generateDemoFuturesFlowBars(numBars: number = 60): FuturesFlowBar[] {
+  return Array.from({ length: numBars }, () => generateDemoFuturesFlowBar());
+}
+
+// =====================================================
+// COMPOSITE SIGNAL GENERATOR
+// Combines ALL layers into one actionable signal
+// Score range: -100 (strong bearish) to +100 (strong bullish)
+// =====================================================
+
+export function computeCompositeSignal(
+  cashNet: number,
+  idxOptNet: number,
+  stkOptNet: number,
+  idxFutNet: number,
+  stkFutNet: number,
+  priceTrend: number, // positive = price going up, negative = going down
+): CompositeSignal {
+  const now = new Date();
+  const istH = ((now.getUTCHours() + 5) % 24 + 24) % 24;
+  const istM = now.getUTCMinutes();
+  const istS = now.getUTCSeconds();
+  const timestamp = `${String(istH).padStart(2, '0')}:${String(istM).padStart(2, '0')}:${String(istS).padStart(2, '0')} IST`;
+
+  // Normalize each component to -100 to +100
+  const normalize = (val: number, scale: number) => Math.max(-100, Math.min(100, (val / scale) * 100));
+
+  const priceTrendScore = normalize(priceTrend, 50);   // 50 points = 100 score
+  const cashFlowScore = normalize(cashNet, 50000000);   // 50Cr = 100 score
+  const idxOptScore = normalize(idxOptNet, 2000000);    // 20L = 100 score
+  const stkOptScore = normalize(stkOptNet, 3000000);    // 30L = 100 score
+  const idxFutScore = normalize(idxFutNet, 50000000);   // 50Cr = 100 score
+  const stkFutScore = normalize(stkFutNet, 80000000);   // 80Cr = 100 score
+
+  // Weighted composite score
+  // Price trend is the most important — it's what we're trying to predict
+  // Options flow is the second most important — it shows where money is positioning
+  // Cash flow is third — it confirms or diverges from options
+  // Futures is fourth — it's leveraged so can be more noise
+  const W = { price: 0.30, cash: 0.20, idxOpt: 0.20, stkOpt: 0.10, idxFut: 0.10, stkFut: 0.10 };
+
+  const score = round2(
+    W.price * priceTrendScore +
+    W.cash * cashFlowScore +
+    W.idxOpt * idxOptScore +
+    W.stkOpt * stkOptScore +
+    W.idxFut * idxFutScore +
+    W.stkFut * stkFutScore
+  );
+
+  // Confidence: how many components agree?
+  const components = [priceTrendScore, cashFlowScore, idxOptScore, stkOptScore, idxFutScore, stkFutScore];
+  const allPositive = components.filter(c => c > 10).length;
+  const allNegative = components.filter(c => c < -10).length;
+  const agreement = Math.max(allPositive, allNegative) / components.length;
+  const confidence = round2(Math.min(100, agreement * 150)); // Scale up
+
+  // Divergence detection
+  const cashOptDivergence = (cashFlowScore > 20 && idxOptScore < -20) || (cashFlowScore < -20 && idxOptScore > 20);
+  const futCashDivergence = (idxFutScore > 20 && cashFlowScore < -20) || (idxFutScore < -20 && cashFlowScore > 20);
+
+  // Action determination
+  let action: TradeAction = 'WAIT';
+  if (score > 35 && confidence > 40 && !cashOptDivergence) action = 'BUY_CALL';
+  else if (score < -35 && confidence > 40 && !cashOptDivergence) action = 'BUY_PUT';
+  else if (score > 50 && confidence > 60) action = 'BUY_CALL'; // Override divergence if very strong
+  else if (score < -50 && confidence > 60) action = 'BUY_PUT';
+
+  // Suggested trade details (ATM Nifty)
+  const atmStrike = 24350;
+  const suggestedStrike = score > 0
+    ? atmStrike + Math.round(score / 100) * 50  // Slightly OTM call
+    : atmStrike - Math.round(Math.abs(score) / 100) * 50;  // Slightly OTM put
+
+  const suggestedPremium = round2(score > 0 ? 150 + Math.abs(score) * 0.5 : 120 + Math.abs(score) * 0.4);
+  const stopLoss = round2(suggestedPremium * 0.5);
+  const target1 = round2(suggestedPremium * 1.5);
+  const target2 = round2(suggestedPremium * 2.5);
+  const riskReward = round2((target1 - suggestedPremium) / (suggestedPremium - stopLoss) || 0);
+
+  // Reasoning
+  const reasoningParts: string[] = [];
+  if (Math.abs(priceTrendScore) > 30) reasoningParts.push(`Price trend ${priceTrendScore > 0 ? '↑' : '↓'} ${Math.abs(priceTrendScore).toFixed(0)}`);
+  if (Math.abs(cashFlowScore) > 20) reasoningParts.push(`Cash ${cashFlowScore > 0 ? 'inflow' : 'outflow'} ${Math.abs(cashFlowScore).toFixed(0)}`);
+  if (Math.abs(idxOptScore) > 20) reasoningParts.push(`Idx opt ${idxOptScore > 0 ? 'bullish' : 'bearish'} ${Math.abs(idxOptScore).toFixed(0)}`);
+  if (cashOptDivergence) reasoningParts.push('⚠️ Cash-Opt divergence');
+  if (futCashDivergence) reasoningParts.push('⚠️ Fut-Cash divergence');
+
+  return {
+    timestamp,
+    action,
+    confidence,
+    score,
+    priceTrendScore: round2(priceTrendScore),
+    cashFlowScore: round2(cashFlowScore),
+    idxOptScore: round2(idxOptScore),
+    stkOptScore: round2(stkOptScore),
+    idxFutScore: round2(idxFutScore),
+    stkFutScore: round2(stkFutScore),
+    suggestedStrike,
+    suggestedPremium,
+    stopLoss,
+    target1,
+    target2,
+    riskReward,
+    reasoning: reasoningParts.join(' | '),
+    cashOptDivergence,
+    futCashDivergence,
+  };
 }

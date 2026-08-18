@@ -1,585 +1,731 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useMemo } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-
 import {
-  BarChart3, Activity, Layers, Zap,
+  BarChart3, Activity, Layers, Zap, Crosshair,
+  TrendingUp, TrendingDown, ShieldAlert, AlertTriangle,
 } from 'lucide-react';
-import type { WeightedCashFlowBar, CashFlowTrend, OptionsFlowBar } from '@/lib/types';
+import type { WeightedCashFlowBar, CashFlowTrend, OptionsFlowBar, FuturesFlowBar, CompositeSignal } from '@/lib/types';
 import {
   generateDemoWeightedBars, computeCashFlowTrend,
   generateDemoOptionsFlowBar, generateDemoOptionsFlowBars,
+  generateDemoFuturesFlowBar, generateDemoFuturesFlowBars,
+  computeCompositeSignal,
 } from '@/lib/demo-data';
 
-// Chart dimensions
-const VISIBLE_BARS = 120;
-const BAR_WIDTH = 3;
-const CHART_HEIGHT = 100; // Each chart row height
+// Chart dimensions — compact for single-screen
+const VISIBLE_BARS = 160;
+const BAR_WIDTH = 2;
+const CHART_H = 72;      // Each chart row height (compact)
+const PRICE_H = 56;      // Price trend chart height
+const SIGNAL_H = 28;     // Signal strip height
 
-// Color palette for options flow
-// Call Buy = dark green, Put Write = light green, Put Buy = dark red, Call Write = light red
-const COLORS = {
-  callBuy: '#16a34a',      // dark green (green-600)
-  putWrite: '#4ade80',     // light green (green-400)
-  putBuy: '#dc2626',       // dark red (red-600)
-  callWrite: '#f87171',    // light red (red-400)
-  bullish: '#22c55e',      // combined bullish
-  bearish: '#ef4444',      // combined bearish
-  netFlow: '#3b82f6',      // blue for net
-  cashIn: '#34d399',       // emerald-400
-  cashOut: '#f87171',      // red-400
+// Color palette
+const C = {
+  callBuy: '#16a34a',      // dark green
+  putWrite: '#4ade80',     // light green
+  putBuy: '#dc2626',       // dark red
+  callWrite: '#f87171',    // light red
+  bullish: '#22c55e',
+  bearish: '#ef4444',
+  netBlue: '#3b82f6',
+  futBuy: '#818cf8',       // indigo-400
+  futSell: '#f472b6',      // pink-400
+  score: '#fbbf24',        // amber-400
+  priceUp: '#34d399',
+  priceDn: '#f87171',
 } as const;
 
 export default function OptionsFlowTab() {
   // Cash flow data
   const [cashBars, setCashBars] = useState<WeightedCashFlowBar[]>([]);
   const [cashTrend, setCashTrend] = useState<CashFlowTrend | null>(null);
-  const [niftyPrice, setNiftyPrice] = useState(24350);
 
   // Options flow data
   const [optionsBars, setOptionsBars] = useState<OptionsFlowBar[]>([]);
 
-  // Selected instrument for drill-down
-  const [selectedInstrument, setSelectedInstrument] = useState<string | null>(null);
+  // Futures flow data
+  const [futBars, setFutBars] = useState<FuturesFlowBar[]>([]);
+
+  // Nifty price simulation (random walk)
+  const [niftyPrices, setNiftyPrices] = useState<number[]>([]);
+  const [niftyPrice, setNiftyPrice] = useState(24350);
+
+  // Score history for the score line
+  const [scoreHistory, setScoreHistory] = useState<number[]>([]);
+
+  // Composite signal
+  const [signal, setSignal] = useState<CompositeSignal | null>(null);
 
   // Initialize + refresh every 15 seconds
   useEffect(() => {
-    // Initial data
     const initCashBars = generateDemoWeightedBars(60);
     setCashBars(initCashBars);
     setCashTrend(computeCashFlowTrend(initCashBars));
-    setNiftyPrice(24350 + Math.random() * 100 - 50);
     setOptionsBars(generateDemoOptionsFlowBars(60));
+    setFutBars(generateDemoFuturesFlowBars(60));
 
-    // Live updates every 15 seconds
+    // Initialize price walk
+    const initPrices: number[] = [];
+    let p = 24350;
+    for (let i = 0; i < 60; i++) {
+      p += (Math.random() - 0.48) * 3;
+      initPrices.push(p);
+    }
+    setNiftyPrices(initPrices);
+    setNiftyPrice(initPrices[initPrices.length - 1]);
+
+    // Initial score
+    setScoreHistory(Array.from({ length: 60 }, () => (Math.random() - 0.45) * 60));
+
     const interval = setInterval(() => {
+      // Cash
       setCashBars(prev => {
         const newBar = generateDemoWeightedBars(1)[0];
         const updated = [...prev, newBar];
         return updated.length > 500 ? updated.slice(-500) : updated;
       });
-      setNiftyPrice(prev => prev + (Math.random() - 0.48) * 3);
 
+      // Options
       setOptionsBars(prev => {
         const newBar = generateDemoOptionsFlowBar();
         const updated = [...prev, newBar];
         return updated.length > 500 ? updated.slice(-500) : updated;
+      });
+
+      // Futures
+      setFutBars(prev => {
+        const newBar = generateDemoFuturesFlowBar();
+        const updated = [...prev, newBar];
+        return updated.length > 500 ? updated.slice(-500) : updated;
+      });
+
+      // Price walk
+      setNiftyPrice(prev => {
+        const next = prev + (Math.random() - 0.48) * 3;
+        setNiftyPrices(pp => {
+          const updated = [...pp, next];
+          return updated.length > 500 ? updated.slice(-500) : updated;
+        });
+        return next;
       });
     }, 15000);
 
     return () => clearInterval(interval);
   }, []);
 
-  // Recalculate cash trend when bars change
+  // Recalculate cash trend and composite signal when data changes
   useEffect(() => {
     if (cashBars.length > 14) {
       setCashTrend(computeCashFlowTrend(cashBars));
     }
   }, [cashBars]);
 
+  // Compute composite signal from latest data
+  useEffect(() => {
+    const latestCash = cashBars[cashBars.length - 1];
+    const latestOpt = optionsBars[optionsBars.length - 1];
+    const latestFut = futBars[futBars.length - 1];
+
+    if (latestCash && latestOpt && latestFut) {
+      const priceTrend = niftyPrice - 24350; // Simple: distance from open
+      const sig = computeCompositeSignal(
+        latestCash.netFlow,
+        latestOpt.indexNetFlow,
+        latestOpt.stockNetFlow,
+        latestFut.indexFutNet,
+        latestFut.stockFutNet,
+        priceTrend,
+      );
+      setSignal(sig);
+      setScoreHistory(prev => {
+        const updated = [...prev, sig.score];
+        return updated.length > 500 ? updated.slice(-500) : updated;
+      });
+    }
+  }, [cashBars, optionsBars, futBars, niftyPrice]);
+
   // Visible slices
-  const visibleCashBars = cashBars.slice(-VISIBLE_BARS);
-  const visibleOptBars = optionsBars.slice(-VISIBLE_BARS);
-  const latestOptBar = visibleOptBars[visibleOptBars.length - 1];
+  const visCash = cashBars.slice(-VISIBLE_BARS);
+  const visOpt = optionsBars.slice(-VISIBLE_BARS);
+  const visFut = futBars.slice(-VISIBLE_BARS);
+  const visPrices = niftyPrices.slice(-VISIBLE_BARS);
+  const visScores = scoreHistory.slice(-VISIBLE_BARS);
+  const latestOpt = visOpt[visOpt.length - 1];
+  const latestFut = visFut[visFut.length - 1];
 
-  // ── CASH FLOW CHART DATA ──
-  const cashMaxAbs = Math.max(1, ...visibleCashBars.map(b =>
-    Math.max(Math.abs(b.totalMoneyIn), Math.abs(b.totalMoneyOut), Math.abs(b.netFlow))
-  ));
+  // Scale calculations
+  const cashMaxAbs = Math.max(1, ...visCash.map(b => Math.max(Math.abs(b.totalMoneyIn), Math.abs(b.totalMoneyOut))));
+  const idxOptMax = Math.max(1, ...visOpt.map(b => Math.max(b.indexBullishFlow, b.indexBearishFlow)));
+  const stkOptMax = Math.max(1, ...visOpt.map(b => Math.max(b.stockBullishFlow, b.stockBearishFlow)));
+  const idxFutMax = Math.max(1, ...visFut.map(b => Math.max(Math.abs(b.indexFutBuy), Math.abs(b.indexFutSell))));
+  const stkFutMax = Math.max(1, ...visFut.map(b => Math.max(Math.abs(b.stockFutBuy), Math.abs(b.stockFutSell))));
 
-  // ── INDEX OPTIONS FLOW CHART DATA ──
-  const idxOptMaxAbs = Math.max(1, ...visibleOptBars.map(b =>
-    Math.max(b.indexBullishFlow, b.indexBearishFlow, Math.abs(b.indexNetFlow))
-  ));
+  const priceMin = Math.min(...visPrices);
+  const priceMax = Math.max(...visPrices);
+  const priceRange = Math.max(1, priceMax - priceMin);
 
-  // ── STOCK OPTIONS FLOW CHART DATA ──
-  const stkOptMaxAbs = Math.max(1, ...visibleOptBars.map(b =>
-    Math.max(b.stockBullishFlow, b.stockBearishFlow, Math.abs(b.stockNetFlow))
-  ));
+  // Summary totals
+  const totalCashNet = visCash.reduce((s, b) => s + b.netFlow, 0);
+  const totalIdxOptNet = visOpt.reduce((s, b) => s + b.indexNetFlow, 0);
+  const totalStkOptNet = visOpt.reduce((s, b) => s + b.stockNetFlow, 0);
+  const totalIdxFutNet = visFut.reduce((s, b) => s + b.indexFutNet, 0);
+  const totalStkFutNet = visFut.reduce((s, b) => s + b.stockFutNet, 0);
 
-  // Aggregate totals for summary
-  const totalCashIn = visibleCashBars.reduce((s, b) => s + b.totalMoneyIn, 0);
-  const totalCashOut = visibleCashBars.reduce((s, b) => s + b.totalMoneyOut, 0);
-  const totalCashNet = visibleCashBars.reduce((s, b) => s + b.netFlow, 0);
-
-  const totalIdxCallBuy = visibleOptBars.reduce((s, b) => s + b.indexTotalCallBuy, 0);
-  const totalIdxPutWrite = visibleOptBars.reduce((s, b) => s + b.indexTotalPutWrite, 0);
-  const totalIdxPutBuy = visibleOptBars.reduce((s, b) => s + b.indexTotalPutBuy, 0);
-  const totalIdxCallWrite = visibleOptBars.reduce((s, b) => s + b.indexTotalCallWrite, 0);
-  const totalIdxBullish = totalIdxCallBuy + totalIdxPutWrite;
-  const totalIdxBearish = totalIdxPutBuy + totalIdxCallWrite;
-
-  const totalStkCallBuy = visibleOptBars.reduce((s, b) => s + b.stockTotalCallBuy, 0);
-  const totalStkPutWrite = visibleOptBars.reduce((s, b) => s + b.stockTotalPutWrite, 0);
-  const totalStkPutBuy = visibleOptBars.reduce((s, b) => s + b.stockTotalPutBuy, 0);
-  const totalStkCallWrite = visibleOptBars.reduce((s, b) => s + b.stockTotalCallWrite, 0);
-  const totalStkBullish = totalStkCallBuy + totalStkPutWrite;
-  const totalStkBearish = totalStkPutBuy + totalStkCallWrite;
-
-  // Correlation: Cash vs Options alignment
-  const cashBullish = totalCashNet > 0;
-  const idxOptBullish = totalIdxBullish > totalIdxBearish;
-  const stkOptBullish = totalStkBullish > totalStkBearish;
-  const allAligned = cashBullish === idxOptBullish && idxOptBullish === stkOptBullish;
-  const cashOptDivergence = cashBullish !== idxOptBullish;
-
-  // Drill-down instrument data
-  const drillDownInstrument = latestOptBar
-    ? [...latestOptBar.indexFlows, ...latestOptBar.stockFlows].find(f => f.symbol === selectedInstrument)
-    : null;
+  // Score line SVG path
+  const scoreMin = Math.min(-50, ...visScores);
+  const scoreMax = Math.max(50, ...visScores);
+  const scoreRange = Math.max(1, scoreMax - scoreMin);
 
   return (
-    <div className="space-y-4">
-      {/* ═══ ALIGNMENT SIGNAL ═══ */}
-      <Card className={`border-2 ${allAligned ? (cashBullish ? 'border-emerald-500/60 bg-emerald-500/5' : 'border-red-500/60 bg-red-500/5') : 'border-amber-500/60 bg-amber-500/5'} backdrop-blur-sm`}>
-        <CardContent className="p-3">
-          <div className="flex items-center justify-between flex-wrap gap-2">
-            <div className="flex items-center gap-2">
-              <Zap className={`h-5 w-5 ${allAligned ? (cashBullish ? 'text-emerald-400' : 'text-red-400') : 'text-amber-400'}`} />
-              <span className="font-bold text-sm">
-                {allAligned
-                  ? (cashBullish ? 'ALL FLOWS ALIGNED — STRONG BULLISH SIGNAL' : 'ALL FLOWS ALIGNED — STRONG BEARISH SIGNAL')
-                  : cashOptDivergence
-                    ? 'CASH vs OPTIONS DIVERGENCE — POTENTIAL TRAP / SHORT COVERING'
-                    : 'MIXED SIGNALS — WAIT FOR CONFIRMATION'}
-              </span>
-            </div>
-            <div className="flex items-center gap-2 text-xs">
-              <Badge variant="outline" className={`text-[9px] ${cashBullish ? 'border-emerald-500/40 text-emerald-300' : 'border-red-500/40 text-red-300'}`}>
-                Cash: {cashBullish ? 'BULLISH' : 'BEARISH'}
-              </Badge>
-              <Badge variant="outline" className={`text-[9px] ${idxOptBullish ? 'border-emerald-500/40 text-emerald-300' : 'border-red-500/40 text-red-300'}`}>
-                Idx Opt: {idxOptBullish ? 'BULLISH' : 'BEARISH'}
-              </Badge>
-              <Badge variant="outline" className={`text-[9px] ${stkOptBullish ? 'border-emerald-500/40 text-emerald-300' : 'border-red-500/40 text-red-300'}`}>
-                Stk Opt: {stkOptBullish ? 'BULLISH' : 'BEARISH'}
-              </Badge>
-            </div>
-          </div>
-        </CardContent>
-      </Card>
-
-      {/* ═══ SUMMARY STATS ═══ */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-2">
-        {/* Cash Stats */}
-        <div className="p-2 rounded border border-emerald-500/20 bg-emerald-500/5">
-          <div className="text-[10px] text-muted-foreground">Cash Money In</div>
-          <div className="text-sm font-mono font-bold text-emerald-400">
-            +{(totalCashIn / 10000000).toFixed(1)} Cr
-          </div>
-        </div>
-        <div className="p-2 rounded border border-red-500/20 bg-red-500/5">
-          <div className="text-[10px] text-muted-foreground">Cash Money Out</div>
-          <div className="text-sm font-mono font-bold text-red-400">
-            -{(totalCashOut / 10000000).toFixed(1)} Cr
-          </div>
-        </div>
-
-        {/* Index Options Stats */}
-        <div className="p-2 rounded border border-emerald-500/20 bg-emerald-500/5">
-          <div className="text-[10px] text-muted-foreground">Idx Call Buy + Put Write</div>
-          <div className="text-sm font-mono font-bold text-emerald-400">
-            +{(totalIdxBullish / 100000).toFixed(1)} L
-          </div>
-        </div>
-        <div className="p-2 rounded border border-red-500/20 bg-red-500/5">
-          <div className="text-[10px] text-muted-foreground">Idx Put Buy + Call Write</div>
-          <div className="text-sm font-mono font-bold text-red-400">
-            -{(totalIdxBearish / 100000).toFixed(1)} L
-          </div>
-        </div>
-
-        {/* Stock Options Stats */}
-        <div className="p-2 rounded border border-emerald-500/20 bg-emerald-500/5">
-          <div className="text-[10px] text-muted-foreground">Stk Call Buy + Put Write</div>
-          <div className="text-sm font-mono font-bold text-emerald-400">
-            +{(totalStkBullish / 100000).toFixed(1)} L
-          </div>
-        </div>
-        <div className="p-2 rounded border border-red-500/20 bg-red-500/5">
-          <div className="text-[10px] text-muted-foreground">Stk Put Buy + Call Write</div>
-          <div className="text-sm font-mono font-bold text-red-400">
-            -{(totalStkBearish / 100000).toFixed(1)} L
-          </div>
-        </div>
-      </div>
-
-      {/* ═══ STACKED CHARTS: Cash → Index Options → Stock Options ═══ */}
-      <Card className="border-border/50 bg-card/80 backdrop-blur-sm">
-        <CardHeader className="pb-2">
-          <CardTitle className="flex items-center gap-2 text-sm">
-            <Layers className="h-4 w-4 text-amber-400" />
-            Stacked Flow View — Cash | Index Options | Stock Options
-            <Badge variant="outline" className="ml-auto text-[10px] text-muted-foreground">
-              4 bars/min | 15s intervals
-            </Badge>
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-1">
-          {/* ── LAYER 1: CASH FLOW BARS ── */}
-          <div>
-            <div className="flex items-center gap-2 mb-1 text-[10px]">
-              <span className="font-medium text-emerald-400">CASH FLOW</span>
-              <span className="text-muted-foreground">(NSE + BSE weighted)</span>
-              <Badge variant="outline" className="text-[8px] border-emerald-500/30 text-emerald-300">In</Badge>
-              <Badge variant="outline" className="text-[8px] border-red-500/30 text-red-300">Out</Badge>
-              <Badge variant="outline" className="text-[8px] border-blue-500/30 text-blue-300">Net</Badge>
-            </div>
-            <div className="relative border border-border/20 rounded bg-black/20" style={{ height: CHART_HEIGHT }}>
-              <div className="absolute left-0 top-0 bottom-0 w-12 border-r border-border/10 z-10 flex flex-col justify-between py-1 px-1">
-                <span className="text-[8px] font-mono text-muted-foreground">+{(cashMaxAbs / 10000000).toFixed(1)}Cr</span>
-                <span className="text-[8px] font-mono text-muted-foreground">0</span>
-                <span className="text-[8px] font-mono text-muted-foreground">-{(cashMaxAbs / 10000000).toFixed(1)}Cr</span>
+    <div className="space-y-2">
+      {/* ═══════════════════════════════════════════════════════════
+          ROW 1: COMPOSITE SIGNAL CARD — The actionable trade signal
+          ═══════════════════════════════════════════════════════════ */}
+      {signal && (
+        <Card className={`border-2 ${
+          signal.action === 'BUY_CALL' ? 'border-emerald-500/60 bg-emerald-500/5' :
+          signal.action === 'BUY_PUT' ? 'border-red-500/60 bg-red-500/5' :
+          'border-amber-500/40 bg-amber-500/5'
+        } backdrop-blur-sm`}>
+          <CardContent className="p-2">
+            <div className="flex items-center justify-between flex-wrap gap-x-4 gap-y-1">
+              {/* Action badge */}
+              <div className="flex items-center gap-2">
+                <Crosshair className={`h-5 w-5 ${
+                  signal.action === 'BUY_CALL' ? 'text-emerald-400' :
+                  signal.action === 'BUY_PUT' ? 'text-red-400' : 'text-amber-400'
+                }`} />
+                <span className="text-lg font-bold font-mono">
+                  {signal.action === 'BUY_CALL' ? 'BUY CALL' :
+                   signal.action === 'BUY_PUT' ? 'BUY PUT' :
+                   signal.action === 'EXIT' ? 'EXIT' : 'WAIT'}
+                </span>
+                <span className="text-xs text-muted-foreground">
+                  Nifty {signal.suggestedStrike.toLocaleString()} @ ₹{signal.suggestedPremium.toFixed(0)}
+                </span>
               </div>
-              <div className="absolute left-12 right-0 flex items-end gap-px overflow-hidden" style={{ top: 0, bottom: 0 }}>
-                {visibleCashBars.map((bar, i) => {
-                  const inH = Math.max(0.5, (bar.totalMoneyIn / cashMaxAbs) * (CHART_HEIGHT * 0.4));
-                  const outH = Math.max(0.5, (bar.totalMoneyOut / cashMaxAbs) * (CHART_HEIGHT * 0.4));
-                  return (
-                    <div key={i} className="flex flex-col items-center justify-center" style={{ width: BAR_WIDTH, height: '100%' }}>
-                      {/* Money In bar (green, grows upward from center) */}
-                      <div className="w-full flex-1 flex items-end">
-                        <div className="w-full rounded-t-sm bg-emerald-500/70" style={{ height: inH }}
-                          title={`In: ${(bar.totalMoneyIn / 10000000).toFixed(2)} Cr | ${bar.timestamp}`}
-                        />
-                      </div>
-                      {/* Money Out bar (red, grows downward from center) */}
-                      <div className="w-full flex-1">
-                        <div className="w-full rounded-b-sm bg-red-500/60" style={{ height: outH }}
-                          title={`Out: ${(bar.totalMoneyOut / 10000000).toFixed(2)} Cr | ${bar.timestamp}`}
-                        />
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          </div>
 
-          {/* ── LAYER 2: INDEX OPTIONS FLOW BARS (4-color) ── */}
-          <div>
-            <div className="flex items-center gap-2 mb-1 text-[10px]">
-              <span className="font-medium text-amber-400">INDEX OPTIONS</span>
-              <span className="text-muted-foreground">(Nifty, Sensex, BankNifty, FinNifty — 11 strikes each)</span>
-              <span className="flex items-center gap-0.5"><span className="inline-block w-2 h-1.5 rounded-sm" style={{ background: COLORS.callBuy }} /> Call Buy</span>
-              <span className="flex items-center gap-0.5"><span className="inline-block w-2 h-1.5 rounded-sm" style={{ background: COLORS.putWrite }} /> Put Write</span>
-              <span className="flex items-center gap-0.5"><span className="inline-block w-2 h-1.5 rounded-sm" style={{ background: COLORS.putBuy }} /> Put Buy</span>
-              <span className="flex items-center gap-0.5"><span className="inline-block w-2 h-1.5 rounded-sm" style={{ background: COLORS.callWrite }} /> Call Write</span>
-            </div>
-            <div className="relative border border-border/20 rounded bg-black/20" style={{ height: CHART_HEIGHT }}>
-              <div className="absolute left-0 top-0 bottom-0 w-12 border-r border-border/10 z-10 flex flex-col justify-between py-1 px-1">
-                <span className="text-[8px] font-mono text-muted-foreground">Bull</span>
-                <span className="text-[8px] font-mono text-muted-foreground">0</span>
-                <span className="text-[8px] font-mono text-muted-foreground">Bear</span>
-              </div>
-              <div className="absolute left-12 right-0 flex items-end gap-px overflow-hidden" style={{ top: 0, bottom: 0 }}>
-                {visibleOptBars.map((bar, i) => {
-                  const cbH = Math.max(0.5, (bar.indexTotalCallBuy / idxOptMaxAbs) * (CHART_HEIGHT * 0.25));
-                  const pwH = Math.max(0.5, (bar.indexTotalPutWrite / idxOptMaxAbs) * (CHART_HEIGHT * 0.25));
-                  const pbH = Math.max(0.5, (bar.indexTotalPutBuy / idxOptMaxAbs) * (CHART_HEIGHT * 0.25));
-                  const cwH = Math.max(0.5, (bar.indexTotalCallWrite / idxOptMaxAbs) * (CHART_HEIGHT * 0.25));
-                  return (
-                    <div key={i} className="flex flex-col items-center justify-center" style={{ width: BAR_WIDTH, height: '100%' }}>
-                      {/* Bullish side: Call Buy + Put Write (grows upward) */}
-                      <div className="w-full flex-1 flex flex-col items-end justify-end">
-                        <div className="w-full rounded-t-sm" style={{ height: cbH, background: COLORS.callBuy }}
-                          title={`Idx Call Buy: ${(bar.indexTotalCallBuy / 100000).toFixed(1)}L | ${bar.timestamp}`}
-                        />
-                        <div className="w-full" style={{ height: pwH, background: COLORS.putWrite }}
-                          title={`Idx Put Write: ${(bar.indexTotalPutWrite / 100000).toFixed(1)}L | ${bar.timestamp}`}
-                        />
-                      </div>
-                      {/* Bearish side: Put Buy + Call Write (grows downward) */}
-                      <div className="w-full flex-1 flex flex-col items-start">
-                        <div className="w-full" style={{ height: pbH, background: COLORS.putBuy }}
-                          title={`Idx Put Buy: ${(bar.indexTotalPutBuy / 100000).toFixed(1)}L | ${bar.timestamp}`}
-                        />
-                        <div className="w-full rounded-b-sm" style={{ height: cwH, background: COLORS.callWrite }}
-                          title={`Idx Call Write: ${(bar.indexTotalCallWrite / 100000).toFixed(1)}L | ${bar.timestamp}`}
-                        />
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-              {/* Live indicator */}
-              <div className="absolute top-1 right-2 z-20">
-                <Badge className="text-[7px] bg-emerald-500/20 text-emerald-300 border-emerald-500/30 px-1 py-0 animate-pulse">LIVE</Badge>
-              </div>
-            </div>
-          </div>
-
-          {/* ── LAYER 3: STOCK OPTIONS FLOW BARS (4-color) ── */}
-          <div>
-            <div className="flex items-center gap-2 mb-1 text-[10px]">
-              <span className="font-medium text-cyan-400">STOCK OPTIONS</span>
-              <span className="text-muted-foreground">(15 NSE F&O stocks, 9 strikes each — BSE has no stock options)</span>
-              <span className="flex items-center gap-0.5"><span className="inline-block w-2 h-1.5 rounded-sm" style={{ background: COLORS.callBuy }} /> Call Buy</span>
-              <span className="flex items-center gap-0.5"><span className="inline-block w-2 h-1.5 rounded-sm" style={{ background: COLORS.putWrite }} /> Put Write</span>
-              <span className="flex items-center gap-0.5"><span className="inline-block w-2 h-1.5 rounded-sm" style={{ background: COLORS.putBuy }} /> Put Buy</span>
-              <span className="flex items-center gap-0.5"><span className="inline-block w-2 h-1.5 rounded-sm" style={{ background: COLORS.callWrite }} /> Call Write</span>
-            </div>
-            <div className="relative border border-border/20 rounded bg-black/20" style={{ height: CHART_HEIGHT }}>
-              <div className="absolute left-0 top-0 bottom-0 w-12 border-r border-border/10 z-10 flex flex-col justify-between py-1 px-1">
-                <span className="text-[8px] font-mono text-muted-foreground">Bull</span>
-                <span className="text-[8px] font-mono text-muted-foreground">0</span>
-                <span className="text-[8px] font-mono text-muted-foreground">Bear</span>
-              </div>
-              <div className="absolute left-12 right-0 flex items-end gap-px overflow-hidden" style={{ top: 0, bottom: 0 }}>
-                {visibleOptBars.map((bar, i) => {
-                  const cbH = Math.max(0.5, (bar.stockTotalCallBuy / stkOptMaxAbs) * (CHART_HEIGHT * 0.25));
-                  const pwH = Math.max(0.5, (bar.stockTotalPutWrite / stkOptMaxAbs) * (CHART_HEIGHT * 0.25));
-                  const pbH = Math.max(0.5, (bar.stockTotalPutBuy / stkOptMaxAbs) * (CHART_HEIGHT * 0.25));
-                  const cwH = Math.max(0.5, (bar.stockTotalCallWrite / stkOptMaxAbs) * (CHART_HEIGHT * 0.25));
-                  return (
-                    <div key={i} className="flex flex-col items-center justify-center" style={{ width: BAR_WIDTH, height: '100%' }}>
-                      {/* Bullish side */}
-                      <div className="w-full flex-1 flex flex-col items-end justify-end">
-                        <div className="w-full rounded-t-sm" style={{ height: cbH, background: COLORS.callBuy }}
-                          title={`Stk Call Buy: ${(bar.stockTotalCallBuy / 100000).toFixed(1)}L | ${bar.timestamp}`}
-                        />
-                        <div className="w-full" style={{ height: pwH, background: COLORS.putWrite }}
-                          title={`Stk Put Write: ${(bar.stockTotalPutWrite / 100000).toFixed(1)}L | ${bar.timestamp}`}
-                        />
-                      </div>
-                      {/* Bearish side */}
-                      <div className="w-full flex-1 flex flex-col items-start">
-                        <div className="w-full" style={{ height: pbH, background: COLORS.putBuy }}
-                          title={`Stk Put Buy: ${(bar.stockTotalPutBuy / 100000).toFixed(1)}L | ${bar.timestamp}`}
-                        />
-                        <div className="w-full rounded-b-sm" style={{ height: cwH, background: COLORS.callWrite }}
-                          title={`Stk Call Write: ${(bar.stockTotalCallWrite / 100000).toFixed(1)}L | ${bar.timestamp}`}
-                        />
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          </div>
-
-          {/* Timestamp */}
-          {latestOptBar && (
-            <div className="text-right text-[9px] font-mono text-muted-foreground">
-              Last update: {latestOptBar.timestamp}
-            </div>
-          )}
-        </CardContent>
-      </Card>
-
-      {/* ═══ PER-INSTRUMENT BREAKDOWN ═══ */}
-      <Card className="border-border/50 bg-card/80 backdrop-blur-sm">
-        <CardHeader className="pb-2">
-          <CardTitle className="flex items-center gap-2 text-sm">
-            <BarChart3 className="h-4 w-4 text-blue-400" />
-            Per-Instrument Options Flow (Latest 15s Bar)
-            <Badge variant="outline" className="ml-auto text-[10px] border-blue-500/40 text-blue-300">
-              Click to drill down
-            </Badge>
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          {latestOptBar && (
-            <div className="space-y-3">
-              {/* Index Options Table */}
-              <div>
-                <div className="text-[11px] font-medium text-amber-400 mb-1">Index Options (11 strikes each)</div>
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                  {latestOptBar.indexFlows.map(flow => (
-                    <div
-                      key={flow.symbol}
-                      className={`p-2 rounded border cursor-pointer transition-all hover:border-primary/40 ${
-                        selectedInstrument === flow.symbol ? 'border-primary/60 ring-1 ring-primary/20' : 'border-border/30'
-                      } ${flow.totalNetFlow > 0 ? 'bg-emerald-500/5' : 'bg-red-500/5'}`}
-                      onClick={() => setSelectedInstrument(selectedInstrument === flow.symbol ? null : flow.symbol)}
-                    >
-                      <div className="flex items-center justify-between">
-                        <span className="text-xs font-bold">{flow.symbol}</span>
-                        <span className="text-[9px] text-muted-foreground">ATM {flow.atmStrike.toLocaleString()}</span>
-                      </div>
-                      <div className="grid grid-cols-2 gap-1 mt-1 text-[9px] font-mono">
-                        <div className="text-emerald-600" style={{ color: COLORS.callBuy }}>
-                          CB: {(flow.totalCallBuy / 100000).toFixed(1)}L
-                        </div>
-                        <div style={{ color: COLORS.putWrite }}>
-                          PW: {(flow.totalPutWrite / 100000).toFixed(1)}L
-                        </div>
-                        <div style={{ color: COLORS.putBuy }}>
-                          PB: {(flow.totalPutBuy / 100000).toFixed(1)}L
-                        </div>
-                        <div style={{ color: COLORS.callWrite }}>
-                          CW: {(flow.totalCallWrite / 100000).toFixed(1)}L
-                        </div>
-                      </div>
-                      <div className={`text-[10px] font-mono font-bold mt-1 ${flow.totalNetFlow > 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                        Net: {flow.totalNetFlow > 0 ? '+' : ''}{(flow.totalNetFlow / 100000).toFixed(1)}L
-                      </div>
-                    </div>
-                  ))}
+              {/* Score */}
+              <div className="flex items-center gap-2">
+                <span className="text-[10px] text-muted-foreground">Score</span>
+                <div className="w-32 h-3 rounded-full bg-muted overflow-hidden relative">
+                  {/* Center line */}
+                  <div className="absolute inset-y-0 left-1/2 w-px bg-border z-10" />
+                  <div
+                    className={`absolute inset-y-0 rounded-full transition-all duration-300 ${
+                      signal.score > 0 ? 'bg-emerald-500' : 'bg-red-500'
+                    }`}
+                    style={{
+                      left: signal.score > 0 ? '50%' : `${50 + (signal.score / 100) * 50}%`,
+                      width: `${Math.abs(signal.score / 100) * 50}%`,
+                    }}
+                  />
                 </div>
+                <span className={`text-sm font-mono font-bold ${signal.score > 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                  {signal.score > 0 ? '+' : ''}{signal.score.toFixed(0)}
+                </span>
               </div>
 
-              {/* Stock Options Table */}
-              <div>
-                <div className="text-[11px] font-medium text-cyan-400 mb-1">Stock Options (9 strikes each, NSE only)</div>
-                <div className="grid grid-cols-3 sm:grid-cols-5 lg:grid-cols-5 gap-1">
-                  {latestOptBar.stockFlows.map(flow => (
-                    <div
-                      key={flow.symbol}
-                      className={`p-1.5 rounded border cursor-pointer transition-all hover:border-primary/40 ${
-                        selectedInstrument === flow.symbol ? 'border-primary/60 ring-1 ring-primary/20' : 'border-border/30'
-                      } ${flow.totalNetFlow > 0 ? 'bg-emerald-500/5' : 'bg-red-500/5'}`}
-                      onClick={() => setSelectedInstrument(selectedInstrument === flow.symbol ? null : flow.symbol)}
-                    >
-                      <div className="text-[10px] font-bold">{flow.symbol}</div>
-                      <div className={`text-[9px] font-mono font-bold ${flow.totalNetFlow > 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                        {flow.totalNetFlow > 0 ? '+' : ''}{(flow.totalNetFlow / 100000).toFixed(1)}L
-                      </div>
-                    </div>
-                  ))}
-                </div>
+              {/* Confidence */}
+              <div className="flex items-center gap-1">
+                <span className="text-[10px] text-muted-foreground">Conf</span>
+                <span className={`text-sm font-mono font-bold ${signal.confidence > 60 ? 'text-emerald-400' : signal.confidence > 30 ? 'text-amber-400' : 'text-red-400'}`}>
+                  {signal.confidence.toFixed(0)}%
+                </span>
               </div>
-            </div>
-          )}
-        </CardContent>
-      </Card>
 
-      {/* ═══ STRIKE-LEVEL DRILL DOWN ═══ */}
-      {drillDownInstrument && (
-        <Card className="border-border/50 bg-card/80 backdrop-blur-sm">
-          <CardHeader className="pb-2">
-            <CardTitle className="flex items-center gap-2 text-sm">
-              <Activity className="h-4 w-4 text-yellow-400" />
-              {drillDownInstrument.name} — Strike-Level Flow
-              <Badge variant="outline" className="text-[9px] border-yellow-500/40 text-yellow-300">
-                ATM: {drillDownInstrument.atmStrike.toLocaleString()}
-              </Badge>
-              <Badge variant="outline" className="text-[9px] border-muted text-muted-foreground ml-auto">
-                {drillDownInstrument.strikes.length} strikes
-              </Badge>
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            {/* Mini bar chart per strike */}
-            <div className="flex items-end gap-1 mb-3" style={{ height: 80 }}>
-              {drillDownInstrument.strikes.map((s, i) => {
-                const maxVal = Math.max(1, ...drillDownInstrument.strikes.map(x =>
-                  Math.max(x.bullishFlow, x.bearishFlow)
-                ));
-                const bullH = (s.bullishFlow / maxVal) * 70;
-                const bearH = (s.bearishFlow / maxVal) * 70;
+              {/* Trade details */}
+              <div className="flex items-center gap-3 text-[10px] font-mono">
+                <span>SL: ₹{signal.stopLoss.toFixed(0)}</span>
+                <span className="text-emerald-400">T1: ₹{signal.target1.toFixed(0)}</span>
+                <span className="text-emerald-300">T2: ₹{signal.target2.toFixed(0)}</span>
+                <span>RR: {signal.riskReward.toFixed(1)}:1</span>
+              </div>
 
-                return (
-                  <div key={i} className="flex flex-col items-center flex-1" title={`Strike ${s.strike} | CB: ${(s.callBuy/1000).toFixed(0)}K | PW: ${(s.putWrite/1000).toFixed(0)}K | PB: ${(s.putBuy/1000).toFixed(0)}K | CW: ${(s.callWrite/1000).toFixed(0)}K`}>
-                    {/* Bullish (green) */}
-                    <div className="w-full flex items-end" style={{ height: 35 }}>
-                      <div className="w-full rounded-t-sm" style={{ height: bullH, background: s.isATM ? '#22c55e' : '#16a34a' }} />
-                    </div>
-                    {/* Bearish (red) */}
-                    <div className="w-full" style={{ height: 35 }}>
-                      <div className="w-full rounded-b-sm" style={{ height: bearH, background: s.isATM ? '#ef4444' : '#dc2626' }} />
-                    </div>
-                    {/* Strike label */}
-                    <div className={`text-[7px] font-mono mt-0.5 ${s.isATM ? 'text-yellow-400 font-bold' : 'text-muted-foreground'}`}>
-                      {s.strike.toLocaleString()}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
+              {/* Divergence alerts */}
+              <div className="flex items-center gap-1">
+                {signal.cashOptDivergence && (
+                  <Badge variant="outline" className="text-[8px] border-amber-500/40 text-amber-300 px-1 py-0">
+                    <AlertTriangle className="h-2.5 w-2.5 mr-0.5" />Cash-Opt Div
+                  </Badge>
+                )}
+                {signal.futCashDivergence && (
+                  <Badge variant="outline" className="text-[8px] border-orange-500/40 text-orange-300 px-1 py-0">
+                    <AlertTriangle className="h-2.5 w-2.5 mr-0.5" />Fut-Cash Div
+                  </Badge>
+                )}
+              </div>
 
-            {/* Strike table */}
-            <div className="overflow-x-auto">
-              <table className="w-full text-[10px]">
-                <thead>
-                  <tr className="border-b border-border/30 text-muted-foreground">
-                    <th className="py-1 text-left font-medium">Strike</th>
-                    <th className="py-1 text-right font-medium" style={{ color: COLORS.callBuy }}>Call Buy</th>
-                    <th className="py-1 text-right font-medium" style={{ color: COLORS.putWrite }}>Put Write</th>
-                    <th className="py-1 text-right font-medium">Bullish</th>
-                    <th className="py-1 text-right font-medium" style={{ color: COLORS.putBuy }}>Put Buy</th>
-                    <th className="py-1 text-right font-medium" style={{ color: COLORS.callWrite }}>Call Write</th>
-                    <th className="py-1 text-right font-medium">Bearish</th>
-                    <th className="py-1 text-right font-medium">Net</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {drillDownInstrument.strikes.map((s, i) => (
-                    <tr key={i} className={`border-b border-border/10 ${s.isATM ? 'bg-yellow-500/5 font-bold' : ''}`}>
-                      <td className={`py-0.5 font-mono ${s.isATM ? 'text-yellow-400' : ''}`}>
-                        {s.isATM ? '→ ' : ''}{s.strike.toLocaleString()}
-                      </td>
-                      <td className="py-0.5 text-right font-mono" style={{ color: COLORS.callBuy }}>
-                        {(s.callBuy / 1000).toFixed(0)}K
-                      </td>
-                      <td className="py-0.5 text-right font-mono" style={{ color: COLORS.putWrite }}>
-                        {(s.putWrite / 1000).toFixed(0)}K
-                      </td>
-                      <td className="py-0.5 text-right font-mono text-emerald-400">
-                        {(s.bullishFlow / 1000).toFixed(0)}K
-                      </td>
-                      <td className="py-0.5 text-right font-mono" style={{ color: COLORS.putBuy }}>
-                        {(s.putBuy / 1000).toFixed(0)}K
-                      </td>
-                      <td className="py-0.5 text-right font-mono" style={{ color: COLORS.callWrite }}>
-                        {(s.callWrite / 1000).toFixed(0)}K
-                      </td>
-                      <td className="py-0.5 text-right font-mono text-red-400">
-                        {(s.bearishFlow / 1000).toFixed(0)}K
-                      </td>
-                      <td className={`py-0.5 text-right font-mono ${s.netFlow > 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                        {s.netFlow > 0 ? '+' : ''}{(s.netFlow / 1000).toFixed(0)}K
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+              {/* Reasoning */}
+              <div className="text-[9px] text-muted-foreground max-w-xs truncate">
+                {signal.reasoning}
+              </div>
             </div>
           </CardContent>
         </Card>
       )}
 
-      {/* ═══ LEGEND + EXPLANATION ═══ */}
-      <Card className="border-border/30 bg-card/50">
-        <CardContent className="p-3 space-y-2">
-          <div className="flex flex-wrap items-center gap-3 text-[10px]">
-            <span className="font-medium">Options Flow Legend:</span>
-            <span className="flex items-center gap-1">
-              <span className="inline-block w-3 h-2 rounded-sm" style={{ background: COLORS.callBuy }} /> Call Buy (dark green) — buyers buying calls = bullish
-            </span>
-            <span className="flex items-center gap-1">
-              <span className="inline-block w-3 h-2 rounded-sm" style={{ background: COLORS.putWrite }} /> Put Write (light green) — sellers writing puts = bullish
-            </span>
-            <span className="flex items-center gap-1">
-              <span className="inline-block w-3 h-2 rounded-sm" style={{ background: COLORS.putBuy }} /> Put Buy (dark red) — buyers buying puts = bearish
-            </span>
-            <span className="flex items-center gap-1">
-              <span className="inline-block w-3 h-2 rounded-sm" style={{ background: COLORS.callWrite }} /> Call Write (light red) — sellers writing calls = bearish
-            </span>
+      {/* ═══════════════════════════════════════════════════════════
+          ROW 2: STACKED CHARTS — The single-screen market view
+          1. Nifty50 Price Line + Score Line + Signal Markers
+          2. Cash Flow Bars
+          3. Index Options Flow Bars (4-color)
+          4. Stock Options Flow Bars (4-color)
+          5. Index Futures Flow Bars
+          6. Stock Futures Flow Bars
+          ═══════════════════════════════════════════════════════════ */}
+      <Card className="border-border/50 bg-card/80 backdrop-blur-sm">
+        <CardHeader className="pb-1 pt-2">
+          <CardTitle className="flex items-center gap-2 text-xs">
+            <Layers className="h-3.5 w-3.5 text-purple-400" />
+            Complete Market Flow — Single Screen View
+            <span className="text-muted-foreground font-normal">| Every 15s | {VISIBLE_BARS} bars visible</span>
+            {/* Mini legend */}
+            <div className="ml-auto flex items-center gap-2 text-[9px]">
+              <span className="flex items-center gap-0.5"><span className="inline-block w-2 h-1.5 rounded-sm" style={{ background: C.callBuy }} />CB</span>
+              <span className="flex items-center gap-0.5"><span className="inline-block w-2 h-1.5 rounded-sm" style={{ background: C.putWrite }} />PW</span>
+              <span className="flex items-center gap-0.5"><span className="inline-block w-2 h-1.5 rounded-sm" style={{ background: C.putBuy }} />PB</span>
+              <span className="flex items-center gap-0.5"><span className="inline-block w-2 h-1.5 rounded-sm" style={{ background: C.callWrite }} />CW</span>
+              <span className="flex items-center gap-0.5"><span className="inline-block w-2 h-1.5 rounded-sm" style={{ background: C.futBuy }} />FutBuy</span>
+              <span className="flex items-center gap-0.5"><span className="inline-block w-2 h-1.5 rounded-sm" style={{ background: C.futSell }} />FutSell</span>
+              <span className="flex items-center gap-0.5"><span className="inline-block w-2 h-0.5" style={{ background: C.score }} />Score</span>
+            </div>
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-0.5 px-2 pb-2">
+
+          {/* ── LAYER 1: NIFTY PRICE LINE + SCORE LINE + SIGNAL MARKERS ── */}
+          <div>
+            <div className="flex items-center gap-1 text-[9px] mb-0.5">
+              <span className={`font-bold ${niftyPrice >= 24350 ? 'text-emerald-400' : 'text-red-400'}`}>
+                NIFTY 50: {niftyPrice.toFixed(0)}
+              </span>
+              <span className="text-muted-foreground">| Change: {(niftyPrice - 24350).toFixed(0)} ({((niftyPrice - 24350) / 24350 * 100).toFixed(2)}%)</span>
+              {signal && (
+                <span className={`ml-2 font-bold px-1.5 py-0 rounded text-[8px] ${
+                  signal.action === 'BUY_CALL' ? 'bg-emerald-500/20 text-emerald-300' :
+                  signal.action === 'BUY_PUT' ? 'bg-red-500/20 text-red-300' : 'bg-amber-500/20 text-amber-300'
+                }`}>
+                  {signal.action === 'BUY_CALL' ? '▲ CALL' : signal.action === 'BUY_PUT' ? '▼ PUT' : '— WAIT'}
+                </span>
+              )}
+            </div>
+            <div className="relative border border-border/20 rounded bg-black/30" style={{ height: PRICE_H }}>
+              {/* Y-axis */}
+              <div className="absolute left-0 top-0 bottom-0 w-10 border-r border-border/10 z-10 flex flex-col justify-between py-0.5 px-0.5">
+                <span className="text-[7px] font-mono text-muted-foreground">{priceMax.toFixed(0)}</span>
+                <span className="text-[7px] font-mono text-muted-foreground">{((priceMax + priceMin) / 2).toFixed(0)}</span>
+                <span className="text-[7px] font-mono text-muted-foreground">{priceMin.toFixed(0)}</span>
+              </div>
+
+              {/* SVG: Price line + Score line + Signal markers */}
+              <svg
+                className="absolute left-10 right-0 top-0 bottom-0"
+                viewBox={`0 0 ${visPrices.length * BAR_WIDTH} ${PRICE_H}`}
+                preserveAspectRatio="none"
+              >
+                {/* Zero score line (center) */}
+                <line
+                  x1="0" y1={PRICE_H * (1 - (0 - scoreMin) / scoreRange)}
+                  x2={visPrices.length * BAR_WIDTH} y2={PRICE_H * (1 - (0 - scoreMin) / scoreRange)}
+                  stroke="#334155" strokeWidth="0.5" strokeDasharray="3,3"
+                />
+
+                {/* Score area (filled) */}
+                {visScores.length > 1 && (
+                  <path
+                    d={visScores.map((s, i) => {
+                      const x = i * BAR_WIDTH;
+                      const y = PRICE_H * (1 - (s - scoreMin) / scoreRange);
+                      return `${i === 0 ? 'M' : 'L'}${x},${y}`;
+                    }).join(' ') + ` L${(visScores.length - 1) * BAR_WIDTH},${PRICE_H * (1 - (0 - scoreMin) / scoreRange)} L0,${PRICE_H * (1 - (0 - scoreMin) / scoreRange)} Z`}
+                    fill={signal && signal.score > 0 ? 'rgba(34,197,94,0.08)' : 'rgba(239,68,68,0.08)'}
+                  />
+                )}
+
+                {/* Score line */}
+                {visScores.length > 1 && (
+                  <polyline
+                    fill="none"
+                    stroke={C.score}
+                    strokeWidth="1"
+                    strokeOpacity="0.8"
+                    points={visScores.map((s, i) => {
+                      const x = i * BAR_WIDTH;
+                      const y = PRICE_H * (1 - (s - scoreMin) / scoreRange);
+                      return `${x},${y}`;
+                    }).join(' ')}
+                  />
+                )}
+
+                {/* Price line */}
+                {visPrices.length > 1 && (
+                  <polyline
+                    fill="none"
+                    stroke={niftyPrice >= 24350 ? C.priceUp : C.priceDn}
+                    strokeWidth="1.5"
+                    points={visPrices.map((p, i) => {
+                      const x = i * BAR_WIDTH;
+                      const y = PRICE_H * (1 - (p - priceMin) / priceRange);
+                      return `${x},${y}`;
+                    }).join(' ')}
+                  />
+                )}
+
+                {/* Signal markers (BUY_CALL = green triangle up, BUY_PUT = red triangle down) */}
+                {visScores.map((s, i) => {
+                  if (Math.abs(s) < 35) return null; // Only mark strong signals
+                  const x = i * BAR_WIDTH;
+                  const y = PRICE_H * (1 - (visPrices[i] - priceMin) / priceRange);
+                  if (s > 35) return <polygon key={i} points={`${x},${y-6} ${x-3},${y} ${x+3},${y}`} fill={C.callBuy} />;
+                  if (s < -35) return <polygon key={i} points={`${x},${y+6} ${x-3},${y} ${x+3},${y}`} fill={C.putBuy} />;
+                  return null;
+                })}
+              </svg>
+
+              {/* Live indicator */}
+              <div className="absolute top-0.5 right-1 z-20">
+                <Badge className="text-[6px] bg-emerald-500/20 text-emerald-300 border-emerald-500/30 px-0.5 py-0 animate-pulse">LIVE</Badge>
+              </div>
+            </div>
           </div>
-          <div className="text-[10px] text-muted-foreground space-y-1">
-            <p>
-              <strong>Call Buy + Put Write = Bullish Flow</strong> — Both positions profit when price goes UP.
-              When call buying surges AND put writing increases, smart money is positioning bullish.
-            </p>
-            <p>
-              <strong>Put Buy + Call Write = Bearish Flow</strong> — Both positions profit when price goes DOWN.
-              Heavy put buying + call writing = bearish positioning.
-            </p>
-            <p>
-              <strong>Key Insight:</strong> When Cash Flow is bullish AND Options Flow is bullish → strong confirmation.
-              When they diverge (cash outflow but heavy call buying) → potential trap or short covering.
-              This is why the <span className="text-amber-400">stacked view</span> matters — you see correlation in real-time.
-            </p>
-            <p>
-              <span className="text-cyan-400">BSE does NOT have stock options</span> — stock options data is NSE only.
-              Index options (Nifty, Sensex, BankNifty, FinNifty) trade on both exchanges but NSE dominates volume.
-            </p>
+
+          {/* ── LAYER 2: CASH FLOW BARS ── */}
+          <FlowChartRow
+            label="CASH"
+            labelColor="text-emerald-400"
+            subtitle="NSE+BSE weighted"
+            maxAbs={cashMaxAbs}
+            unit="Cr"
+            unitDivisor={10000000}
+          >
+            {visCash.map((bar, i) => {
+              const inH = Math.max(0.5, (bar.totalMoneyIn / cashMaxAbs) * (CHART_H * 0.4));
+              const outH = Math.max(0.5, (bar.totalMoneyOut / cashMaxAbs) * (CHART_H * 0.4));
+              return (
+                <div key={i} className="flex flex-col items-center justify-center" style={{ width: BAR_WIDTH, height: '100%' }}>
+                  <div className="w-full flex-1 flex items-end">
+                    <div className="w-full bg-emerald-500/70" style={{ height: inH }}
+                      title={`In: ${(bar.totalMoneyIn / 10000000).toFixed(2)} Cr`}
+                    />
+                  </div>
+                  <div className="w-full flex-1">
+                    <div className="w-full bg-red-500/60" style={{ height: outH }}
+                      title={`Out: ${(bar.totalMoneyOut / 10000000).toFixed(2)} Cr`}
+                    />
+                  </div>
+                </div>
+              );
+            })}
+          </FlowChartRow>
+
+          {/* ── LAYER 3: INDEX OPTIONS FLOW (4-color) ── */}
+          <FlowChartRow
+            label="IDX OPT"
+            labelColor="text-amber-400"
+            subtitle="4 indexes × 11 strikes"
+            maxAbs={idxOptMax}
+            unit="L"
+            unitDivisor={100000}
+          >
+            {visOpt.map((bar, i) => (
+              <FourColorBar key={i}
+                buy1={bar.indexTotalCallBuy} buy2={bar.indexTotalPutWrite}
+                sell1={bar.indexTotalPutBuy} sell2={bar.indexTotalCallWrite}
+                maxAbs={idxOptMax} height={CHART_H}
+              />
+            ))}
+          </FlowChartRow>
+
+          {/* ── LAYER 4: STOCK OPTIONS FLOW (4-color) ── */}
+          <FlowChartRow
+            label="STK OPT"
+            labelColor="text-cyan-400"
+            subtitle="15 stocks × 9 strikes (NSE)"
+            maxAbs={stkOptMax}
+            unit="L"
+            unitDivisor={100000}
+          >
+            {visOpt.map((bar, i) => (
+              <FourColorBar key={i}
+                buy1={bar.stockTotalCallBuy} buy2={bar.stockTotalPutWrite}
+                sell1={bar.stockTotalPutBuy} sell2={bar.stockTotalCallWrite}
+                maxAbs={stkOptMax} height={CHART_H}
+              />
+            ))}
+          </FlowChartRow>
+
+          {/* ── LAYER 5: INDEX FUTURES FLOW ── */}
+          <FlowChartRow
+            label="IDX FUT"
+            labelColor="text-indigo-400"
+            subtitle="Nifty+Sensex+BN+FN futures"
+            maxAbs={idxFutMax}
+            unit="Cr"
+            unitDivisor={10000000}
+          >
+            {visFut.map((bar, i) => {
+              const buyH = Math.max(0.5, (bar.indexFutBuy / idxFutMax) * (CHART_H * 0.4));
+              const sellH = Math.max(0.5, (bar.indexFutSell / idxFutMax) * (CHART_H * 0.4));
+              return (
+                <div key={i} className="flex flex-col items-center justify-center" style={{ width: BAR_WIDTH, height: '100%' }}>
+                  <div className="w-full flex-1 flex items-end">
+                    <div className="w-full" style={{ height: buyH, background: C.futBuy }}
+                      title={`Idx Fut Buy: ${(bar.indexFutBuy / 10000000).toFixed(1)} Cr`}
+                    />
+                  </div>
+                  <div className="w-full flex-1">
+                    <div className="w-full" style={{ height: sellH, background: C.futSell }}
+                      title={`Idx Fut Sell: ${(bar.indexFutSell / 10000000).toFixed(1)} Cr`}
+                    />
+                  </div>
+                </div>
+              );
+            })}
+          </FlowChartRow>
+
+          {/* ── LAYER 6: STOCK FUTURES FLOW ── */}
+          <FlowChartRow
+            label="STK FUT"
+            labelColor="text-pink-400"
+            subtitle="15 NSE F&O stock futures"
+            maxAbs={stkFutMax}
+            unit="Cr"
+            unitDivisor={10000000}
+          >
+            {visFut.map((bar, i) => {
+              const buyH = Math.max(0.5, (bar.stockFutBuy / stkFutMax) * (CHART_H * 0.4));
+              const sellH = Math.max(0.5, (bar.stockFutSell / stkFutMax) * (CHART_H * 0.4));
+              return (
+                <div key={i} className="flex flex-col items-center justify-center" style={{ width: BAR_WIDTH, height: '100%' }}>
+                  <div className="w-full flex-1 flex items-end">
+                    <div className="w-full" style={{ height: buyH, background: C.futBuy }}
+                      title={`Stk Fut Buy: ${(bar.stockFutBuy / 10000000).toFixed(1)} Cr`}
+                    />
+                  </div>
+                  <div className="w-full flex-1">
+                    <div className="w-full" style={{ height: sellH, background: C.futSell }}
+                      title={`Stk Fut Sell: ${(bar.stockFutSell / 10000000).toFixed(1)} Cr`}
+                    />
+                  </div>
+                </div>
+              );
+            })}
+          </FlowChartRow>
+
+          {/* Timestamp */}
+          {latestOpt && (
+            <div className="text-right text-[8px] font-mono text-muted-foreground mt-0.5">
+              {latestOpt.timestamp} | Score: {signal?.score.toFixed(0) || '...'} | {signal?.action || '...'}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* ═══════════════════════════════════════════════════════════
+          ROW 3: COMPONENT SCORE BREAKDOWN + FUTURES BREAKDOWN
+          ═══════════════════════════════════════════════════════════ */}
+      {signal && (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+          {/* Score Breakdown */}
+          <Card className="border-border/50 bg-card/80 backdrop-blur-sm">
+            <CardHeader className="pb-1 pt-2">
+              <CardTitle className="flex items-center gap-1.5 text-xs">
+                <Crosshair className="h-3.5 w-3.5 text-amber-400" />
+                Signal Component Scores
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="p-2 pt-0">
+              <div className="space-y-1.5">
+                <ScoreBar label="Price Trend" score={signal.priceTrendScore} />
+                <ScoreBar label="Cash Flow" score={signal.cashFlowScore} />
+                <ScoreBar label="Idx Options" score={signal.idxOptScore} />
+                <ScoreBar label="Stk Options" score={signal.stkOptScore} />
+                <ScoreBar label="Idx Futures" score={signal.idxFutScore} />
+                <ScoreBar label="Stk Futures" score={signal.stkFutScore} />
+                <div className="border-t border-border/30 pt-1">
+                  <ScoreBar label="COMPOSITE" score={signal.score} bold />
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* Futures Breakdown */}
+          <Card className="border-border/50 bg-card/80 backdrop-blur-sm">
+            <CardHeader className="pb-1 pt-2">
+              <CardTitle className="flex items-center gap-1.5 text-xs">
+                <BarChart3 className="h-3.5 w-3.5 text-indigo-400" />
+                Futures Money Flow (Latest)
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="p-2 pt-0">
+              {latestFut && (
+                <div className="space-y-1">
+                  {/* Index futures breakdown */}
+                  <div className="text-[9px] font-medium text-indigo-400">Index Futures</div>
+                  {latestFut.indexBreakdown.map(idx => (
+                    <div key={idx.symbol} className="flex items-center justify-between text-[10px] font-mono">
+                      <span className="w-20">{idx.symbol}</span>
+                      <span className={`flex-1 text-right ${idx.futNet > 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                        {idx.futNet > 0 ? '+' : ''}{(idx.futNet / 10000000).toFixed(1)} Cr
+                      </span>
+                      <span className={`w-16 text-right ${idx.basis > 0 ? 'text-emerald-400/70' : 'text-red-400/70'}`}>
+                        B:{idx.basis > 0 ? '+' : ''}{idx.basis.toFixed(1)}
+                      </span>
+                      <span className={`w-16 text-right ${idx.oiChg > 0 ? 'text-blue-400/70' : 'text-orange-400/70'}`}>
+                        OI:{idx.oiChg > 0 ? '+' : ''}{(idx.oiChg / 1000).toFixed(0)}K
+                      </span>
+                    </div>
+                  ))}
+                  {/* Stock futures aggregate */}
+                  <div className="text-[9px] font-medium text-pink-400 mt-1">Stock Futures (NSE, 15 stocks)</div>
+                  <div className="flex items-center justify-between text-[10px] font-mono">
+                    <span className="w-20">Combined</span>
+                    <span className={`flex-1 text-right ${latestFut.stockFutNet > 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                      {latestFut.stockFutNet > 0 ? '+' : ''}{(latestFut.stockFutNet / 10000000).toFixed(1)} Cr
+                    </span>
+                    <span className={`w-16 text-right ${latestFut.stockFutBasis > 0 ? 'text-emerald-400/70' : 'text-red-400/70'}`}>
+                      B:{latestFut.stockFutBasis > 0 ? '+' : ''}{latestFut.stockFutBasis.toFixed(1)}
+                    </span>
+                    <span className={`w-16 text-right ${latestFut.stockFutOI > 0 ? 'text-blue-400/70' : 'text-orange-400/70'}`}>
+                      OI:{latestFut.stockFutOI > 0 ? '+' : ''}{(latestFut.stockFutOI / 1000).toFixed(0)}K
+                    </span>
+                  </div>
+                  <div className="text-[8px] text-muted-foreground mt-1">
+                    Basis = Future - Spot (positive = contango, negative = backwardation) |
+                    OI Chg = Open Interest change (build-up vs unwinding)
+                  </div>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
+      {/* ═══════════════════════════════════════════════════════════
+          ROW 4: TRADING TIPS — Practical suggestions for perfect trades
+          ═══════════════════════════════════════════════════════════ */}
+      <Card className="border-border/30 bg-card/50">
+        <CardContent className="p-2 space-y-1.5">
+          <div className="flex items-center gap-1.5 text-xs font-bold text-purple-400">
+            <ShieldAlert className="h-3.5 w-3.5" />
+            Perfect Trade Framework — How to Use This Screen
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-x-4 gap-y-1 text-[9px] text-muted-foreground">
+            <div>
+              <span className="text-emerald-400 font-medium">1. Confluence Entry:</span> Only BUY CALL when Price ↑ + Cash In + Idx Opt Bullish + Futures Buy ALL align. No divergence = high confidence. The score line crossing above +35 with &gt;40% confidence is your trigger.
+            </div>
+            <div>
+              <span className="text-red-400 font-medium">2. Divergence = Trap:</span> If Cash flowing OUT but Options showing Call Buy + Put Write (bullish), that&apos;s short covering, NOT fresh buying. Wait. The ⚠️ Cash-Opt Div badge catches this automatically.
+            </div>
+            <div>
+              <span className="text-amber-400 font-medium">3. Futures Confirmation:</span> Futures are leveraged — institutions don&apos;t take futures positions casually. If Index Futures are net LONG + Options bullish + Cash inflow = triple confirmation. This is your highest probability trade.
+            </div>
+            <div>
+              <span className="text-blue-400 font-medium">4. Basis Signal:</span> Contango (positive basis) = bullish sentiment. Backwardation (negative basis) = bearish urgency. If basis flips from + to − while options still bullish → smart money is exiting.
+            </div>
+            <div>
+              <span className="text-cyan-400 font-medium">5. OI Build-Up:</span> Rising OI + rising price = long build-up (bullish). Rising OI + falling price = short build-up (bearish). Falling OI = unwinding — the move is ending, don&apos;t enter.
+            </div>
+            <div>
+              <span className="text-purple-400 font-medium">6. CAS Window (3:15-3:35):</span> Cash is PAUSED but F&O continues. During CAS, only Options + Futures flow matter. Cash data freezes. Adjust your signal reading — ignore cash during CAS.
+            </div>
           </div>
         </CardContent>
       </Card>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════
+// SUB-COMPONENTS
+// ═══════════════════════════════════════════════════════════
+
+// Reusable flow chart row with label
+function FlowChartRow({
+  label, labelColor, subtitle, maxAbs, unit, unitDivisor, children,
+}: {
+  label: string;
+  labelColor: string;
+  subtitle: string;
+  maxAbs: number;
+  unit: string;
+  unitDivisor: number;
+  children: React.ReactNode;
+}) {
+  return (
+    <div>
+      <div className="flex items-center gap-1 text-[8px] mb-0.5">
+        <span className={`font-bold ${labelColor}`}>{label}</span>
+        <span className="text-muted-foreground">{subtitle}</span>
+        <span className="ml-auto text-muted-foreground">±{(maxAbs / unitDivisor).toFixed(1)} {unit}</span>
+      </div>
+      <div className="relative border border-border/15 rounded bg-black/20" style={{ height: CHART_H }}>
+        <div className="absolute left-0 top-0 bottom-0 w-8 border-r border-border/10 z-10 flex flex-col justify-between py-0.5 px-0.5">
+          <span className="text-[6px] font-mono text-emerald-400/70">+</span>
+          <span className="text-[6px] font-mono text-muted-foreground">0</span>
+          <span className="text-[6px] font-mono text-red-400/70">−</span>
+        </div>
+        <div className="absolute left-8 right-0 flex items-end gap-px overflow-hidden" style={{ top: 0, bottom: 0 }}>
+          {children}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// 4-color options bar (Call Buy + Put Write up, Put Buy + Call Write down)
+function FourColorBar({
+  buy1, buy2, sell1, sell2, maxAbs, height,
+}: {
+  buy1: number; buy2: number; sell1: number; sell2: number;
+  maxAbs: number; height: number;
+}) {
+  const b1H = Math.max(0.5, (buy1 / maxAbs) * (height * 0.25));
+  const b2H = Math.max(0.5, (buy2 / maxAbs) * (height * 0.25));
+  const s1H = Math.max(0.5, (sell1 / maxAbs) * (height * 0.25));
+  const s2H = Math.max(0.5, (sell2 / maxAbs) * (height * 0.25));
+
+  return (
+    <div className="flex flex-col items-center justify-center" style={{ width: BAR_WIDTH, height: '100%' }}>
+      {/* Bullish (up) */}
+      <div className="w-full flex-1 flex flex-col items-end justify-end">
+        <div className="w-full rounded-t-sm" style={{ height: b1H, background: C.callBuy }} />
+        <div className="w-full" style={{ height: b2H, background: C.putWrite }} />
+      </div>
+      {/* Bearish (down) */}
+      <div className="w-full flex-1 flex flex-col items-start">
+        <div className="w-full" style={{ height: s1H, background: C.putBuy }} />
+        <div className="w-full rounded-b-sm" style={{ height: s2H, background: C.callWrite }} />
+      </div>
+    </div>
+  );
+}
+
+// Score bar component
+function ScoreBar({ label, score, bold = false }: { label: string; score: number; bold?: boolean }) {
+  const isPos = score > 0;
+  const pct = Math.abs(score) / 100 * 50; // max 50% from center
+
+  return (
+    <div className="flex items-center gap-1.5">
+      <span className={`w-16 text-right text-[9px] ${bold ? 'font-bold' : ''}`}>{label}</span>
+      <div className="flex-1 h-2 rounded-full bg-muted overflow-hidden relative">
+        <div className="absolute inset-y-0 left-1/2 w-px bg-border z-10" />
+        <div
+          className={`absolute inset-y-0 rounded-full ${isPos ? 'bg-emerald-500' : 'bg-red-500'}`}
+          style={{
+            left: isPos ? '50%' : `${50 - pct}%`,
+            width: `${pct}%`,
+          }}
+        />
+      </div>
+      <span className={`w-8 text-[9px] font-mono ${isPos ? 'text-emerald-400' : 'text-red-400'} ${bold ? 'font-bold' : ''}`}>
+        {isPos ? '+' : ''}{score.toFixed(0)}
+      </span>
     </div>
   );
 }
