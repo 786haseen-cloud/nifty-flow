@@ -1,11 +1,12 @@
 'use client';
 
-import { useEffect, useState, useMemo } from 'react';
+import { useEffect, useState, useMemo, useCallback } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import {
   BarChart3, Activity, Layers, Zap, Crosshair,
   TrendingUp, TrendingDown, ShieldAlert, AlertTriangle,
+  Wifi, WifiOff, Settings2, RefreshCw,
 } from 'lucide-react';
 import type { WeightedCashFlowBar, CashFlowTrend, OptionsFlowBar, FuturesFlowBar, CompositeSignal } from '@/lib/types';
 import {
@@ -18,8 +19,7 @@ import {
 // Chart dimensions — compact for single-screen
 const VISIBLE_BARS = 160;
 const BAR_WIDTH = 2;
-const CHART_H = 72;      // Each flow chart row height (compact)
-const PRICE_H = 140;     // Price chart height — own dedicated frame
+const CHART_H = 72;      // Each flow chart row height (compact, default)
 
 // Color palette
 const C = {
@@ -57,6 +57,32 @@ export default function OptionsFlowTab() {
 
   // Composite signal
   const [signal, setSignal] = useState<CompositeSignal | null>(null);
+
+  // Kite API connection status
+  const [kiteStatus, setKiteStatus] = useState<'checking' | 'connected' | 'demo'>('checking');
+  const [showSettings, setShowSettings] = useState(false);
+
+  // Chart settings (customizable)
+  const [chartSettings, setChartSettings] = useState({
+    priceHeight: 140,
+    barHeight: 72,
+    visibleBars: 160,
+    updateInterval: 15000,
+    priceLineWidth: 1.2,
+    scoreLineWidth: 1,
+    priceColor: '#34d399',
+    scoreColor: '#fbbf24',
+  });
+
+  // Check Kite API status on mount
+  useEffect(() => {
+    fetch('/api/kite/status')
+      .then(r => r.json())
+      .then(data => {
+        setKiteStatus(data.configured ? 'connected' : 'demo');
+      })
+      .catch(() => setKiteStatus('demo'));
+  }, []);
 
   // Initialize + refresh every 15 seconds
   useEffect(() => {
@@ -181,6 +207,133 @@ export default function OptionsFlowTab() {
   return (
     <div className="space-y-2">
       {/* ═══════════════════════════════════════════════════════════
+          ROW 0: KITE STATUS BAR + SETTINGS TOGGLE
+          ═══════════════════════════════════════════════════════════ */}
+      <div className="flex items-center justify-between px-1">
+        <div className="flex items-center gap-2">
+          {kiteStatus === 'connected' ? (
+            <Badge className="text-[8px] bg-emerald-500/20 text-emerald-300 border-emerald-500/40 px-1.5 py-0">
+              <Wifi className="h-2.5 w-2.5 mr-0.5" /> Kite LIVE
+            </Badge>
+          ) : kiteStatus === 'demo' ? (
+            <Badge className="text-[8px] bg-amber-500/20 text-amber-300 border-amber-500/40 px-1.5 py-0">
+              <WifiOff className="h-2.5 w-2.5 mr-0.5" /> DEMO — Set Kite API
+            </Badge>
+          ) : (
+            <Badge className="text-[8px] bg-muted/20 text-muted-foreground border-muted/40 px-1.5 py-0">
+              <RefreshCw className="h-2.5 w-2.5 mr-0.5 animate-spin" /> Checking...
+            </Badge>
+          )}
+          <span className="text-[8px] text-muted-foreground">
+            {kiteStatus === 'demo' && 'Add KITE_API_KEY + KITE_ACCESS_TOKEN in .env → redeploy'}
+            {kiteStatus === 'connected' && 'Real NSE/BSE data active'}
+          </span>
+        </div>
+        <button
+          onClick={() => setShowSettings(!showSettings)}
+          className="flex items-center gap-1 text-[8px] text-muted-foreground hover:text-foreground transition-colors"
+        >
+          <Settings2 className="h-3 w-3" /> Chart Settings
+        </button>
+      </div>
+
+      {/* ═══ CHART SETTINGS PANEL ═══ */}
+      {showSettings && (
+        <Card className="border-border/40 bg-card/90 backdrop-blur-sm">
+          <CardHeader className="pb-1 pt-2">
+            <CardTitle className="flex items-center gap-1.5 text-xs">
+              <Settings2 className="h-3.5 w-3.5 text-purple-400" />
+              Price & Score Chart Settings
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="p-2 pt-0">
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-x-4 gap-y-2 text-[9px]">
+              {/* Price chart height */}
+              <label className="flex flex-col gap-0.5">
+                <span className="text-muted-foreground">Price Chart Height (px)</span>
+                <input type="range" min="80" max="250" step="10"
+                  value={chartSettings.priceHeight}
+                  onChange={e => setChartSettings(s => ({ ...s, priceHeight: +e.target.value }))}
+                  className="h-1 accent-emerald-500"
+                />
+                <span className="font-mono">{chartSettings.priceHeight}px</span>
+              </label>
+              {/* Price line width */}
+              <label className="flex flex-col gap-0.5">
+                <span className="text-muted-foreground">Price Line Width</span>
+                <input type="range" min="0.5" max="3" step="0.1"
+                  value={chartSettings.priceLineWidth}
+                  onChange={e => setChartSettings(s => ({ ...s, priceLineWidth: +e.target.value }))}
+                  className="h-1 accent-emerald-500"
+                />
+                <span className="font-mono">{chartSettings.priceLineWidth}px</span>
+              </label>
+              {/* Score line width */}
+              <label className="flex flex-col gap-0.5">
+                <span className="text-muted-foreground">Score Line Width</span>
+                <input type="range" min="0.5" max="3" step="0.1"
+                  value={chartSettings.scoreLineWidth}
+                  onChange={e => setChartSettings(s => ({ ...s, scoreLineWidth: +e.target.value }))}
+                  className="h-1 accent-amber-500"
+                />
+                <span className="font-mono">{chartSettings.scoreLineWidth}px</span>
+              </label>
+              {/* Visible bars */}
+              <label className="flex flex-col gap-0.5">
+                <span className="text-muted-foreground">Visible Bars</span>
+                <input type="range" min="60" max="300" step="20"
+                  value={chartSettings.visibleBars}
+                  onChange={e => setChartSettings(s => ({ ...s, visibleBars: +e.target.value }))}
+                  className="h-1 accent-purple-500"
+                />
+                <span className="font-mono">{chartSettings.visibleBars}</span>
+              </label>
+              {/* Bar chart height */}
+              <label className="flex flex-col gap-0.5">
+                <span className="text-muted-foreground">Bar Row Height (px)</span>
+                <input type="range" min="40" max="120" step="8"
+                  value={chartSettings.barHeight}
+                  onChange={e => setChartSettings(s => ({ ...s, barHeight: +e.target.value }))}
+                  className="h-1 accent-blue-500"
+                />
+                <span className="font-mono">{chartSettings.barHeight}px</span>
+              </label>
+              {/* Update interval */}
+              <label className="flex flex-col gap-0.5">
+                <span className="text-muted-foreground">Update Interval (sec)</span>
+                <input type="range" min="5" max="60" step="5"
+                  value={chartSettings.updateInterval / 1000}
+                  onChange={e => setChartSettings(s => ({ ...s, updateInterval: +e.target.value * 1000 }))}
+                  className="h-1 accent-cyan-500"
+                />
+                <span className="font-mono">{chartSettings.updateInterval / 1000}s</span>
+              </label>
+              {/* Price color */}
+              <label className="flex flex-col gap-0.5">
+                <span className="text-muted-foreground">Price Line Color</span>
+                <input type="color"
+                  value={chartSettings.priceColor}
+                  onChange={e => setChartSettings(s => ({ ...s, priceColor: e.target.value }))}
+                  className="h-5 w-12 cursor-pointer"
+                />
+              </label>
+              {/* Score color */}
+              <label className="flex flex-col gap-0.5">
+                <span className="text-muted-foreground">Score Line Color</span>
+                <input type="color"
+                  value={chartSettings.scoreColor}
+                  onChange={e => setChartSettings(s => ({ ...s, scoreColor: e.target.value }))}
+                  className="h-5 w-12 cursor-pointer"
+                />
+              </label>
+            </div>
+            <div className="mt-2 text-[8px] text-muted-foreground">
+              💡 Settings apply instantly. To make permanent, update values in .env and redeploy.
+            </div>
+          </CardContent>
+        </Card>
+      )}
+      {/* ═══════════════════════════════════════════════════════════
           ROW 1: COMPOSITE SIGNAL CARD — The actionable trade signal
           ═══════════════════════════════════════════════════════════ */}
       {signal && (
@@ -292,15 +445,15 @@ export default function OptionsFlowTab() {
               </span>
             )}
             <div className="ml-auto flex items-center gap-2 text-[9px]">
-              <span className="flex items-center gap-0.5"><span className="inline-block w-3 h-0.5 rounded" style={{ background: niftyPrice >= 24350 ? C.priceUp : C.priceDn }} />Price</span>
-              <span className="flex items-center gap-0.5"><span className="inline-block w-3 h-0.5 rounded" style={{ background: C.score }} />Score</span>
+              <span className="flex items-center gap-0.5"><span className="inline-block w-3 h-0.5 rounded" style={{ background: niftyPrice >= 24350 ? chartSettings.priceColor : C.priceDn }} />Price</span>
+              <span className="flex items-center gap-0.5"><span className="inline-block w-3 h-0.5 rounded" style={{ background: chartSettings.scoreColor }} />Score</span>
               <span className="flex items-center gap-0.5"><span className="inline-block w-2 h-2 rounded-full" style={{ background: C.callBuy }} />Call</span>
               <span className="flex items-center gap-0.5"><span className="inline-block w-2 h-2 rounded-full" style={{ background: C.putBuy }} />Put</span>
             </div>
           </CardTitle>
         </CardHeader>
         <CardContent className="px-2 pb-2">
-          <div className="relative border-2 border-border/60 rounded-md bg-[#0c0f1a]/90" style={{ height: PRICE_H }}>
+          <div className="relative border-2 border-border/60 rounded-md bg-[#0c0f1a]/90" style={{ height: chartSettings.priceHeight }}>
             {/* Left Y-axis: Price scale — 5 ticks */}
             <div className="absolute left-0 top-0 bottom-0 w-14 border-r border-border/30 z-10 flex flex-col justify-between py-1 px-1">
               <span className="text-[9px] font-mono text-emerald-400/80">{priceMax.toFixed(0)}</span>
@@ -322,14 +475,14 @@ export default function OptionsFlowTab() {
             {/* SVG chart area — uses vector-effect=non-scaling-stroke for crisp 1px lines */}
             <svg
               className="absolute left-14 right-12 top-0 bottom-0"
-              viewBox={`0 0 ${visPrices.length * BAR_WIDTH} ${PRICE_H}`}
+              viewBox={`0 0 ${visPrices.length * BAR_WIDTH} ${chartSettings.priceHeight}`}
               preserveAspectRatio="none"
             >
               {/* Horizontal grid lines — match 5 Y-axis ticks */}
               {[0.2, 0.4, 0.5, 0.6, 0.8].map(frac => (
                 <line key={frac}
-                  x1="0" y1={PRICE_H * frac}
-                  x2={visPrices.length * BAR_WIDTH} y2={PRICE_H * frac}
+                  x1="0" y1={chartSettings.priceHeight * frac}
+                  x2={visPrices.length * BAR_WIDTH} y2={chartSettings.priceHeight * frac}
                   stroke={frac === 0.5 ? '#1e293b' : '#111827'} strokeWidth={frac === 0.5 ? '0.5' : '0.3'}
                   vectorEffect="non-scaling-stroke"
                 />
@@ -337,8 +490,8 @@ export default function OptionsFlowTab() {
 
               {/* Score zero line (center) */}
               <line
-                x1="0" y1={PRICE_H * (1 - (0 - scoreMin) / scoreRange)}
-                x2={visPrices.length * BAR_WIDTH} y2={PRICE_H * (1 - (0 - scoreMin) / scoreRange)}
+                x1="0" y1={chartSettings.priceHeight * (1 - (0 - scoreMin) / scoreRange)}
+                x2={visPrices.length * BAR_WIDTH} y2={chartSettings.priceHeight * (1 - (0 - scoreMin) / scoreRange)}
                 stroke="#334155" strokeWidth="0.5" strokeDasharray="3,3"
                 vectorEffect="non-scaling-stroke"
               />
@@ -348,9 +501,9 @@ export default function OptionsFlowTab() {
                 <path
                   d={visScores.map((s, i) => {
                     const x = i * BAR_WIDTH;
-                    const y = PRICE_H * (1 - (s - scoreMin) / scoreRange);
+                    const y = chartSettings.priceHeight * (1 - (s - scoreMin) / scoreRange);
                     return `${i === 0 ? 'M' : 'L'}${x},${y}`;
-                  }).join(' ') + ` L${(visScores.length - 1) * BAR_WIDTH},${PRICE_H * (1 - (0 - scoreMin) / scoreRange)} L0,${PRICE_H * (1 - (0 - scoreMin) / scoreRange)} Z`}
+                  }).join(' ') + ` L${(visScores.length - 1) * BAR_WIDTH},${chartSettings.priceHeight * (1 - (0 - scoreMin) / scoreRange)} L0,${chartSettings.priceHeight * (1 - (0 - scoreMin) / scoreRange)} Z`}
                   fill={signal && signal.score > 0 ? 'rgba(34,197,94,0.06)' : 'rgba(239,68,68,0.06)'}
                 />
               )}
@@ -359,14 +512,14 @@ export default function OptionsFlowTab() {
               {visScores.length > 1 && (
                 <polyline
                   fill="none"
-                  stroke={C.score}
-                  strokeWidth="1"
+                  stroke={chartSettings.scoreColor}
+                  strokeWidth={chartSettings.scoreLineWidth}
                   strokeOpacity="0.65"
                   strokeLinejoin="round"
                   vectorEffect="non-scaling-stroke"
                   points={visScores.map((s, i) => {
                     const x = i * BAR_WIDTH;
-                    const y = PRICE_H * (1 - (s - scoreMin) / scoreRange);
+                    const y = chartSettings.priceHeight * (1 - (s - scoreMin) / scoreRange);
                     return `${x},${y}`;
                   }).join(' ')}
                 />
@@ -376,13 +529,13 @@ export default function OptionsFlowTab() {
               {visPrices.length > 1 && (
                 <polyline
                   fill="none"
-                  stroke={niftyPrice >= 24350 ? C.priceUp : C.priceDn}
-                  strokeWidth="1.2"
+                  stroke={niftyPrice >= 24350 ? chartSettings.priceColor : C.priceDn}
+                  strokeWidth={chartSettings.priceLineWidth}
                   strokeLinejoin="round"
                   vectorEffect="non-scaling-stroke"
                   points={visPrices.map((p, i) => {
                     const x = i * BAR_WIDTH;
-                    const y = PRICE_H * (1 - (p - priceMin) / priceRange);
+                    const y = chartSettings.priceHeight * (1 - (p - priceMin) / priceRange);
                     return `${x},${y}`;
                   }).join(' ')}
                 />
@@ -392,7 +545,7 @@ export default function OptionsFlowTab() {
               {visScores.map((s, i) => {
                 if (Math.abs(s) < 35) return null;
                 const x = i * BAR_WIDTH;
-                const y = PRICE_H * (1 - (visPrices[i] - priceMin) / priceRange);
+                const y = chartSettings.priceHeight * (1 - (visPrices[i] - priceMin) / priceRange);
                 if (s > 35) return <circle key={i} cx={x} cy={y - 3} r={1.2} fill={C.callBuy} vectorEffect="non-scaling-stroke" />;
                 if (s < -35) return <circle key={i} cx={x} cy={y + 3} r={1.2} fill={C.putBuy} vectorEffect="non-scaling-stroke" />;
                 return null;
