@@ -1,0 +1,504 @@
+     1→     1→'use client';
+     2→     2→
+     3→     3→import { useEffect, useState } from 'react';
+     4→     4→import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+     5→     5→import { Badge } from '@/components/ui/badge';
+     6→     6→import { ScrollArea } from '@/components/ui/scroll-area';
+     7→     7→import {
+     8→     8→  Landmark, Users, ArrowUpRight, ArrowDownRight, Minus,
+     9→     9→  AlertCircle, TrendingUp,
+    10→    10→} from 'lucide-react';
+    11→    11→import {
+    12→    12→  AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
+    13→    13→  LineChart, Line, Legend,
+    14→    14→} from 'recharts';
+    15→    15→import type { DayComparison, BigTradeEntry, NiftyDivergencePoint, InstrumentData, PlayerFlow, DualExchangeStock, MarketDataContext } from '@/lib/types';
+    16→    16→import {
+    17→    17→  generateDemo3DayComparison,
+    18→    18→  generateDemoBigTrades,
+    19→    19→  generateDemoNiftyDivergence,
+    20→    20→  generateDemoInstrument,
+    21→    21→  generateDemoDualExchangeStocks,
+    22→    22→  generateDemoMarketDataContext,
+    23→    23→  formatNum,
+    24→    24→  formatCr,
+    25→    25→} from '@/lib/demo-data';
+    26→    26→import WeightedCashFlowChart from '@/components/dashboard/weighted-cash-flow';
+    27→    27→
+    28→    28→export default function BigMoneyTab() {
+    29→    29→  const [dayComparison, setDayComparison] = useState<DayComparison[]>([]);
+    30→    30→  const [bigTrades, setBigTrades] = useState<BigTradeEntry[]>([]);
+    31→    31→  const [divergence, setDivergence] = useState<NiftyDivergencePoint[]>([]);
+    32→    32→  const [instrument, setInstrument] = useState<InstrumentData | null>(null);
+    33→    33→  const [dualExchangeStocks, setDualExchangeStocks] = useState<DualExchangeStock[]>([]);
+    34→    34→  const [marketContext, setMarketContext] = useState<MarketDataContext | null>(null);
+    35→    35→
+    36→    36→  useEffect(() => {
+    37→    37→    function refresh() {
+    38→    38→      setDayComparison(generateDemo3DayComparison());
+    39→    39→      setBigTrades(generateDemoBigTrades());
+    40→    40→      setDivergence(generateDemoNiftyDivergence());
+    41→    41→      setInstrument(generateDemoInstrument('NIFTY', 'Nifty 50', 'index', 24350));
+    42→    42→      setDualExchangeStocks(generateDemoDualExchangeStocks());
+    43→    43→      setMarketContext(generateDemoMarketDataContext());
+    44→    44→    }
+    45→    45→    refresh();
+    46→    46→    const interval = setInterval(refresh, 30000);
+    47→    47→    return () => clearInterval(interval);
+    48→    48→  }, []);
+    49→    49→
+    50→    50→  const flowColor = (v: number) => v >= 0 ? 'text-emerald-400' : 'text-red-400';
+    51→    51→  const flowSign = (v: number) => v >= 0 ? '+' : '';
+    52→    52→  const trendArrow = (current: number, previous: number) => {
+    53→    53→    if (current > previous) return <ArrowUpRight className="inline h-3 w-3 text-emerald-400" />;
+    54→    54→    if (current < previous) return <ArrowDownRight className="inline h-3 w-3 text-red-400" />;
+    55→    55→    return <Minus className="inline h-3 w-3 text-muted-foreground" />;
+    56→    56→  };
+    57→    57→
+    58→    58→  // FII vs Client contrarian chart data
+    59→    59→  const contrarianData = dayComparison.map(d => ({
+    60→    60→    label: d.label,
+    61→    61→    FII: d.fii.totalNet / 100,
+    62→    62→    Client: d.client.totalNet / 100,
+    63→    63→  }));
+    64→    64→
+    65→    65→  const playerColor = (p: string) => {
+    66→    66→    switch (p) {
+    67→    67→      case 'FII': return 'text-red-400';
+    68→    68→      case 'PROPDESK': return 'text-purple-400';
+    69→    69→      case 'CLIENT': return 'text-cyan-400';
+    70→    70→      case 'DII': return 'text-emerald-400';
+    71→    71→      default: return 'text-foreground';
+    72→    72→    }
+    73→    73→  };
+    74→    74→
+    75→    75→  const playerBg = (p: string) => {
+    76→    76→    switch (p) {
+    77→    77→      case 'FII': return 'bg-red-500/20 text-red-300 border-red-500/30';
+    78→    78→      case 'PROPDESK': return 'bg-purple-500/20 text-purple-300 border-purple-500/30';
+    79→    79→      case 'CLIENT': return 'bg-cyan-500/20 text-cyan-300 border-cyan-500/30';
+    80→    80→      case 'DII': return 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30';
+    81→    81→      default: return 'bg-gray-500/20 text-gray-300';
+    82→    82→    }
+    83→    83→  };
+    84→    84→
+    85→    85→  return (
+    86→    86→    <div className="space-y-4">
+    87→    87→      {/* Data Awareness Card — Live vs After-Market */}
+    88→    88→      <Card className={`border-border/50 backdrop-blur-sm ${
+    89→    89→        marketContext?.availability === 'live_flow_only'
+    90→    90→          ? 'bg-amber-500/5 border-amber-500/30'
+    91→    91→          : 'bg-emerald-500/5 border-emerald-500/30 bg-card/80'
+    92→    92→      }`}>
+    93→    93→        <CardContent className="p-3">
+    94→    94→          <div className="flex flex-wrap items-start gap-3">
+    95→    95→            <div className="flex-1 min-w-[200px]">
+    96→    96→              <div className="flex items-center gap-2 mb-1">
+    97→    97→                <Badge className={`text-[10px] ${
+    98→    98→                  marketContext?.availability === 'live_flow_only'
+    99→    99→                    ? 'bg-amber-500/20 text-amber-300 border-amber-500/30'
+   100→   100→                    : 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30'
+   101→   101→                }`}>
+   102→   102→                  {marketContext?.availability === 'live_flow_only' ? '🔴 LIVE MARKET' : '🟢 AFTER-MARKET'}
+   103→   103→                </Badge>
+   104→   104→                <span className="text-xs text-muted-foreground">
+   105→   105→                  {marketContext?.availability === 'live_flow_only'
+   106→   106→                    ? 'Only Money Flow visible — WHO is behind it is unknown'
+   107→   107→                    : 'NSE participant data available — Full correlation possible'
+   108→   108→                  }
+   109→   109→                </span>
+   110→   110→              </div>
+   111→   111→              {marketContext?.correlationMessage && (
+   112→   112→                <div className="text-[10px] text-muted-foreground">
+   113→   113→                  {marketContext.correlationMessage}
+   114→   114→                </div>
+   115→   115→              )}
+   116→   116→            </div>
+   117→   117→            {marketContext?.availability === 'live_flow_only' && marketContext.liveInference && (
+   118→   118→              <div className="flex flex-wrap gap-3 text-xs">
+   119→   119→                <div>
+   120→   120→                  <span className="text-muted-foreground">Net Flow: </span>
+   121→   121→                  <span className={`font-mono font-bold ${marketContext.liveInference.netFlow >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+   122→   122→                    {(marketContext.liveInference.netFlow / 10000000).toFixed(1)} Cr
+   123→   123→                  </span>
+   124→   124→                </div>
+   125→   125→                <div>
+   126→   126→                  <span className="text-muted-foreground">Velocity: </span>
+   127→   127→                  <span className="font-mono">{marketContext.liveInference.flowVelocity.toFixed(1)} Cr/min</span>
+   128→   128→                </div>
+   129→   129→                <div>
+   130→   130→                  <span className="text-muted-foreground">Institutional: </span>
+   131→   131→                  <span className={marketContext.liveInference.likelyInstitutional ? 'text-orange-400 font-bold' : 'text-muted-foreground'}>
+   132→   132→                    {marketContext.liveInference.likelyInstitutional ? 'LIKELY YES' : 'Uncertain'}
+   133→   133→                  </span>
+   134→   134→                </div>
+   135→   135→              </div>
+   136→   136→            )}
+   137→   137→            {marketContext?.availability === 'after_market_available' && marketContext.rollingWindow && (
+   138→   138→              <div className="flex flex-wrap gap-3 text-xs">
+   139→   139→                <div>
+   140→   140→                  <span className="text-muted-foreground">FII 3D: </span>
+   141→   141→                  <span className={`font-mono font-bold ${marketContext.rollingWindow.totalFIINet3D >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+   142→   142→                    {marketContext.rollingWindow.totalFIINet3D >= 0 ? '+' : ''}{marketContext.rollingWindow.totalFIINet3D.toFixed(0)} Cr
+   143→   143→                  </span>
+   144→   144→                  <span className={`ml-1 text-[10px] ${marketContext.rollingWindow.fiiTrend === 'accumulating' ? 'text-emerald-400' : marketContext.rollingWindow.fiiTrend === 'distributing' ? 'text-red-400' : 'text-muted-foreground'}`}>
+   145→   145→                    ({marketContext.rollingWindow.fiiTrend})
+   146→   146→                  </span>
+   147→   147→                </div>
+   148→   148→                <div>
+   149→   149→                  <span className="text-muted-foreground">PropDesk: </span>
+   150→   150→                  <span className={`font-mono font-bold ${marketContext.rollingWindow.totalPropDeskNet3D >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+   151→   151→                    {marketContext.rollingWindow.totalPropDeskNet3D >= 0 ? '+' : ''}{marketContext.rollingWindow.totalPropDeskNet3D.toFixed(0)} Cr
+   152→   152→                  </span>
+   153→   153→                </div>
+   154→   154→                <div>
+   155→   155→                  <span className="text-muted-foreground">Client: </span>
+   156→   156→                  <span className="font-mono">{marketContext.rollingWindow.totalClientNet3D.toFixed(0)} Cr</span>
+   157→   157→                  <span className={`ml-1 text-[10px] ${marketContext.rollingWindow.clientTrend === 'contrarian_bullish' ? 'text-emerald-400' : marketContext.rollingWindow.clientTrend === 'contrarian_bearish' ? 'text-red-400' : 'text-muted-foreground'}`}>
+   158→   158→                    ({marketContext.rollingWindow.clientTrend.replace('contrarian_', '')})
+   159→   159→                  </span>
+   160→   160→                </div>
+   161→   161→              </div>
+   162→   162→            )}
+   163→   163→            <div className="text-[10px] text-amber-400/70 max-w-md">
+   164→   164→              Retailers cannot move the market in minutes. Only big money flow indicates institutional activity.
+   165→   165→              3-day data tells the story — after NSE releases data, we correlate WHO did WHAT.
+   166→   166→            </div>
+   167→   167→          </div>
+   168→   168→        </CardContent>
+   169→   169→      </Card>
+   170→   170→
+   171→   171→      {/* Section A: 3-Day Prediction Compass — NOT the main driver */}
+   172→   172→      <Card className="border-border/50 bg-card/80 backdrop-blur-sm">
+   173→   173→        <CardHeader className="pb-3">
+   174→   174→          <CardTitle className="flex items-center gap-2 text-base">
+   175→   175→            <Landmark className="h-4 w-4 text-amber-400" />
+   176→   176→            3-Day Prediction Compass
+   177→   177→            <Badge variant="outline" className="ml-auto text-[10px] text-amber-300 border-amber-500/30">
+   178→   178→              ALIGNMENT CHECK ONLY
+   179→   179→            </Badge>
+   180→   180→          </CardTitle>
+   181→   181→        </CardHeader>
+   182→   182→        <CardContent>
+   183→   183→          <ScrollArea className="h-64">
+   184→   184→            <table className="w-full text-[11px]">
+   185→   185→              <thead>
+   186→   186→                <tr className="border-b border-border/40 text-muted-foreground">
+   187→   187→                  <th className="py-1.5 pr-2 text-left font-medium">Player</th>
+   188→   188→                  <th className="py-1.5 pr-2 text-left font-medium">Segment</th>
+   189→   189→                  {dayComparison.map(d => (
+   190→   190→                    <th key={d.label} className="py-1.5 pr-2 text-right font-medium">{d.label}<br /><span className="text-[9px]">{d.date}</span></th>
+   191→   191→                  ))}
+   192→   192→                </tr>
+   193→   193→              </thead>
+   194→   194→              <tbody>
+   195→   195→                {(['fii', 'propdesk', 'client', 'dii'] as const).map((player) => {
+   196→   196→                  const playerLabel = player === 'fii' ? 'FII' : player === 'propdesk' ? 'PropDesk' : player === 'client' ? 'Client' : 'DII (Cash Only)';
+   197→   197→                  const segments = player === 'dii' ? ['cashNet'] : ['cashNet', 'futNet', 'optCallNet', 'optPutNet', 'totalNet'];
+   198→   198→                  const segmentLabels = player === 'dii'
+   199→   199→                    ? ['Cash Net']
+   200→   200→                    : ['Cash Net', 'Fut Net', 'Opt Call Net', 'Opt Put Net', 'Total'];
+   201→   201→
+   202→   202→                  return segments.map((seg, si) => (
+   203→   203→                    <tr key={`${player}-${seg}`} className={`border-b border-border/15 ${si === 0 ? '' : ''} ${seg === 'totalNet' ? 'font-medium bg-muted/20' : ''}`}>
+   204→   204→                      {si === 0 && (
+   205→   205→                        <td rowSpan={segments.length} className={`py-1 pr-2 font-bold ${playerColor(playerLabel.split(' ')[0])}`} valign="top">
+   206→   206→                          {playerLabel}
+   207→   207→                        </td>
+   208→   208→                      )}
+   209→   209→                      <td className="py-1 pr-2 text-muted-foreground">{segmentLabels[si]}</td>
+   210→   210→                      {dayComparison.map((d, di) => {
+   211→   211→                        const data = d[player] as PlayerFlow;
+   212→   212→                        const val = data[seg as keyof PlayerFlow] as number;
+   213→   213→                        const prevVal = di > 0 ? (dayComparison[di - 1][player] as PlayerFlow)[seg as keyof PlayerFlow] as number : 0;
+   214→   214→                        return (
+   215→   215→                          <td key={d.label} className={`py-1 pr-2 text-right font-mono ${flowColor(val)}`}>
+   216→   216→                            {flowSign(val)}{formatCr(val)}
+   217→   217→                            {di > 0 && <span className="ml-1">{trendArrow(val, prevVal)}</span>}
+   218→   218→                          </td>
+   219→   219→                        );
+   220→   220→                      })}
+   221→   221→                    </tr>
+   222→   222→                  ));
+   223→   223→                })}
+   224→   224→              </tbody>
+   225→   225→            </table>
+   226→   226→          </ScrollArea>
+   227→   227→          <div className="mt-2 p-2 rounded-md bg-amber-500/5 border border-amber-500/20 text-[10px] text-amber-300/80">
+   228→   228→            <strong>⚠️ This is PREDICTION only, not action.</strong> 3-day data tells you where market <em>should</em> go.
+   229→   229→            LIVE options OI + cash flow tell you where it <em>actually</em> goes.
+   230→   230→            Use this as alignment: if LIVE direction matches 3-day prediction → trade with confidence.
+   231→   231→            If CONFLICT → wait or trade smaller. Live data is always the primary driver.
+   232→   232→          </div>
+   233→   233→        </CardContent>
+   234→   234→      </Card>
+   235→   235→
+   236→   236→      {/* Section B: FII vs Client Contrarian Chart */}
+   237→   237→      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+   238→   238→        <Card className="border-border/50 bg-card/80 backdrop-blur-sm">
+   239→   239→          <CardHeader className="pb-3">
+   240→   240→            <CardTitle className="flex items-center gap-2 text-base">
+   241→   241→              <Users className="h-4 w-4 text-purple-400" />
+   242→   242→              FII vs Client (Contrarian View)
+   243→   243→            </CardTitle>
+   244→   244→          </CardHeader>
+   245→   245→          <CardContent>
+   246→   246→            <ResponsiveContainer width="100%" height={250}>
+   247→   247→              <LineChart data={contrarianData}>
+   248→   248→                <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.1)" />
+   249→   249→                <XAxis dataKey="label" tick={{ fill: '#888', fontSize: 11 }} />
+   250→   250→                <YAxis tick={{ fill: '#888', fontSize: 11 }} />
+   251→   251→                <Tooltip
+   252→   252→                  contentStyle={{ backgroundColor: '#1a1a2e', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8, fontSize: 11 }}
+   253→   253→                  formatter={(value: number) => [`₹${value.toFixed(0)} Cr`, '']}
+   254→   254→                />
+   255→   255→                <Legend wrapperStyle={{ fontSize: 11 }} />
+   256→   256→                <Line type="monotone" dataKey="FII" stroke="#ef4444" strokeWidth={2} dot={{ r: 4 }} name="FII Net" />
+   257→   257→                <Line type="monotone" dataKey="Client" stroke="#06b6d4" strokeWidth={2} dot={{ r: 4 }} name="Client Net" />
+   258→   258→              </LineChart>
+   259→   259→            </ResponsiveContainer>
+   260→   260→            <div className="mt-2 text-xs text-muted-foreground">
+   261→   261→              When FII &amp; Client are <span className="text-red-400">opposite</span> → FII is setting up a move.
+   262→   262→              When <span className="text-emerald-400">aligned</span> → Trend is strong.
+   263→   263→            </div>
+   264→   264→          </CardContent>
+   265→   265→        </Card>
+   266→   266→
+   267→   267→        {/* Section D: Nifty vs FII Divergence */}
+   268→   268→        <Card className="border-border/50 bg-card/80 backdrop-blur-sm">
+   269→   269→          <CardHeader className="pb-3">
+   270→   270→            <CardTitle className="flex items-center gap-2 text-base">
+   271→   271→              <AlertCircle className="h-4 w-4 text-amber-400" />
+   272→   272→              Nifty Price vs FII Net Flow
+   273→   273→            </CardTitle>
+   274→   274→          </CardHeader>
+   275→   275→          <CardContent>
+   276→   276→            <ResponsiveContainer width="100%" height={250}>
+   277→   277→              <AreaChart data={divergence}>
+   278→   278→                <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.1)" />
+   279→   279→                <XAxis dataKey="date" tick={{ fill: '#888', fontSize: 10 }} interval={4} />
+   280→   280→                <YAxis yAxisId="left" tick={{ fill: '#888', fontSize: 10 }} domain={['auto', 'auto']} />
+   281→   281→                <YAxis yAxisId="right" orientation="right" tick={{ fill: '#888', fontSize: 10 }} domain={['auto', 'auto']} />
+   282→   282→                <Tooltip
+   283→   283→                  contentStyle={{ backgroundColor: '#1a1a2e', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8, fontSize: 11 }}
+   284→   284→                />
+   285→   285→                <Legend wrapperStyle={{ fontSize: 11 }} />
+   286→   286→                <Area yAxisId="left" type="monotone" dataKey="niftyPrice" stroke="#3b82f6" fill="#3b82f6" fillOpacity={0.1} strokeWidth={2} name="Nifty Price" />
+   287→   287→                <Area yAxisId="right" type="monotone" dataKey="fiiNetFlow" stroke="#ef4444" fill="#ef4444" fillOpacity={0.1} strokeWidth={2} name="FII Net Flow (₹Cr)" />
+   288→   288→              </AreaChart>
+   289→   289→            </ResponsiveContainer>
+   290→   290→            <div className="mt-2 text-xs text-muted-foreground">
+   291→   291→              🔴 Price ↑ + FII selling → <span className="text-red-400">Bearish divergence</span>
+   292→   292→              {' '}| 🟢 Price ↓ + FII buying → <span className="text-emerald-400">Bullish divergence</span>
+   293→   293→            </div>
+   294→   294→          </CardContent>
+   295→   295→        </Card>
+   296→   296→      </div>
+   297→   297→
+   298→   298→      {/* Section C: ATM + ITM Focus */}
+   299→   299→      <Card className="border-border/50 bg-card/80 backdrop-blur-sm">
+   300→   300→        <CardHeader className="pb-3">
+   301→   301→          <CardTitle className="flex items-center gap-2 text-base">
+   302→   302→            <TrendingUp className="h-4 w-4 text-emerald-400" />
+   303→   303→            ATM + ITM Focus — Where Smart Money Trades
+   304→   304→            <Badge variant="outline" className="ml-2 text-[10px]">FII &amp; PropDesk focus ATM+ITM</Badge>
+   305→   305→          </CardTitle>
+   306→   306→        </CardHeader>
+   307→   307→        <CardContent>
+   308→   308→          {instrument && (
+   309→   309→            <div className="overflow-x-auto">
+   310→   310→              <table className="w-full text-xs">
+   311→   311→                <thead>
+   312→   312→                  <tr className="border-b border-border/40 text-muted-foreground">
+   313→   313→                    <th className="py-1.5 pr-2 text-left font-medium">Strike</th>
+   314→   314→                    <th className="py-1.5 pr-2 text-center font-medium">Type</th>
+   315→   315→                    <th className="py-1.5 pr-2 text-right font-medium">Call OI</th>
+   316→   316→                    <th className="py-1.5 pr-2 text-right font-medium">Call OI Chg</th>
+   317→   317→                    <th className="py-1.5 pr-2 text-right font-medium">Put OI</th>
+   318→   318→                    <th className="py-1.5 pr-2 text-right font-medium">Put OI Chg</th>
+   319→   319→                    <th className="py-1.5 text-right font-medium">FII/PropDesk Signal</th>
+   320→   320→                  </tr>
+   321→   321→                </thead>
+   322→   322→                <tbody>
+   323→   323→                  {instrument.strikes.filter(s => {
+   324→   324→                    const diff = Math.abs(s.strike - instrument.atmStrike);
+   325→   325→                    const step = instrument.symbol === 'NIFTY' ? 50 : 100;
+   326→   326→                    return diff <= step * 2;
+   327→   327→                  }).map(s => {
+   328→   328→                    const diff = s.strike - instrument.atmStrike;
+   329→   329→                    const step = instrument.symbol === 'NIFTY' ? 50 : 100;
+   330→   330→                    let strikeType = 'ATM';
+   331→   331→                    if (diff < 0) strikeType = `ITM Call ${Math.abs(diff / step)}`;
+   332→   332→                    if (diff > 0) strikeType = `ITM Put ${Math.abs(diff / step)}`;
+   333→   333→
+   334→   334→                    const smartMoneySignal = s.callOIChg > 100000 && s.putOIChg < 0 ? 'Call Writing (Bullish)' :
+   335→   335→                      s.putOIChg > 100000 && s.callOIChg < 0 ? 'Put Writing (Bearish)' :
+   336→   336→                      s.callOIChg > 50000 ? 'Call OI Buildup' :
+   337→   337→                      s.putOIChg > 50000 ? 'Put OI Buildup' : '—';
+   338→   338→
+   339→   339→                    return (
+   340→   340→                      <tr key={s.strike} className={`border-b border-border/15 ${s.isATM ? 'bg-primary/10' : ''}`}>
+   341→   341→                        <td className={`py-1.5 pr-2 font-mono font-bold ${s.isATM ? 'text-yellow-400' : 'text-foreground'}`}>
+   342→   342→                          {s.strike.toLocaleString()}
+   343→   343→                        </td>
+   344→   344→                        <td className="py-1.5 pr-2 text-center">
+   345→   345→                          <Badge variant="outline" className={`text-[10px] ${s.isATM ? 'border-yellow-500/40 text-yellow-300' : 'border-border/40'}`}>
+   346→   346→                            {strikeType}
+   347→   347→                          </Badge>
+   348→   348→                        </td>
+   349→   349→                        <td className="py-1.5 pr-2 text-right font-mono">{formatNum(s.callOI)}</td>
+   350→   350→                        <td className={`py-1.5 pr-2 text-right font-mono ${s.callOIChg > 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+   351→   351→                          {s.callOIChg > 0 ? '+' : ''}{formatNum(s.callOIChg)}
+   352→   352→                        </td>
+   353→   353→                        <td className="py-1.5 pr-2 text-right font-mono">{formatNum(s.putOI)}</td>
+   354→   354→                        <td className={`py-1.5 pr-2 text-right font-mono ${s.putOIChg > 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+   355→   355→                          {s.putOIChg > 0 ? '+' : ''}{formatNum(s.putOIChg)}
+   356→   356→                        </td>
+   357→   357→                        <td className={`py-1.5 text-right text-[10px] ${
+   358→   358→                          smartMoneySignal.includes('Bullish') ? 'text-emerald-400' :
+   359→   359→                          smartMoneySignal.includes('Bearish') ? 'text-red-400' : 'text-muted-foreground'
+   360→   360→                        }`}>
+   361→   361→                          {smartMoneySignal}
+   362→   362→                        </td>
+   363→   363→                      </tr>
+   364→   364→                    );
+   365→   365→                  })}
+   366→   366→                </tbody>
+   367→   367→              </table>
+   368→   368→            </div>
+   369→   369→          )}
+   370→   370→        </CardContent>
+   371→   371→      </Card>
+   372→   372→
+   373→   373→      {/* Section E: Big Trades Timeline */}
+   374→   374→      <Card className="border-border/50 bg-card/80 backdrop-blur-sm">
+   375→   375→        <CardHeader className="pb-3">
+   376→   376→          <CardTitle className="flex items-center gap-2 text-base">
+   377→   377→            <Landmark className="h-4 w-4 text-cyan-400" />
+   378→   378→            Biggest Trades Timeline
+   379→   379→          </CardTitle>
+   380→   380→        </CardHeader>
+   381→   381→        <CardContent>
+   382→   382→          <ScrollArea className="h-64">
+   383→   383→            <div className="space-y-1.5">
+   384→   384→              {bigTrades.slice(0, 20).map((t, i) => (
+   385→   385→                <div key={i} className="flex items-center gap-3 text-xs p-2 rounded-md hover:bg-muted/30 transition-colors">
+   386→   386→                  <span className="text-muted-foreground font-mono whitespace-nowrap">
+   387→   387→                    {t.timestamp.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+   388→   388→                  </span>
+   389→   389→                  <Badge className={`text-[10px] shrink-0 ${playerBg(t.player)}`}>
+   390→   390→                    {t.player}
+   391→   391→                  </Badge>
+   392→   392→                  <span className="font-medium">{t.instrument}</span>
+   393→   393→                  <span className="text-muted-foreground">{t.tradeType}</span>
+   394→   394→                  <Badge variant="outline" className={`text-[10px] ${t.action === 'BUY' ? 'border-emerald-500/40 text-emerald-300' : 'border-red-500/40 text-red-300'}`}>
+   395→   395→                    {t.action}
+   396→   396→                  </Badge>
+   397→   397→                  <span className="font-mono text-muted-foreground">{formatNum(t.quantity)}</span>
+   398→   398→                  <span className="font-mono">₹{t.value.toFixed(1)}</span>
+   399→   399→                  {t.strike && <span className="text-muted-foreground font-mono">Strike: {t.strike.toLocaleString()}</span>}
+   400→   400→                </div>
+   401→   401→              ))}
+   402→   402→            </div>
+   403→   403→          </ScrollArea>
+   404→   404→        </CardContent>
+   405→   405→      </Card>
+   406→   406→
+   407→   407→      {/* Section F: Net Money Flow Summary — Heavy Weight Stocks */}
+   408→   408→      <Card className="border-border/50 bg-card/80 backdrop-blur-sm">
+   409→   409→        <CardHeader className="pb-3">
+   410→   410→          <CardTitle className="flex items-center gap-2 text-base">
+   411→   411→            <TrendingUp className="h-4 w-4 text-blue-400" />
+   412→   412→            Net Money Flow — Heavy Weight Stocks (NSE + BSE)
+   413→   413→            <Badge variant="outline" className="ml-2 text-[10px]">Money In − Money Out</Badge>
+   414→   414→          </CardTitle>
+   415→   415→        </CardHeader>
+   416→   416→        <CardContent>
+   417→   417→          {dualExchangeStocks.length > 0 && (
+   418→   418→            <>
+   419→   419→              {/* Total Net Flow */}
+   420→   420→              <div className="grid grid-cols-3 gap-3 mb-4">
+   421→   421→                {(() => {
+   422→   422→                  const totalIn = dualExchangeStocks.reduce((s, d) => s + d.totalMoneyIn, 0);
+   423→   423→                  const totalOut = dualExchangeStocks.reduce((s, d) => s + d.totalMoneyOut, 0);
+   424→   424→                  const totalNet = totalIn - totalOut;
+   425→   425→                  return (
+   426→   426→                    <>
+   427→   427→                      <div className="p-2 rounded-md border border-emerald-500/20 bg-emerald-500/5 text-center">
+   428→   428→                        <div className="text-[10px] text-emerald-400">Total Money In</div>
+   429→   429→                        <div className="text-sm font-mono font-bold text-emerald-400">{(totalIn / 10000000).toFixed(1)} Cr</div>
+   430→   430→                      </div>
+   431→   431→                      <div className="p-2 rounded-md border border-red-500/20 bg-red-500/5 text-center">
+   432→   432→                        <div className="text-[10px] text-red-400">Total Money Out</div>
+   433→   433→                        <div className="text-sm font-mono font-bold text-red-400">{(totalOut / 10000000).toFixed(1)} Cr</div>
+   434→   434→                      </div>
+   435→   435→                      <div className={`p-2 rounded-md border text-center ${totalNet >= 0 ? 'border-emerald-500/30 bg-emerald-500/10' : 'border-red-500/30 bg-red-500/10'}`}>
+   436→   436→                        <div className={`text-[10px] ${totalNet >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>Net Money Flow</div>
+   437→   437→                        <div className={`text-sm font-mono font-bold ${totalNet >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+   438→   438→                          {totalNet >= 0 ? '+' : ''}{(totalNet / 10000000).toFixed(1)} Cr
+   439→   439→                        </div>
+   440→   440→                      </div>
+   441→   441→                    </>
+   442→   442→                  );
+   443→   443→                })()}
+   444→   444→              </div>
+   445→   445→
+   446→   446→              {/* Per-stock breakdown */}
+   447→   447→              <div className="overflow-x-auto">
+   448→   448→                <table className="w-full text-[11px]">
+   449→   449→                  <thead>
+   450→   450→                    <tr className="border-b border-border/40 text-muted-foreground">
+   451→   451→                      <th className="py-1.5 pr-2 text-left font-medium">Stock</th>
+   452→   452→                      <th className="py-1.5 pr-2 text-right font-medium">NSE Net</th>
+   453→   453→                      <th className="py-1.5 pr-2 text-right font-medium">BSE Net</th>
+   454→   454→                      <th className="py-1.5 pr-2 text-right font-medium">Combined</th>
+   455→   455→                      <th className="py-1.5 pr-2 text-right font-medium">NSE-BSE</th>
+   456→   456→                      <th className="py-1.5 text-center font-medium">Dominant</th>
+   457→   457→                    </tr>
+   458→   458→                  </thead>
+   459→   459→                  <tbody>
+   460→   460→                    {dualExchangeStocks.map((s) => (
+   461→   461→                      <tr key={s.symbol} className="border-b border-border/15 hover:bg-muted/20">
+   462→   462→                        <td className="py-1 pr-2 font-medium">{s.symbol}</td>
+   463→   463→                        <td className={`py-1 pr-2 text-right font-mono ${s.nse.netMoneyFlow >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+   464→   464→                          {(s.nse.netMoneyFlow / 10000000).toFixed(1)} Cr
+   465→   465→                        </td>
+   466→   466→                        <td className={`py-1 pr-2 text-right font-mono ${s.bse.netMoneyFlow >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+   467→   467→                          {(s.bse.netMoneyFlow / 10000000).toFixed(1)} Cr
+   468→   468→                        </td>
+   469→   469→                        <td className={`py-1 pr-2 text-right font-mono font-bold ${s.combinedNetFlow >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+   470→   470→                          {s.combinedNetFlowCr >= 0 ? '+' : ''}{s.combinedNetFlowCr.toFixed(1)} Cr
+   471→   471→                        </td>
+   472→   472→                        <td className={`py-1 pr-2 text-right font-mono ${Math.abs(s.nseBseDiff) > 2 ? 'text-amber-400' : 'text-muted-foreground'}`}>
+   473→   473→                          {s.nseBseDiff > 0 ? '+' : ''}{s.nseBseDiff.toFixed(1)}
+   474→   474→                        </td>
+   475→   475→                        <td className="py-1 text-center">
+   476→   476→                          <Badge variant="outline" className={`text-[9px] ${
+   477→   477→                            s.dominantExchange === 'NSE' ? 'border-blue-500/30 text-blue-300' :
+   478→   478→                            s.dominantExchange === 'BSE' ? 'border-purple-500/30 text-purple-300' :
+   479→   479→                            'border-gray-500/30 text-gray-400'
+   480→   480→                          }`}>
+   481→   481→                            {s.dominantExchange}
+   482→   482→                          </Badge>
+   483→   483→                        </td>
+   484→   484→                      </tr>
+   485→   485→                    ))}
+   486→   486→                  </tbody>
+   487→   487→                </table>
+   488→   488→              </div>
+   489→   489→            </>
+   490→   490→          )}
+   491→   491→          <div className="mt-3 text-xs text-muted-foreground">
+   492→   492→            <strong>Net Money Flow</strong> tracks actual capital moving in/out of each stock across <strong>NSE + BSE</strong>.
+   493→   493→            Same stock (e.g., Reliance) has <strong>different buyers &amp; sellers</strong> on each exchange.
+   494→   494→            NSE-BSE price differences &gt; ₹2 may indicate arbitrage opportunity.
+   495→   495→          </div>
+   496→   496→        </CardContent>
+   497→   497→      </Card>
+   498→   498→
+   499→   499→      {/* Weighted Cash Flow Bar Chart — Pine Script Converted */}
+   500→   500→      <WeightedCashFlowChart />
+   501→   501→    </div>
+   502→   502→  );
+   503→   503→}
+   504→   504→

@@ -209,7 +209,7 @@ export default function BirdsEye() {
               {nseSession.isCASActive && (
                 <div className="p-2 rounded-md bg-orange-500/10 border border-orange-500/30 text-xs text-orange-200">
                   <ShieldAlert className="inline h-3 w-3 mr-1" />
-                  <strong>CAS Active:</strong> Cash trading PAUSED (3:15-3:35 PM). But <strong>Options & Futures CONTINUE trading!</strong> FII/PropDesk often execute large F&O orders during CAS. Monitor Big Money tab.
+                  <strong>CAS Active:</strong> Cash trading PAUSED (3:15-3:35 PM). But <strong>Options &amp; Futures CONTINUE trading!</strong> Big money often executes large F&amp;O orders during CAS. Monitor Big Money tab.
                 </div>
               )}
 

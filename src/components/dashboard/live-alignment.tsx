@@ -122,8 +122,8 @@ export default function LiveAlignmentIndicator() {
             </div>
             {marketContext?.rollingWindow && (
               <div className="text-[10px] text-muted-foreground mt-1">
-                FII: {marketContext.rollingWindow.fiiTrend} |
-                PropDesk: {marketContext.rollingWindow.propdeskTrend}
+                Flow: {marketContext.rollingWindow.fiiTrend} |
+                F&O: {marketContext.rollingWindow.propdeskTrend}
               </div>
             )}
           </div>

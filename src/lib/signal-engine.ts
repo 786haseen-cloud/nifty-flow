@@ -90,9 +90,9 @@ export function generateHolisticSignal(
 
   // THETA AND VIX ARE NOT IN THE SCORE
   const totalScore =
-    fiiFlowScore * SIGNAL_WEIGHTS.fiiFlow +
-    propdeskFlowScore * SIGNAL_WEIGHTS.propdeskFlow +
-    clientContrarianScore * SIGNAL_WEIGHTS.clientContrarian +
+    fiiFlowScore * SIGNAL_WEIGHTS.netFlow +
+    propdeskFlowScore * SIGNAL_WEIGHTS.foFlow +
+    clientContrarianScore * SIGNAL_WEIGHTS.contrarianFlow +
     threeDayOITrendScore * SIGNAL_WEIGHTS.threeDayOITrend +
     cashFutAlignScore * SIGNAL_WEIGHTS.cashFutAlign +
     globalContextScore * SIGNAL_WEIGHTS.globalContext +
@@ -288,14 +288,14 @@ function buildReasoningDetails(
 
   // Data availability context
   if (isLiveData) {
-    parts.push('LIVE: Only money flow visible (FII/PropDesk inferred from flow patterns)');
+    parts.push('LIVE: Only money flow visible (participant identity inferred from flow patterns)');
   } else if (isAfterMarketData) {
     parts.push('AFTER-MARKET: NSE participant data available for correlation');
   }
 
-  if (Math.abs(fii) > 30) parts.push(`FII ${fii > 0 ? 'buying' : 'selling'} strongly`);
-  if (Math.abs(propdesk) > 30) parts.push(`PropDesk ${propdesk > 0 ? 'bullish' : 'bearish'}`);
-  if (Math.abs(client) > 20) parts.push(`Retail ${client > 0 ? 'contrarian bullish' : 'contrarian bearish'}`);
+  if (Math.abs(fii) > 30) parts.push(`Net flow ${fii > 0 ? 'strongly buying' : 'strongly selling'}`);
+  if (Math.abs(propdesk) > 30) parts.push(`F&O flow ${propdesk > 0 ? 'bullish' : 'bearish'}`);
+  if (Math.abs(client) > 20) parts.push(`Contrarian flow ${client > 0 ? 'bullish' : 'bearish'}`);
   if (Math.abs(oi3d) > 30) parts.push(`3-day OI ${oi3d > 0 ? 'bullish support' : 'bearish resistance'}`);
   if (Math.abs(cashFut) > 20) parts.push(`Cash+Fut ${cashFut > 0 ? 'aligned bullish' : 'aligned bearish'}`);
   if (Math.abs(globalCtx) > 15) parts.push(`Global markets ${globalCtx > 0 ? 'supportive' : 'negative'}`);

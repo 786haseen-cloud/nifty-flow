@@ -162,15 +162,15 @@ export default function SettingsConfig() {
 
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
             <div className="p-2 rounded border border-border/30">
-              <span className="text-muted-foreground">FII Flow</span>
+              <span className="text-muted-foreground">Net Flow Score</span>
               <div className="font-mono font-bold">25%</div>
             </div>
             <div className="p-2 rounded border border-border/30">
-              <span className="text-muted-foreground">PropDesk Flow</span>
+              <span className="text-muted-foreground">F&amp;O Flow</span>
               <div className="font-mono font-bold">20%</div>
             </div>
             <div className="p-2 rounded border border-border/30">
-              <span className="text-muted-foreground">Client Contrarian</span>
+              <span className="text-muted-foreground">Contrarian Flow</span>
               <div className="font-mono font-bold">15%</div>
             </div>
             <div className="p-2 rounded border border-border/30">
@@ -251,9 +251,9 @@ export default function SettingsConfig() {
           <div className="text-xs text-muted-foreground space-y-1">
             <p>• <span className="text-foreground font-medium">Demo Mode</span>: Using realistic simulated data based on Indian market patterns</p>
             <p>• <span className="text-foreground font-medium">Kite API</span>: Connect Zerodha Kite API for live market data</p>
-            <p>• <span className="text-foreground font-medium">Signal Engine</span>: FII/PropDesk flow weighted, Client contrarian, no Theta/VIX in scores</p>
-            <p>• <span className="text-foreground font-medium">DII</span>: Cash-only player — does not participate in options markets</p>
-            <p>• <span className="text-foreground font-medium">FII + PropDesk</span>: Contrarian to retail — they trade ATM+ITM strikes</p>
+            <p>• <span className="text-foreground font-medium">Signal Engine</span>: Weighted flow analysis, contrarian flow detection, no Theta/VIX in scores</p>
+            <p>• <span className="text-foreground font-medium">Cash Flow</span>: Tracks money in/out across NSE + BSE for top-weighted stocks</p>
+            <p>• <span className="text-foreground font-medium">Options Flow</span>: Call/Put buying + writing at each strike — bullish vs bearish pressure</p>
           </div>
         </CardContent>
       </Card>

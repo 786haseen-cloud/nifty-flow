@@ -257,7 +257,7 @@ export default function MoneyFlowBars() {
           <div className="text-[10px] text-muted-foreground">
             Each stock&apos;s money flow is <strong>m multiplied by its index weight</strong> (e.g., HDFCBANK at 9.97% moves Nifty 4x more than ITC at 2.40%).
             Nifty50 and Sensex weights differ — same stock has different impact on each index.
-            <span className="text-amber-400 ml-1">During live market, only MONEY FLOW is visible — after market NSE reveals WHO (FII/DII/PropDesk/Client).</span>
+            <span className="text-amber-400 ml-1">During live market, only MONEY FLOW is visible — participant identity is unknown until after-market data release.</span>
           </div>
         </div>
 

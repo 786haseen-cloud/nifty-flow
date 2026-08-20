@@ -55,32 +55,15 @@ export default function BigMoneyTab() {
     return <Minus className="inline h-3 w-3 text-muted-foreground" />;
   };
 
-  // FII vs Client contrarian chart data
-  const contrarianData = dayComparison.map(d => ({
+  // Net Flow comparison chart data
+  const flowData = dayComparison.map(d => ({
     label: d.label,
-    FII: d.fii.totalNet / 100,
-    Client: d.client.totalNet / 100,
+    'Net Flow': (d.fii.totalNet + d.propdesk.totalNet + d.dii.totalNet) / 100,
   }));
 
-  const playerColor = (p: string) => {
-    switch (p) {
-      case 'FII': return 'text-red-400';
-      case 'PROPDESK': return 'text-purple-400';
-      case 'CLIENT': return 'text-cyan-400';
-      case 'DII': return 'text-emerald-400';
-      default: return 'text-foreground';
-    }
-  };
+  const playerColor = (_p: string) => 'text-foreground';
 
-  const playerBg = (p: string) => {
-    switch (p) {
-      case 'FII': return 'bg-red-500/20 text-red-300 border-red-500/30';
-      case 'PROPDESK': return 'bg-purple-500/20 text-purple-300 border-purple-500/30';
-      case 'CLIENT': return 'bg-cyan-500/20 text-cyan-300 border-cyan-500/30';
-      case 'DII': return 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30';
-      default: return 'bg-gray-500/20 text-gray-300';
-    }
-  };
+  const playerBg = (_p: string) => 'bg-gray-500/20 text-gray-300';
 
   return (
     <div className="space-y-4">
@@ -137,7 +120,7 @@ export default function BigMoneyTab() {
             {marketContext?.availability === 'after_market_available' && marketContext.rollingWindow && (
               <div className="flex flex-wrap gap-3 text-xs">
                 <div>
-                  <span className="text-muted-foreground">FII 3D: </span>
+                  <span className="text-muted-foreground">3D Net: </span>
                   <span className={`font-mono font-bold ${marketContext.rollingWindow.totalFIINet3D >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
                     {marketContext.rollingWindow.totalFIINet3D >= 0 ? '+' : ''}{marketContext.rollingWindow.totalFIINet3D.toFixed(0)} Cr
                   </span>
@@ -145,24 +128,11 @@ export default function BigMoneyTab() {
                     ({marketContext.rollingWindow.fiiTrend})
                   </span>
                 </div>
-                <div>
-                  <span className="text-muted-foreground">PropDesk: </span>
-                  <span className={`font-mono font-bold ${marketContext.rollingWindow.totalPropDeskNet3D >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                    {marketContext.rollingWindow.totalPropDeskNet3D >= 0 ? '+' : ''}{marketContext.rollingWindow.totalPropDeskNet3D.toFixed(0)} Cr
-                  </span>
-                </div>
-                <div>
-                  <span className="text-muted-foreground">Client: </span>
-                  <span className="font-mono">{marketContext.rollingWindow.totalClientNet3D.toFixed(0)} Cr</span>
-                  <span className={`ml-1 text-[10px] ${marketContext.rollingWindow.clientTrend === 'contrarian_bullish' ? 'text-emerald-400' : marketContext.rollingWindow.clientTrend === 'contrarian_bearish' ? 'text-red-400' : 'text-muted-foreground'}`}>
-                    ({marketContext.rollingWindow.clientTrend.replace('contrarian_', '')})
-                  </span>
-                </div>
               </div>
             )}
             <div className="text-[10px] text-amber-400/70 max-w-md">
-              Retailers cannot move the market in minutes. Only big money flow indicates institutional activity.
-              3-day data tells the story — after NSE releases data, we correlate WHO did WHAT.
+              Only big money flow is visible during live market.
+              3-day rolling data shows flow patterns and trend direction.
             </div>
           </div>
         </CardContent>
@@ -184,7 +154,7 @@ export default function BigMoneyTab() {
             <table className="w-full text-[11px]">
               <thead>
                 <tr className="border-b border-border/40 text-muted-foreground">
-                  <th className="py-1.5 pr-2 text-left font-medium">Player</th>
+                  <th className="py-1.5 pr-2 text-left font-medium">Category</th>
                   <th className="py-1.5 pr-2 text-left font-medium">Segment</th>
                   {dayComparison.map(d => (
                     <th key={d.label} className="py-1.5 pr-2 text-right font-medium">{d.label}<br /><span className="text-[9px]">{d.date}</span></th>
@@ -192,8 +162,8 @@ export default function BigMoneyTab() {
                 </tr>
               </thead>
               <tbody>
-                {(['fii', 'propdesk', 'client', 'dii'] as const).map((player) => {
-                  const playerLabel = player === 'fii' ? 'FII' : player === 'propdesk' ? 'PropDesk' : player === 'client' ? 'Client' : 'DII (Cash Only)';
+                {(['fii', 'propdesk', 'client', 'dii'] as const).map((player, idx) => {
+                  const playerLabel = ['Flow Category 1', 'Flow Category 2', 'Flow Category 3', 'Cash Only'][idx];
                   const segments = player === 'dii' ? ['cashNet'] : ['cashNet', 'futNet', 'optCallNet', 'optPutNet', 'totalNet'];
                   const segmentLabels = player === 'dii'
                     ? ['Cash Net']
@@ -233,18 +203,18 @@ export default function BigMoneyTab() {
         </CardContent>
       </Card>
 
-      {/* Section B: FII vs Client Contrarian Chart */}
+      {/* Section B: Net Money Flow (3-Day) */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <Card className="border-border/50 bg-card/80 backdrop-blur-sm">
           <CardHeader className="pb-3">
             <CardTitle className="flex items-center gap-2 text-base">
               <Users className="h-4 w-4 text-purple-400" />
-              FII vs Client (Contrarian View)
+              Net Money Flow (3-Day)
             </CardTitle>
           </CardHeader>
           <CardContent>
             <ResponsiveContainer width="100%" height={250}>
-              <LineChart data={contrarianData}>
+              <LineChart data={flowData}>
                 <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.1)" />
                 <XAxis dataKey="label" tick={{ fill: '#888', fontSize: 11 }} />
                 <YAxis tick={{ fill: '#888', fontSize: 11 }} />
@@ -253,23 +223,22 @@ export default function BigMoneyTab() {
                   formatter={(value: number) => [`₹${value.toFixed(0)} Cr`, '']}
                 />
                 <Legend wrapperStyle={{ fontSize: 11 }} />
-                <Line type="monotone" dataKey="FII" stroke="#ef4444" strokeWidth={2} dot={{ r: 4 }} name="FII Net" />
-                <Line type="monotone" dataKey="Client" stroke="#06b6d4" strokeWidth={2} dot={{ r: 4 }} name="Client Net" />
+                <Line type="monotone" dataKey="Net Flow" stroke="#ef4444" strokeWidth={2} dot={{ r: 4 }} name="Net Flow" />
               </LineChart>
             </ResponsiveContainer>
             <div className="mt-2 text-xs text-muted-foreground">
-              When FII &amp; Client are <span className="text-red-400">opposite</span> → FII is setting up a move.
-              When <span className="text-emerald-400">aligned</span> → Trend is strong.
+              Net money flow direction shows where capital is moving.
+              <span className="text-emerald-400">Positive</span> = buying pressure, <span className="text-red-400">Negative</span> = selling pressure.
             </div>
           </CardContent>
         </Card>
 
-        {/* Section D: Nifty vs FII Divergence */}
+        {/* Section D: Nifty Price vs Net Money Flow Divergence */}
         <Card className="border-border/50 bg-card/80 backdrop-blur-sm">
           <CardHeader className="pb-3">
             <CardTitle className="flex items-center gap-2 text-base">
               <AlertCircle className="h-4 w-4 text-amber-400" />
-              Nifty Price vs FII Net Flow
+              Nifty Price vs Net Money Flow
             </CardTitle>
           </CardHeader>
           <CardContent>
@@ -284,12 +253,12 @@ export default function BigMoneyTab() {
                 />
                 <Legend wrapperStyle={{ fontSize: 11 }} />
                 <Area yAxisId="left" type="monotone" dataKey="niftyPrice" stroke="#3b82f6" fill="#3b82f6" fillOpacity={0.1} strokeWidth={2} name="Nifty Price" />
-                <Area yAxisId="right" type="monotone" dataKey="fiiNetFlow" stroke="#ef4444" fill="#ef4444" fillOpacity={0.1} strokeWidth={2} name="FII Net Flow (₹Cr)" />
+                <Area yAxisId="right" type="monotone" dataKey="fiiNetFlow" stroke="#ef4444" fill="#ef4444" fillOpacity={0.1} strokeWidth={2} name="Net Flow (₹Cr)" />
               </AreaChart>
             </ResponsiveContainer>
             <div className="mt-2 text-xs text-muted-foreground">
-              🔴 Price ↑ + FII selling → <span className="text-red-400">Bearish divergence</span>
-              {' '}| 🟢 Price ↓ + FII buying → <span className="text-emerald-400">Bullish divergence</span>
+              🔴 Price ↑ + Net selling → <span className="text-red-400">Bearish divergence</span>
+              {' '}| 🟢 Price ↓ + Net buying → <span className="text-emerald-400">Bullish divergence</span>
             </div>
           </CardContent>
         </Card>
@@ -300,8 +269,8 @@ export default function BigMoneyTab() {
         <CardHeader className="pb-3">
           <CardTitle className="flex items-center gap-2 text-base">
             <TrendingUp className="h-4 w-4 text-emerald-400" />
-            ATM + ITM Focus — Where Smart Money Trades
-            <Badge variant="outline" className="ml-2 text-[10px]">FII &amp; PropDesk focus ATM+ITM</Badge>
+            ATM + ITM Focus — Where Big Money Trades
+            <Badge variant="outline" className="ml-2 text-[10px]">Heavy OI activity at ATM+ITM</Badge>
           </CardTitle>
         </CardHeader>
         <CardContent>
@@ -316,7 +285,7 @@ export default function BigMoneyTab() {
                     <th className="py-1.5 pr-2 text-right font-medium">Call OI Chg</th>
                     <th className="py-1.5 pr-2 text-right font-medium">Put OI</th>
                     <th className="py-1.5 pr-2 text-right font-medium">Put OI Chg</th>
-                    <th className="py-1.5 text-right font-medium">FII/PropDesk Signal</th>
+                    <th className="py-1.5 text-right font-medium">OI Signal</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -387,7 +356,7 @@ export default function BigMoneyTab() {
                     {t.timestamp.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
                   </span>
                   <Badge className={`text-[10px] shrink-0 ${playerBg(t.player)}`}>
-                    {t.player}
+                    —
                   </Badge>
                   <span className="font-medium">{t.instrument}</span>
                   <span className="text-muted-foreground">{t.tradeType}</span>

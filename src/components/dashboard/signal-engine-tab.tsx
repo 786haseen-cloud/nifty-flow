@@ -158,9 +158,9 @@ export default function SignalEngineTab() {
 
               {/* Reasoning Breakdown */}
               <div className="space-y-1.5">
-                {scoreBar(sig.reasoning.fiiFlowScore, 'FII Flow', 0.25)}
-                {scoreBar(sig.reasoning.propdeskFlowScore, 'PropDesk Flow', 0.20)}
-                {scoreBar(sig.reasoning.clientContrarianScore, 'Client Contrarian', 0.15)}
+                {scoreBar(sig.reasoning.fiiFlowScore, 'Net Flow Score', 0.25)}
+                {scoreBar(sig.reasoning.propdeskFlowScore, 'F&O Flow', 0.20)}
+                {scoreBar(sig.reasoning.clientContrarianScore, 'Contrarian Flow', 0.15)}
                 {scoreBar(sig.reasoning.threeDayOITrendScore, '3-Day OI Trend', 0.15)}
                 {scoreBar(sig.reasoning.cashFutAlignScore, 'Cash+Fut Align', 0.10)}
                 {scoreBar(sig.reasoning.globalContextScore, 'Global Context', 0.10)}

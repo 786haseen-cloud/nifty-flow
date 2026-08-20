@@ -582,9 +582,9 @@ export interface CompositeSignal {
 }
 
 export const SIGNAL_WEIGHTS = {
-  fiiFlow: 0.25,
-  propdeskFlow: 0.20,
-  clientContrarian: 0.15,
+  netFlow: 0.25,
+  foFlow: 0.20,
+  contrarianFlow: 0.15,
   threeDayOITrend: 0.15,
   cashFutAlign: 0.10,
   globalContext: 0.10,
