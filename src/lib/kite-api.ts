@@ -187,10 +187,36 @@ export async function getQuotes(instruments: string[]): Promise<Record<string, K
   if (!isKiteConfigured()) return {};
 
   try {
-    const iList = instruments.join(',');
-    // Use encodeURI (not encodeURIComponent) — Kite needs literal colons and commas.
-    // encodeURI only encodes spaces/special chars, preserves : , / ? & =
-    const res = await fetch(`${KITE_BASE}/quote?i=${encodeURI(iList)}`, {
+    // Strategy: Use instrument tokens (numeric) instead of trading symbols.
+    // Tokens have no encoding issues on any platform.
+    // Build a map from token → original instrument key for response mapping.
+    const tokenToKey: Record<string, string> = {};
+    const tokenList: string[] = [];
+
+    for (const inst of instruments) {
+      // If it's a numeric token, use directly
+      if (/^\d+$/.test(inst)) {
+        tokenToKey[inst] = inst;
+        tokenList.push(inst);
+      } else {
+        // Look up token from KITE_INDEX_INSTRUMENTS
+        const found = Object.entries(KITE_INDEX_INSTRUMENTS).find(
+          ([, v]) => v.symbol === inst
+        );
+        if (found) {
+          const tok = String(found[1].token);
+          tokenToKey[tok] = inst; // map token back to symbol name
+          tokenList.push(tok);
+        } else {
+          // Fallback: use the instrument string as-is with encodeURI
+          tokenToKey[inst] = inst;
+          tokenList.push(inst);
+        }
+      }
+    }
+
+    const iList = tokenList.join(',');
+    const res = await fetch(`${KITE_BASE}/quote?i=${iList}`, {
       headers: kiteHeaders(),
     });
 
@@ -209,7 +235,10 @@ export async function getQuotes(instruments: string[]): Promise<Record<string, K
 
     const quotes: Record<string, KiteQuote> = {};
     for (const [key, q] of Object.entries(data.data as Record<string, any>)) {
-      quotes[key] = {
+      // Kite returns the key as the token string (e.g. "256265")
+      // Map it back to the original instrument name (e.g. "NSE:NIFTY 50")
+      const displayKey = tokenToKey[key] || key;
+      quotes[displayKey] = {
         instrumentToken: q.instrument_token || 0,
         lastPrice: q.last_price || 0,
         open: q.ohlc?.open || 0,
@@ -410,13 +439,21 @@ export async function getOptionsFlow(symbol: string, spotPrice: number) {
 }
 
 // ─── NSE Index Token Map ───
+// We store BOTH the trading symbol (for display) and instrument token (for API calls).
+// Instrument tokens are numeric — no encoding issues on any platform.
 
-export const KITE_INDEX_INSTRUMENTS = {
-  NIFTY:      'NSE:NIFTY 50',
-  SENSEX:     'BSE:SENSEX',           // ← BSE, not NSE!
-  BANKNIFTY: 'NSE:NIFTY BANK',
-  FINNIFTY:   'NSE:NIFTY FIN SERVICE',
+export const KITE_INDEX_INSTRUMENTS: Record<string, { symbol: string; token: number }> = {
+  NIFTY:      { symbol: 'NSE:NIFTY 50',           token: 256265 },
+  SENSEX:     { symbol: 'BSE:SENSEX',              token: 1 },  // will be resolved from CSV
+  BANKNIFTY:  { symbol: 'NSE:NIFTY BANK',         token: 260105 },
+  FINNIFTY:   { symbol: 'NSE:NIFTY FIN SERVICE',  token: 64033 },
 };
+
+// Legacy string map (used by quote route)
+export const KITE_INDEX_SYMBOLS: Record<string, string> = {};
+for (const [k, v] of Object.entries(KITE_INDEX_INSTRUMENTS)) {
+  KITE_INDEX_SYMBOLS[k] = v.symbol;
+}
 
 // Nifty 50 instrument token for historical candles
 export const NIFTY50_TOKEN = 256265;

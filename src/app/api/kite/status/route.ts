@@ -2,12 +2,13 @@
  * Kite Status — Check if API is configured AND working
  * GET /api/kite/status
  *
- * Now actually tests the Kite connection instead of just checking env vars.
+ * Tests multiple Kite endpoints to pinpoint the exact issue.
  */
 import { NextResponse } from 'next/server';
 import { isKiteConfigured } from '@/lib/kite-api';
 
 const KITE_BASE = 'https://api.kite.trade';
+const NIFTY_TOKEN = 256265;
 
 export async function GET() {
   const configured = isKiteConfigured();
@@ -22,58 +23,73 @@ export async function GET() {
 
   if (!configured) {
     result.mode = 'demo';
-    result.loginUrl = `https://kite.zerodha.com/connect/login?api_key=${process.env.KITE_API_KEY || 'SET_YOUR_API_KEY_FIRST'}`;
-    result.instructions = [
-      'Kite API not configured yet.',
-      'Go to Vercel → Project → Settings → Environment Variables',
-      'Add KITE_API_KEY, KITE_API_SECRET, KITE_ACCESS_TOKEN',
-      'Click Save → Redeploy',
-    ];
     return NextResponse.json(result);
   }
 
-  // Actually test the connection with a lightweight API call
+  const token = process.env.KITE_ACCESS_TOKEN!.trim();
+  const headers = {
+    'Authorization': `enctoken ${token}`,
+    'Content-Type': 'application/x-www-form-urlencoded',
+  };
+
+  // Test 1: /user/margins (no instrument param — pure auth test)
+  let marginsOk = false;
   try {
-    const token = process.env.KITE_ACCESS_TOKEN!.trim();
-    const res = await fetch(`${KITE_BASE}/quote?i=${encodeURI('NSE:NIFTY 50')}`, {
-      headers: {
-        'Authorization': `enctoken ${token}`,
-        'Content-Type': 'application/x-www-form-urlencoded',
-      },
-    });
+    const mRes = await fetch(`${KITE_BASE}/user/margins`, { headers });
+    const mText = await mRes.text();
+    result.marginsTest = { status: mRes.status, preview: mText.substring(0, 300) };
+    marginsOk = mRes.ok;
+  } catch (e: any) {
+    result.marginsTest = { error: e.message };
+  }
 
-    const text = await res.text();
-
-    if (res.ok) {
-      const data = JSON.parse(text);
-      if (data.status === 'success' && data.data) {
-        const niftyData = data.data['NSE:NIFTY 50'];
-        result.mode = 'live';
-        result.connectionTest = 'PASS';
-        result.niftyLastPrice = niftyData?.last_price || null;
-        result.message = 'Kite API connected and returning live data.';
-      } else {
-        result.mode = 'error';
-        result.connectionTest = 'FAIL';
-        result.kiteStatus = data.status;
-        result.kiteError = data.message || 'Unknown Kite error';
-        result.rawResponse = text.substring(0, 500);
-        result.message = `Kite returned error: ${data.message || 'Unknown'}`;
-      }
-    } else {
-      result.mode = 'error';
-      result.connectionTest = 'FAIL';
-      result.httpStatus = res.status;
-      result.httpStatusText = res.statusText;
-      result.kiteResponse = text.substring(0, 500);
-      result.message = `Kite API returned HTTP ${res.status}. Token may be expired.`;
-    }
-  } catch (err) {
-    const errMsg = err instanceof Error ? err.message : String(err);
+  if (!marginsOk) {
     result.mode = 'error';
     result.connectionTest = 'FAIL';
-    result.error = errMsg;
-    result.message = `Connection test failed: ${errMsg}`;
+    result.message = 'Token is invalid or expired. /user/margins rejected it.';
+    result.fix = 'Get a fresh access token from kite.zerodha.com/connect/login and update KITE_ACCESS_TOKEN in Vercel env vars. Tokens expire daily at midnight IST.';
+    return NextResponse.json(result);
+  }
+
+  // Test 2: /quote with instrument TOKEN (no encoding issues)
+  let tokenQuoteOk = false;
+  try {
+    const qRes = await fetch(`${KITE_BASE}/quote?i=${NIFTY_TOKEN}`, { headers });
+    const qText = await qRes.text();
+    result.tokenQuoteTest = { status: qRes.status, preview: qText.substring(0, 500) };
+    tokenQuoteOk = qRes.ok;
+  } catch (e: any) {
+    result.tokenQuoteTest = { error: e.message };
+  }
+
+  // Test 3: /quote with trading symbol NSE:NIFTY 50
+  let symbolQuoteOk = false;
+  try {
+    const sRes = await fetch(`${KITE_BASE}/quote?i=NSE:NIFTY%2050`, { headers });
+    const sText = await sRes.text();
+    result.symbolQuoteTest = { status: sRes.status, preview: sText.substring(0, 500) };
+    symbolQuoteOk = sRes.ok;
+  } catch (e: any) {
+    result.symbolQuoteTest = { error: e.message };
+  }
+
+  if (tokenQuoteOk || symbolQuoteOk) {
+    let lastPrice = null;
+    if (tokenQuoteOk) {
+      try {
+        const data = JSON.parse(result.tokenQuoteTest.preview);
+        lastPrice = data?.data?.[String(NIFTY_TOKEN)]?.last_price;
+      } catch {}
+    }
+    result.mode = 'live';
+    result.connectionTest = 'PASS';
+    result.niftyLastPrice = lastPrice;
+    result.message = 'Kite API connected successfully!';
+    result.tokenFormat = tokenQuoteOk ? 'instrument_token' : 'trading_symbol';
+  } else {
+    result.mode = 'error';
+    result.connectionTest = 'FAIL';
+    result.message = 'Token works for margins but quotes failed. Unusual — check raw responses above.';
   }
 
   return NextResponse.json(result);

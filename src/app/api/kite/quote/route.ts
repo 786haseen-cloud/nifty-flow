@@ -17,15 +17,13 @@ export async function GET(req: NextRequest) {
 
   const symbolsParam = req.nextUrl.searchParams.get('symbols');
 
-  // Default: all 4 indices
+  // Default: all 4 indices (use trading symbols)
   const symbols = symbolsParam
     ? symbolsParam.split(',')
-    : Object.values(KITE_INDEX_INSTRUMENTS);
+    : Object.values(KITE_INDEX_INSTRUMENTS).map(v => v.symbol);
 
   try {
     const quotes = await getQuotes(symbols);
-
-    // Check for errors from getQuotes
     const error = (quotes as any)._error;
 
     if (error) {
@@ -35,27 +33,15 @@ export async function GET(req: NextRequest) {
         timestamp: new Date().toISOString(),
         error,
         symbols_requested: symbols,
-        debug: {
-          apiKeyPrefix: process.env.KITE_API_KEY?.substring(0, 6) + '...',
-          accessTokenPrefix: process.env.KITE_ACCESS_TOKEN?.substring(0, 8) + '...',
-          accessTokenLength: process.env.KITE_ACCESS_TOKEN?.length || 0,
-        },
       });
     }
 
-    const quoteCount = Object.keys(quotes).length;
     return NextResponse.json({
       mode: 'live',
       provider: 'Zerodha Kite',
       timestamp: new Date().toISOString(),
       quotes,
-      quoteCount,
-      symbols_requested: symbols,
-      debug: {
-        apiKeyPrefix: process.env.KITE_API_KEY?.substring(0, 6) + '...',
-        accessTokenPrefix: process.env.KITE_ACCESS_TOKEN?.substring(0, 8) + '...',
-        accessTokenLength: process.env.KITE_ACCESS_TOKEN?.length || 0,
-      },
+      quoteCount: Object.keys(quotes).length,
     });
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
