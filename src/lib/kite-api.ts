@@ -586,3 +586,158 @@ export async function getInstrumentMeta(
 
 // Stock F&O list (symbols only, for backwards compat)
 export const KITE_STOCK_FO = STOCK_SPECS.map(s => s.symbol);
+
+// ─── Black-Scholes Delta Calculator ───
+// Approximate delta for options when Kite doesn't provide Greeks.
+// Uses the standard normal CDF approximation (Abramowitz & Stegun).
+
+function normCDF(x: number): number {
+  // Rational approximation (max error ~7.5e-8)
+  const a1 = 0.254829592, a2 = -0.284496736, a3 = 1.421413741;
+  const a4 = -1.453152027, a5 = 1.061405429, p = 0.3275911;
+  const sign = x < 0 ? -1 : 1;
+  const absX = Math.abs(x);
+  const t = 1.0 / (1.0 + p * absX);
+  const y = 1.0 - (((((a5 * t + a4) * t) + a3) * t + a2) * t + a1) * t * Math.exp(-absX * absX / 2);
+  return 0.5 * (1.0 + sign * y);
+}
+
+/**
+ * Calculate Black-Scholes delta for an option
+ * @param isCall - true for CE, false for PE
+ * @param S - Spot price
+ * @param K - Strike price
+ * @param T - Time to expiry in years (e.g., 3/365 for 3 days)
+ * @param r - Risk-free rate (default 0.065 = 6.5%)
+ * @param sigma - Implied volatility (if 0, estimate from moneyness)
+ */
+function bsDelta(isCall: boolean, S: number, K: number, T: number, r: number = 0.065, sigma: number = 0): number {
+  if (T <= 0 || S <= 0 || K <= 0) return isCall ? 0.5 : -0.5;
+  // If no IV provided, estimate from moneyness
+  if (sigma <= 0) {
+    const moneyness = (S - K) / S;
+    sigma = 0.12 + Math.abs(moneyness) * 0.3; // rough estimate: 12-42%
+  }
+  const d1 = (Math.log(S / K) + (r + sigma * sigma / 2) * T) / (sigma * Math.sqrt(T));
+  const delta = normCDF(d1);
+  return isCall ? delta : delta - 1;
+}
+
+// ─── Strike Flow Snapshot ───
+// Returns raw per-strike data for the frontend to compute 4-color flow.
+// The frontend stores previous snapshot and diffs OI/price changes.
+// This avoids Vercel serverless state loss between cold starts.
+
+export interface StrikeFlowSnapshot {
+  timestamp: string;
+  symbol: string;
+  spotPrice: number;
+  atmStrike: number;
+  lotSize: number;
+  strikeStep: number;
+  expiry: string;
+  strikes: StrikeFlowData[];
+}
+
+export interface StrikeFlowData {
+  strike: number;
+  isATM: boolean;
+  ceLTP: number;
+  peLTP: number;
+  ceOI: number;
+  peOI: number;
+  ceVol: number;
+  peVol: number;
+  ceDelta: number;
+  peDelta: number;
+  ceToken: number;
+  peToken: number;
+}
+
+/**
+ * Get raw strike flow snapshot — per-strike OI, LTP, volume, delta.
+ * Frontend diffs consecutive snapshots to compute 4-color flow.
+ * Fetches 11 strikes around ATM (±5 × strikeStep).
+ */
+export async function getStrikeFlowSnapshot(
+  symbol: string,
+  spotPrice: number,
+): Promise<StrikeFlowSnapshot | null> {
+  const spec = getInstrumentSpec(symbol);
+  if (!spec) return null;
+
+  // Get instruments for nearest expiry, 5 strikes each side = 11 total
+  const { instruments: optInstruments, meta } = await getOptionInstruments(symbol, spotPrice, 5);
+  if (optInstruments.length === 0) return null;
+
+  // Batch fetch quotes using instrument tokens
+  const iKeys = optInstruments.map(i => String(i.instrumentToken));
+  const quotes = await getQuotes(iKeys);
+  if ('_error' in quotes) return null;
+
+  const atmStrike = Math.round(spotPrice / meta.strikeStep) * meta.strikeStep;
+
+  // Group by strike
+  const strikeMap = new Map<number, { ce: KiteInstrument | null; pe: KiteInstrument | null }>();
+  for (const inst of optInstruments) {
+    if (!strikeMap.has(inst.strike)) {
+      strikeMap.set(inst.strike, { ce: null, pe: null });
+    }
+    const entry = strikeMap.get(inst.strike)!;
+    if (inst.tradingSymbol.endsWith('CE')) entry.ce = inst;
+    else if (inst.tradingSymbol.endsWith('PE')) entry.pe = inst;
+  }
+
+  // Calculate time to expiry
+  const expiry = optInstruments[0]?.expiry || '';
+  const now = new Date();
+  const expiryDate = new Date(expiry);
+  const daysToExpiry = Math.max(0.5, (expiryDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
+  const T = daysToExpiry / 365;
+
+  // Build strike data
+  const strikes: StrikeFlowData[] = [];
+  for (const [strike, { ce, pe }] of strikeMap.entries()) {
+    const ceQuote = ce ? quotes[String(ce.instrumentToken)] : null;
+    const peQuote = pe ? quotes[String(pe.instrumentToken)] : null;
+
+    const ceLTP = ceQuote?.lastPrice || 0;
+    const peLTP = peQuote?.lastPrice || 0;
+    const ceOI = ceQuote?.oi || 0;
+    const peOI = peQuote?.oi || 0;
+    const ceVol = ceQuote?.volume || 0;
+    const peVol = peQuote?.volume || 0;
+
+    // Compute delta via Black-Scholes
+    const ceDelta = Math.abs(bsDelta(true, spotPrice, strike, T));
+    const peDelta = Math.abs(bsDelta(false, spotPrice, strike, T));
+
+    strikes.push({
+      strike,
+      isATM: strike === atmStrike,
+      ceLTP,
+      peLTP,
+      ceOI,
+      peOI,
+      ceVol,
+      peVol,
+      ceDelta,
+      peDelta,
+      ceToken: ce?.instrumentToken || 0,
+      peToken: pe?.instrumentToken || 0,
+    });
+  }
+
+  strikes.sort((a, b) => a.strike - b.strike);
+
+  return {
+    timestamp: new Date().toISOString(),
+    symbol,
+    spotPrice,
+    atmStrike,
+    lotSize: meta.lotSize,
+    strikeStep: meta.strikeStep,
+    expiry,
+    strikes,
+  };
+}

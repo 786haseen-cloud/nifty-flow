@@ -5,13 +5,14 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Badge } from '@/components/ui/badge';
 import {
   Globe, Activity, Target, Landmark, Thermometer, Settings,
-  Wifi, WifiOff, Clock, TrendingUp, TrendingDown, Info, Layers,
+  Wifi, WifiOff, Clock, TrendingUp, TrendingDown, Info, Layers, Crosshair,
 } from 'lucide-react';
 import BirdsEye from '@/components/dashboard/birds-eye';
 import LiveMonitor from '@/components/dashboard/live-monitor';
 import SignalEngineTab from '@/components/dashboard/signal-engine-tab';
 import BigMoneyTab from '@/components/dashboard/big-money-tab';
 import OptionsFlowTab from '@/components/dashboard/options-flow-tab';
+import StrikeFlowMap from '@/components/dashboard/strike-flow-map';
 import GreeksDecay from '@/components/dashboard/greeks-decay';
 import SettingsConfig from '@/components/dashboard/settings-config';
 import { generateDemoVIX, getMarketStatus } from '@/lib/demo-data';
@@ -176,10 +177,15 @@ export default function DashboardPage() {
               <span className="sm:hidden">🔮</span>
             </TabsTrigger>
             {/* OPTIONS FLOW = THE MAIN THING — Cash + Options flow stacked view */}
-            <TabsTrigger value="options-flow" className="flex-1 text-xs gap-1.5 data-[state=active]:bg-purple-500/20 data-[state=active]:text-purple-300 font-bold">
+            <TabsTrigger value="options-flow" className="flex-1 text-xs gap-1.5 data-[state=active]:bg-purple-500/20 data-[state=active]:text-purple-300">
               <Layers className="h-3.5 w-3.5" />
               <span className="hidden sm:inline">⚡ Opt Flow</span>
               <span className="sm:hidden">⚡</span>
+            </TabsTrigger>
+            <TabsTrigger value="strike-flow" className="flex-1 text-xs gap-1.5 data-[state=active]:bg-pink-500/20 data-[state=active]:text-pink-300 font-bold">
+              <Crosshair className="h-3.5 w-3.5" />
+              <span className="hidden sm:inline">⚡ Strike Flow</span>
+              <span className="sm:hidden">🎯</span>
             </TabsTrigger>
             <TabsTrigger value="birds-eye" className="flex-1 text-xs gap-1.5 data-[state=active]:bg-orange-500/20 data-[state=active]:text-orange-300">
               <Globe className="h-3.5 w-3.5" />
@@ -215,6 +221,10 @@ export default function DashboardPage() {
           {/* OPTIONS FLOW = THE MAIN THING — Cash → Index Options → Stock Options stacked */}
           <TabsContent value="options-flow" className="mt-0">
             <OptionsFlowTab />
+          </TabsContent>
+
+          <TabsContent value="strike-flow" className="mt-0">
+            <StrikeFlowMap />
           </TabsContent>
 
           <TabsContent value="birds-eye" className="mt-0">
