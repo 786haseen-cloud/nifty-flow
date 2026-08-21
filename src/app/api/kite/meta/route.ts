@@ -10,7 +10,6 @@ import { isKiteConfigured, getInstrumentMeta, INDEX_SPECS, STOCK_SPECS } from '@
 
 export async function GET(req: NextRequest) {
   if (!isKiteConfigured()) {
-    // Return specs without dynamic data
     return NextResponse.json({
       mode: 'demo',
       message: 'Kite API not configured. Showing spec definitions only.',
@@ -23,36 +22,46 @@ export async function GET(req: NextRequest) {
   const symbol = req.nextUrl.searchParams.get('symbol');
   const spotPrice = parseFloat(req.nextUrl.searchParams.get('spotPrice') || '24350');
 
-  if (symbol) {
-    // Get meta for specific symbol
-    const meta = await getInstrumentMeta(symbol, spotPrice);
+  try {
+    if (symbol) {
+      const meta = await getInstrumentMeta(symbol, spotPrice);
+      return NextResponse.json({
+        mode: 'live',
+        symbol,
+        spotPrice,
+        lotSize: meta.lotSize,
+        strikeStep: meta.strikeStep,
+        timestamp: new Date().toISOString(),
+      });
+    }
+
+    // Get meta for ALL instruments (FIXED: return is OUTSIDE the for loop)
+    const allSpecs = [...INDEX_SPECS, ...STOCK_SPECS];
+    const results: Record<string, { lotSize: number; strikeStep: number }> = {};
+
+    for (const spec of allSpecs) {
+      try {
+        const meta = await getInstrumentMeta(spec.symbol, spotPrice);
+        results[spec.symbol] = meta;
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        results[spec.symbol] = { lotSize: -1, strikeStep: -1 };
+        console.error(`[Meta] Error for ${spec.symbol}: ${errMsg}`);
+      }
+    }
+
     return NextResponse.json({
       mode: 'live',
-      symbol,
-      spotPrice,
-      lotSize: meta.lotSize,
-      strikeStep: meta.strikeStep,
       timestamp: new Date().toISOString(),
+      instruments: results,
+      note: 'These values are from Kite\'s live instrument CSV. They update automatically.',
     });
+  } catch (err) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    return NextResponse.json({
+      mode: 'error',
+      error: errMsg,
+      timestamp: new Date().toISOString(),
+    }, { status: 500 });
   }
-
-  // Get meta for ALL instruments
-  const allSpecs = [...INDEX_SPECS, ...STOCK_SPECS];
-  const results: Record<string, { lotSize: number; strikeStep: number }> = {};
-
-  for (const spec of allSpecs) {
-    try {
-      const meta = await getInstrumentMeta(spec.symbol, spotPrice);
-      results[spec.symbol] = meta;
-    } catch {
-      results[spec.symbol] = { lotSize: -1, strikeStep: -1 };
-    }
-  }
-
-  return NextResponse.json({
-    mode: 'live',
-    timestamp: new Date().toISOString(),
-    instruments: results,
-    note: 'These values are from Kite\'s live instrument CSV. They update automatically.',
-  });
 }

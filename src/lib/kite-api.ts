@@ -170,7 +170,9 @@ export async function getInstruments(exchange?: string): Promise<KiteInstrument[
     instrumentsCacheTime = Date.now();
     return exchange ? instruments.filter(i => i.exchange === exchange) : instruments;
   } catch (err) {
-    console.error('[Kite] instruments fetch failed:', err);
+    const errMsg = err instanceof Error ? err.message : String(err);
+    console.error('[Kite] instruments fetch failed:', errMsg);
+    // Return empty but set error flag for callers to detect
     return [];
   }
 }
@@ -222,8 +224,9 @@ export async function getQuotes(instruments: string[]): Promise<Record<string, K
     }
     return quotes;
   } catch (err) {
-    console.error('[Kite] quote error:', err);
-    return {};
+    const errMsg = err instanceof Error ? err.message : String(err);
+    console.error('[Kite] quote error:', errMsg);
+    return { _error: `Exception: ${errMsg}` } as any;
   }
 }
 
@@ -266,7 +269,8 @@ export async function getCandles(
       volume: c[5],
     }));
   } catch (err) {
-    console.error('[Kite] candles error:', err);
+    const errMsg = err instanceof Error ? err.message : String(err);
+    console.error('[Kite] candles error:', errMsg);
     return [];
   }
 }
