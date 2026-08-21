@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { Badge } from '@/components/ui/badge';
 import { Wifi, WifiOff, RefreshCw, Crosshair } from 'lucide-react';
+import { INDEX_SPECS, STOCK_SPECS } from '@/lib/kite-api';
 import type { StrikeFlowSnapshot, StrikeFlowData } from '@/lib/kite-api';
 
 // ═══════════════════════════════════════════
@@ -130,7 +131,10 @@ const COLORS = {
 // ═══════════════════════════════════════════
 
 const REFRESH_INTERVAL = 30000; // 30 seconds (options data doesn't change every second)
-const SYMBOLS = ['NIFTY', 'BANKNIFTY', 'SENSEX', 'FINNIFTY'];
+const ALL_SYMBOLS = [
+  ...INDEX_SPECS.map(s => ({ symbol: s.symbol, name: s.name, type: 'index' as const })),
+  ...STOCK_SPECS.map(s => ({ symbol: s.symbol, name: s.name, type: 'stock' as const })),
+];
 
 export default function StrikeFlowMap() {
   const [symbol, setSymbol] = useState('NIFTY');
@@ -247,11 +251,13 @@ export default function StrikeFlowMap() {
     if (c.peDisplay > maxBetVal) { maxBetVal = c.peDisplay; maxBetSide = 'pe'; maxBetIdx = i; }
   }
 
-  // CE offsets: ATM+250, +200, +150, +100, +50, 0, -50, -100, -150, -200, -250
-  const CE_OFFSETS = [250, 200, 150, 100, 50, 0, -50, -100, -150, -200, -250];
-  const PE_OFFSETS = [-250, -200, -150, -100, -50, 0, 50, 100, 150, 200, 250];
-  const CE_CATS = ['OTM','OTM','OTM','OTM','OTM','ATM','ITM','ITM','ITM','ITM','ITM'];
-  const PE_CATS = ['ITM','ITM','ITM','ITM','ITM','ATM','OTM','OTM','OTM','OTM','OTM'];
+  // Dynamic offsets based on strikeStep (works for Nifty=50, HDFCBANK=10, etc.)
+  const step = currSnapshot ? currSnapshot.strikeStep : 50;
+  const n = 5;
+  const CE_OFFSETS = Array.from({ length: n * 2 + 1 }, function(_, i) { return (n - i) * step; });
+  const PE_OFFSETS = Array.from({ length: n * 2 + 1 }, function(_, i) { return (i - n) * step; });
+  const CE_CATS = Array.from({ length: n * 2 + 1 }, function(_, i) { return i < n ? 'OTM' : i === n ? 'ATM' : 'ITM'; });
+  const PE_CATS = Array.from({ length: n * 2 + 1 }, function(_, i) { return i < n ? 'ITM' : i === n ? 'ATM' : 'OTM'; });
 
   function getCellByOffset(cells: StrikeFlowCell[], offset: number): StrikeFlowCell | undefined {
     if (!currSnapshot) return undefined;
@@ -396,21 +402,27 @@ export default function StrikeFlowMap() {
           )}
         </div>
 
-        {/* Symbol Selector */}
-        <div className="flex gap-1">
-          {SYMBOLS.map(s => (
-            <button
-              key={s}
-              onClick={() => { setSymbol(s); setPrevSnapshot(null); setCurrSnapshot(null); setFlowHistory([]); }}
-              className={`px-2 py-1 text-[10px] font-bold rounded transition-colors ${
-                symbol === s
-                  ? 'bg-purple-500/20 text-purple-300 border border-purple-500/40'
-                  : 'bg-muted/50 text-muted-foreground border border-transparent hover:border-border'
-              }`}
-            >
-              {s}
-            </button>
-          ))}
+        {/* Symbol Selector — dropdown for 19 symbols */}
+        <div className="flex items-center gap-2">
+          <select
+            value={symbol}
+            onChange={function(e) { setSymbol(e.target.value); setPrevSnapshot(null); setCurrSnapshot(null); setFlowHistory([]); }}
+            className="bg-muted/50 border border-border/50 rounded-md px-2 py-1 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-purple-500/50"
+          >
+            <optgroup label="Indices">
+              {ALL_SYMBOLS.filter(function(s) { return s.type === 'index'; }).map(function(s) {
+                return <option key={s.symbol} value={s.symbol}>{s.name}</option>;
+              })}
+            </optgroup>
+            <optgroup label="Stocks">
+              {ALL_SYMBOLS.filter(function(s) { return s.type === 'stock'; }).map(function(s) {
+                return <option key={s.symbol} value={s.symbol}>{s.name}</option>;
+              })}
+            </optgroup>
+          </select>
+          <Badge variant="outline" className="text-[9px] border-purple-500/30 text-purple-300">
+            {ALL_SYMBOLS.find(function(s) { return s.symbol === symbol; }) ? 'INDEX/STOCK' : ''}
+          </Badge>
         </div>
       </div>
 
@@ -438,7 +450,7 @@ export default function StrikeFlowMap() {
           {/* Spot + ATM Info */}
           <div className="flex items-center gap-3 mb-2 px-1">
             <span className="text-[10px] font-mono" style={{ color: COLORS.info }}>
-              Spot: <b className="text-white">{currSnapshot.spotPrice.toFixed(0)}</b>
+              Spot: <b className="text-white">{currSnapshot.spotPrice >= 1000 ? currSnapshot.spotPrice.toFixed(0) : currSnapshot.spotPrice.toFixed(2)}</b>
             </span>
             <span className="text-[10px] font-mono" style={{ color: '#FFD700' }}>
               ATM: <b className="text-white">{currSnapshot.atmStrike}</b>

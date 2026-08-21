@@ -1,13 +1,16 @@
 /**
  * Strike Flow Map API
- * GET /api/kite/strike-flow?symbol=NIFTY&spotPrice=24350
+ * GET /api/kite/strike-flow?symbol=NIFTY
+ * GET /api/kite/strike-flow?symbol=HDFCBANK
+ * GET /api/kite/strike-flow?symbol=RELIANCE&spotPrice=2950
  *
+ * Supports all 4 indices + 15 stocks.
  * Returns raw per-strike snapshot (OI, LTP, volume, delta).
  * Frontend stores 2 consecutive snapshots and computes 4-color flow.
  * This avoids Vercel serverless state-loss between cold starts.
  */
 import { NextRequest, NextResponse } from 'next/server';
-import { isKiteConfigured, getStrikeFlowSnapshot, getQuotes, KITE_INDEX_INSTRUMENTS } from '@/lib/kite-api';
+import { isKiteConfigured, getStrikeFlowSnapshot, getQuotes, getInstrumentSpec } from '@/lib/kite-api';
 
 export async function GET(req: NextRequest) {
   if (!isKiteConfigured()) {
@@ -17,26 +20,36 @@ export async function GET(req: NextRequest) {
     });
   }
 
-  const symbol = req.nextUrl.searchParams.get('symbol') || 'NIFTY';
+  const symbol = (req.nextUrl.searchParams.get('symbol') || 'NIFTY').toUpperCase();
   let spotPrice = parseFloat(req.nextUrl.searchParams.get('spotPrice') || '0');
 
+  // Validate symbol
+  const spec = getInstrumentSpec(symbol);
+  if (!spec) {
+    return NextResponse.json({
+      mode: 'error',
+      symbol,
+      error: `Unknown symbol: ${symbol}`,
+    }, { status: 400 });
+  }
+
   try {
-    // If no spot price provided, fetch it live from Kite
+    // Auto-fetch spot price if not provided
     if (spotPrice <= 0) {
-      const instInfo = KITE_INDEX_INSTRUMENTS[symbol];
-      if (instInfo) {
-        const quotes = await getQuotes([String(instInfo.token)]);
-        if (!('_error' in quotes)) {
-          const q = quotes[instInfo.token];
-          if (q?.lastPrice && q.lastPrice > 1000) {
-            spotPrice = q.lastPrice;
-          }
-        }
+      const quotes = await getQuotes([spec.kiteSymbol]);
+      const q = quotes[spec.kiteSymbol];
+      if (q?.lastPrice && q.lastPrice > 0) {
+        spotPrice = q.lastPrice;
       }
     }
 
-    // Fallback spot price
-    if (spotPrice <= 0) spotPrice = 24250;
+    if (spotPrice <= 0) {
+      return NextResponse.json({
+        mode: 'error',
+        symbol,
+        error: `Could not fetch spot price for ${symbol}. Is market open?`,
+      }, { status: 502 });
+    }
 
     const snapshot = await getStrikeFlowSnapshot(symbol, spotPrice);
 

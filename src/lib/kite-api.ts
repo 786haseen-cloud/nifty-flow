@@ -587,6 +587,12 @@ export async function getInstrumentMeta(
 // Stock F&O list (symbols only, for backwards compat)
 export const KITE_STOCK_FO = STOCK_SPECS.map(s => s.symbol);
 
+// ─── All symbols available for Strike Flow Map ───
+export const STRIKE_FLOW_SYMBOLS = [
+  ...INDEX_SPECS.map(s => ({ symbol: s.symbol, name: s.name, type: 'index' as const })),
+  ...STOCK_SPECS.map(s => ({ symbol: s.symbol, name: s.name, type: 'stock' as const })),
+];
+
 // ─── Black-Scholes Delta Calculator ───
 // Approximate delta for options when Kite doesn't provide Greeks.
 // Uses the standard normal CDF approximation (Abramowitz & Stegun).
