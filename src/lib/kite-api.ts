@@ -31,6 +31,7 @@ export function isKiteConfigured(): boolean {
 function kiteHeaders() {
   return {
     'Authorization': `enctoken ${process.env.KITE_ACCESS_TOKEN || ''}`,
+    'X-Kite-Version': '3',
     'Content-Type': 'application/x-www-form-urlencoded',
   };
 }
