@@ -1,0 +1,2279 @@
+// =========================
+// NIFTY SMART MONEY TERMINAL - COMPLETE WORKING SCRIPT
+// =========================
+// Features:
+// - Futures: Working ✅
+// - Cash: Working ✅ (Weighted by Nifty 50 index)
+// - Options: REAL IV + Complete Greeks (Delta, Gamma, Theta, Vega, Rho)
+// - Option Flow: 4-color breakdown (Call Buy, Put Write, Put Buy, Call Write)
+// =========================
+
+var LOT_SIZE = 65;
+
+function fetchSmartMoneyData() {
+
+  // =========================
+  // INDIA MARKET TIME FILTER
+  // =========================
+
+  var now = new Date();
+
+  var istTime = new Date(
+    now.toLocaleString("en-US", {
+      timeZone: "Asia/Kolkata"
+    })
+  );
+
+  var day = istTime.getDay();
+
+  if (day == 0 || day == 6) {
+    Logger.log("Weekend - Market Closed");
+    return; 
+  }
+
+  var hours = istTime.getHours();
+  var minutes = istTime.getMinutes();
+  var currentMinutes = hours * 60 + minutes;
+
+  var marketOpen  = 9 * 60 + 14;
+  var marketClose = 15 * 60 + 40;
+
+  if (currentMinutes < marketOpen || currentMinutes > marketClose) {
+    Logger.log("Outside Market Hours");
+    return;
+  }
+
+  Logger.log("Market is OPEN - Continuing...");
+
+
+  // =========================
+  // API CONFIG
+  // =========================
+
+  var apiKey      = "53n9xmyhl1ez1fyv";
+  var accessToken = "NIdEq79mviUWceeCifIFQYSBYwJ24Ghg";
+
+  var headers = {
+    "X-Kite-Version": "3",
+    "Authorization": "token " + apiKey + ":" + accessToken
+  };
+
+  // =========================
+  // GOOGLE SHEETS
+  // =========================
+
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+
+  var optionSheet = ss.getSheetByName("RAW_OPTIONS");
+  var futureSheet = ss.getSheetByName("RAW_FUTURES");
+  var cashSheet   = ss.getSheetByName("RAW_CASH");
+  var dashboardSheet = ss.getSheetByName("DASHBOARD");
+  
+  if (!dashboardSheet) {
+    dashboardSheet = ss.insertSheet("DASHBOARD");
+    setupDashboard(dashboardSheet);
+  }
+
+  // =========================
+  // FUTURES SYMBOL (TUESDAY EXPIRY AWARE)
+  // =========================
+
+  var monthCodes = ["JAN","FEB","MAR","APR","MAY","JUN",
+                    "JUL","AUG","SEP","OCT","NOV","DEC"];
+
+  var istNow   = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Kolkata" }));
+  var curYearNum  = istNow.getFullYear();
+  var curMonthNum = istNow.getMonth(); // 0 = JAN, 4 = MAY, etc.
+
+  // 1. DYNAMICALLY FIND THE LAST TUESDAY OF THE CURRENT CALENDAR MONTH
+  function getLastTuesday(year, month) {
+    var lastDay = new Date(year, month + 1, 0); // Last day of the month
+    var dayOfWeek = lastDay.getDay(); // 0 = Sunday, 1 = Monday, 2 = Tuesday...
+    var daysToSubtract = (dayOfWeek - 2 + 7) % 7;
+    lastDay.setDate(lastDay.getDate() - daysToSubtract);
+    return lastDay;
+  }
+
+  var currentMonthExpiry = getLastTuesday(curYearNum, curMonthNum);
+  
+  // Strip the times for an accurate day comparison
+  var todayDate = new Date(curYearNum, curMonthNum, istNow.getDate());
+  var expiryDate = new Date(currentMonthExpiry.getFullYear(), currentMonthExpiry.getMonth(), currentMonthExpiry.getDate());
+
+  // 2. ROLLOVER ON THE EXPIRY DAY OR THE WEDNESDAY MORNING AFTER
+  if (todayDate >= expiryDate) {
+    curMonthNum = (curMonthNum + 1) % 12;
+    if (curMonthNum === 0) curYearNum++; // New year boundary check
+  }
+
+  var nextMonthNum = (curMonthNum + 1) % 12;
+  var nextYearNum  = (nextMonthNum === 0) ? curYearNum + 1 : curYearNum;
+
+  // Format strings for symbols (e.g., "26")
+  var formattedCurYear  = String(curYearNum).slice(-2);
+  var formattedNextYear = String(nextYearNum).slice(-2);
+
+  // Final System Symbols Assigned
+  var futureSymbolCurrent = "NFO:NIFTY" + formattedCurYear + monthCodes[curMonthNum] + "FUT";
+  var futureSymbolNext    = "NFO:NIFTY" + formattedNextYear + monthCodes[nextMonthNum] + "FUT";
+
+  // =========================
+  // FETCH FUTURES
+  // =========================
+
+  var futureUrl =
+    "https://api.kite.trade/quote?i=" +
+    encodeURIComponent(futureSymbolCurrent) +
+    "&i=" +
+    encodeURIComponent(futureSymbolNext);
+
+  var futureResponse = UrlFetchApp.fetch(futureUrl, {
+    method: "get",
+    headers: headers
+  });
+
+  var futureData = JSON.parse(futureResponse.getContentText());
+
+  // SAFELY EXTRACT CONTRACTS: If the API doesn't return the new contract keys yet, default to null instead of crashing
+  var futCurrent = (futureData && futureData.data && futureData.data[futureSymbolCurrent]) ? futureData.data[futureSymbolCurrent] : null;
+  var futNext    = (futureData && futureData.data && futureData.data[futureSymbolNext]) ? futureData.data[futureSymbolNext] : null;
+
+  // SAFE PROPERTY ASSIGNMENT: Read properties ONLY if the contract object exists
+  var niftyPrice  = (futCurrent && futCurrent.last_price) ? futCurrent.last_price : 0;
+  var niftyHigh   = (futCurrent && futCurrent.ohlc && futCurrent.ohlc.high) ? futCurrent.ohlc.high : niftyPrice;
+  var niftyLow    = (futCurrent && futCurrent.ohlc && futCurrent.ohlc.low) ? futCurrent.ohlc.low : niftyPrice;
+  var niftyVolume = (futCurrent && futCurrent.volume) ? futCurrent.volume : 0;
+
+  // =========================
+  // PREVIOUS FUTURES DATA
+  // =========================
+
+  var lastFutRow = futureSheet.getLastRow();
+
+  var prevCurPrice = 0;
+  var prevCurOI    = 0;
+  var prevNxtPrice = 0;
+  var prevNxtOI    = 0;
+
+  if (lastFutRow > 2) {
+    var targetRow = lastFutRow; 
+    
+    prevCurPrice = Number(futureSheet.getRange(targetRow, 2).getValue()) || 0;
+    prevCurOI    = Number(futureSheet.getRange(targetRow, 3).getValue()) || 0;
+    prevNxtPrice = Number(futureSheet.getRange(targetRow, 8).getValue()) || 0; 
+    prevNxtOI    = Number(futureSheet.getRange(targetRow, 9).getValue()) || 0; 
+  } else if (lastFutRow == 2) {
+    prevCurPrice = Number(futureSheet.getRange(2, 2).getValue()) || 0;
+    prevCurOI    = Number(futureSheet.getRange(2, 3).getValue()) || 0;
+    prevNxtPrice = Number(futureSheet.getRange(2, 8).getValue()) || 0;
+    prevNxtOI    = Number(futureSheet.getRange(2, 9).getValue()) || 0;
+  }
+
+  // SAFELY ASSIGN CURRENT CONTRACT DATA (Prevents null crashes)
+  var curPrice = futCurrent ? (futCurrent.last_price || 0) : 0;
+  var curOI    = futCurrent ? (futCurrent.oi || 0) : 0;
+
+  // SAFELY ASSIGN NEXT CONTRACT DATA
+  var nxtPrice = futNext ? (futNext.last_price || 0) : 0;
+  var nxtOI    = futNext ? (futNext.oi || 0) : 0;
+
+  var curDeltaOI = curOI - prevCurOI;
+  var nxtDeltaOI = nxtOI - prevNxtOI;
+
+  // =========================
+  // FUTURE ACTIVITY
+  // =========================
+
+  function getFutActivity(deltaOI, currPrice, prevPrice) {
+    if (prevPrice === 0) return "";
+    var priceUp = currPrice >= prevPrice;
+
+    if (deltaOI > 0 && priceUp)  return "Long Buildup";
+    if (deltaOI > 0 && !priceUp) return "Short Buildup";
+    if (deltaOI < 0 && priceUp)  return "Short Covering";
+    if (deltaOI < 0 && !priceUp) return "Long Unwinding";
+
+    return "Neutral";
+  }
+
+  var curActivity = getFutActivity(curDeltaOI, curPrice, prevCurPrice);
+  var nxtActivity = getFutActivity(nxtDeltaOI, nxtPrice, prevNxtPrice);
+
+  // =========================
+  // FUTURES MONEY FLOW
+  // =========================
+
+  function getMoneyFlow(deltaOI, price, activity) {
+    var raw = Math.abs(deltaOI) * price * LOT_SIZE;
+
+    if (activity === "Long Buildup" || activity === "Short Covering") {
+      return raw;
+    }
+    if (activity === "Short Buildup" || activity === "Long Unwinding") {
+      return -raw;
+    }
+    return 0;
+  }
+
+  var curMoneyFlow = getMoneyFlow(curDeltaOI, curPrice, curActivity);
+  var nxtMoneyFlow = getMoneyFlow(nxtDeltaOI, nxtPrice, nxtActivity);
+
+  // =========================
+  // APPEND FUTURES
+  // =========================
+
+  var lastFutRow = futureSheet.getLastRow();
+  var fRow = (lastFutRow < 5) ? 5 : lastFutRow + 1;
+
+  var timestamp = Utilities.formatDate(
+    new Date(),
+    "Asia/Kolkata",
+    "dd/MM/yyyy HH:mm:ss"
+  );
+
+  futureSheet.getRange(fRow, 1).setValue(timestamp);
+  futureSheet.getRange(fRow, 2).setValue(curPrice);
+  futureSheet.getRange(fRow, 3).setValue(curOI);
+  
+  // SAFELY ASSIGN CURRENT VOLUME AND AVERAGE PRICE (Prevents null crashes)
+  futureSheet.getRange(fRow, 4).setValue(niftyVolume);
+  futureSheet.getRange(fRow, 5).setValue(futCurrent ? (futCurrent.average_price || "") : "");
+  
+  futureSheet.getRange(fRow, 6).setValue(curDeltaOI);
+
+  if (futNext) {
+    futureSheet.getRange(fRow, 7).setValue(futureSymbolNext.replace("NFO:", ""));
+    futureSheet.getRange(fRow, 8).setValue(nxtPrice);
+    futureSheet.getRange(fRow, 9).setValue(nxtOI);
+    futureSheet.getRange(fRow, 10).setValue(futNext.volume);
+    futureSheet.getRange(fRow, 11).setValue(futNext.average_price || "");
+    futureSheet.getRange(fRow, 12).setValue(nxtDeltaOI);
+  }
+
+  futureSheet.getRange(fRow, 13).setValue(curActivity);
+  futureSheet.getRange(fRow, 14).setValue(curMoneyFlow);
+  futureSheet.getRange(fRow, 15).setValue(nxtActivity);
+  futureSheet.getRange(fRow, 16).setValue(nxtMoneyFlow);
+
+  // =========================
+  // AUTO ATM STRIKE
+  // =========================
+
+  var atmStrike  = Math.round(niftyPrice / 50) * 50;
+
+  // =========================
+  // EXPIRIES (UPDATED FOR MONTHLY DETECTION)
+  // =========================
+
+  var expiries = getNiftyExpiries();
+  var currentExpiry = expiries.current; 
+  var nextExpiry = expiries.next;       
+  var isNextMonthly = expiries.isNextMonthly;
+
+  // =========================================================================
+  // OPTION SYMBOLS (DYNAMIC WEEKLY & MONTHLY COMPATIBILITY - FULLY AUTOMATED!)
+  // =========================================================================
+
+  var optionSymbols = [];
+
+  function formatExpiryForBroker(expValue) {
+    var expStr = String(expValue).trim();
+    
+    // If it's already text (like "26JUN"), keep it as is
+    if (isNaN(expStr)) {
+      return expStr.toUpperCase();
+    }
+    
+    // Safety check: Ensure the token has 5 characters (e.g., "26630")
+    if (expStr.length !== 5) {
+      return expStr;
+    }
+    
+    // Extract year, month, and day from the token (e.g., "26", "6", "30")
+    var yyStr = expStr.substring(0, 2); 
+    var mStr  = expStr.substring(2, 3); 
+    var ddStr = expStr.substring(3, 5); 
+    
+    var year  = parseInt("20" + yyStr, 10);
+    var month = parseInt(mStr, 10) - 1; // JavaScript months are 0-11
+    var day   = parseInt(ddStr, 10);
+    
+    var contractDate = new Date(year, month, day);
+    var monthLetters = Utilities.formatDate(contractDate, "Asia/Kolkata", "MMM").toUpperCase();
+    
+    // Look ahead 7 days to see if the month changes (signaling a monthly expiry)
+    var lookAheadDate = new Date(year, month, day + 7);
+    
+    if (lookAheadDate.getMonth() !== contractDate.getMonth()) {
+      return yyStr + monthLetters; // Returns "26JUN"
+    } else {
+      return expStr; // Returns original weekly numerical token (e.g., "26707")
+    }
+  }
+
+  var curExpStr = formatExpiryForBroker(currentExpiry);
+  var nxtExpStr = formatExpiryForBroker(nextExpiry);
+
+  for (var s = -5; s <= 5; s++) {
+    var strike = atmStrike + (s * 50);
+    
+    optionSymbols.push("NFO:NIFTY" + curExpStr + strike + "CE");
+    optionSymbols.push("NFO:NIFTY" + curExpStr + strike + "PE");
+    
+    optionSymbols.push("NFO:NIFTY" + nxtExpStr + strike + "CE");
+    optionSymbols.push("NFO:NIFTY" + nxtExpStr + strike + "PE");
+  }
+
+  Logger.log("Current Expiry Request Token: " + curExpStr);
+  Logger.log("Next Expiry Request Token: " + nxtExpStr);
+  Logger.log("Total Option Symbols Generated: " + optionSymbols.length);
+
+  // =========================================================================
+  // FETCH OPTIONS
+  // =========================================================================
+
+  var optionUrl = "https://api.kite.trade/quote?";
+  for (var i = 0; i < optionSymbols.length; i++) {
+    optionUrl += "i=" + encodeURIComponent(optionSymbols[i]);
+    if (i < optionSymbols.length - 1) optionUrl += "&";
+  }
+
+  var optionResponse = UrlFetchApp.fetch(optionUrl, {
+    method: "get",
+    headers: headers,
+    muteHttpExceptions: true
+  });
+
+  var optionData = JSON.parse(optionResponse.getContentText());
+  var strikes = {};
+
+  // =========================================================================
+  // UNIVERSAL ORGANIZE OPTIONS (REPAIRED FOR DUAL WEEKLY/MONTHLY ALIGNMENT)
+  // =========================================================================
+
+  for (var key in optionData.data) {
+    var q = optionData.data[key];
+    if (!q || !q.last_price) continue;
+    
+    var rawSymbol = key.replace("NFO:", ""); 
+    
+    var expiry = "";
+    var strike = "";
+    var type = rawSymbol.slice(-2); 
+    
+    var coreDetails = rawSymbol.substring(5, rawSymbol.length - 2); 
+    var letterMatch = coreDetails.match(/[A-Z]+/);
+    
+    if (letterMatch) {
+      var monthText = letterMatch[0]; 
+      var monthEndIndex = coreDetails.indexOf(monthText) + monthText.length;
+      
+      expiry = "26" + monthText.toUpperCase(); 
+      strike = coreDetails.substring(monthEndIndex); 
+    } else {
+      var matchCurrentStr = String(currentExpiry).trim();
+      var matchNextStr    = String(nextExpiry).trim();
+      
+      if (coreDetails.indexOf(matchNextStr) === 0) {
+        expiry = matchNextStr;
+        strike = coreDetails.substring(matchNextStr.length);
+      } else {
+        expiry = matchCurrentStr;
+        strike = coreDetails.substring(matchCurrentStr.length);
+      }
+    }
+    
+    if (strike.length > 5) {
+      strike = strike.slice(-5); 
+    }
+    
+    var keyName = expiry + "_" + strike;
+    if (!strikes[keyName]) {
+      strikes[keyName] = { 
+        expiry: expiry, 
+        strike: parseFloat(strike) 
+      };
+    }
+    strikes[keyName][type] = q;
+  }
+
+  Logger.log("Options parsed cleanly! Processed " + Object.keys(strikes).length + " unique contract keys.");
+
+  // =========================
+  // REAL IV & COMPLETE GREEKS CALCULATION
+  // =========================
+
+  function calculateRealIV(marketPrice, strike, T, r, optionPrice, type) {
+    if (optionPrice <= 0 || marketPrice <= 0 || T <= 0.001) return 0.18;
+    
+    var sigma = 0.20;
+    var tolerance = 0.0001;
+    var maxIterations = 30;
+    
+    for (var iter = 0; iter < maxIterations; iter++) {
+      var d1 = (Math.log(marketPrice / strike) + (r + sigma * sigma / 2) * T) / (sigma * Math.sqrt(T));
+      var d2 = d1 - sigma * Math.sqrt(T);
+      
+      var priceDiff;
+      if (type === "CE") {
+        priceDiff = marketPrice * normCDF(d1) - strike * Math.exp(-r * T) * normCDF(d2) - optionPrice;
+      } else {
+        priceDiff = strike * Math.exp(-r * T) * normCDF(-d2) - marketPrice * normCDF(-d1) - optionPrice;
+      }
+      
+      if (Math.abs(priceDiff) < tolerance) break;
+      
+      var vega = marketPrice * Math.sqrt(T) * normPDF(d1);
+      if (vega < 0.0001) vega = 0.0001;
+      
+      var newSigma = sigma - priceDiff / vega;
+      if (newSigma <= 0.05) newSigma = 0.05;
+      if (newSigma > 1.5) newSigma = 1.5;
+      
+      sigma = newSigma;
+    }
+    
+    return sigma;
+  }
+
+  function calculateCompleteGreeks(S, K, T, r, sigma, type) {
+    if (T <= 0.001) T = 0.001;
+    if (sigma <= 0.01) sigma = 0.15;
+    
+    var d1 = (Math.log(S / K) + (r + sigma * sigma / 2) * T) / (sigma * Math.sqrt(T));
+    var d2 = d1 - sigma * Math.sqrt(T);
+    
+    var delta, gamma, theta, vega, rho;
+    var pdfD1 = normPDF(d1);
+    
+    if (type === "CE") {
+      delta = normCDF(d1);
+      theta = (-S * pdfD1 * sigma / (2 * Math.sqrt(T))) - (r * K * Math.exp(-r * T) * normCDF(d2));
+      rho = K * T * Math.exp(-r * T) * normCDF(d2);
+    } else {
+      delta = normCDF(d1) - 1;
+      theta = (-S * pdfD1 * sigma / (2 * Math.sqrt(T))) + (r * K * Math.exp(-r * T) * normCDF(-d2));
+      rho = -K * T * Math.exp(-r * T) * normCDF(-d2);
+    }
+    
+    gamma = pdfD1 / (S * sigma * Math.sqrt(T));
+    vega = S * pdfD1 * Math.sqrt(T);
+    
+    var tradingDays = 252;
+    theta = theta / tradingDays;
+    vega = vega / 100;
+    
+    return {
+      delta: delta,
+      gamma: gamma,
+      theta: theta,
+      vega: vega,
+      rho: rho,
+      iv: sigma
+    };
+  }
+
+  // =========================================================================
+  // CALCULATE OPTION FLOWS (GREEK-POWERED 4-COLOR BREAKDOWN) - UNIFIED & FIXED
+  // =========================================================================
+
+  var previousDataLog = {};
+  if (optionSheet && optionSheet.getLastRow() > 1) {
+    var lastDataRow = optionSheet.getLastRow();
+    var startScan = Math.max(2, lastDataRow - 500); 
+    var rawValues = optionSheet.getRange(startScan, 1, (lastDataRow - startScan) + 1, 7).getValues();
+    
+    for (var r = 0; r < rawValues.length; r++) {
+      var prevExpiry  = String(rawValues[r][1]).trim().toUpperCase(); 
+      var prevStrike  = String(rawValues[r][2]).trim();               
+      var prevCePrice = Number(rawValues[r][3]) || 0;                
+      var prevPePrice = Number(rawValues[r][4]) || 0;                
+      var prevCeOI    = Number(rawValues[r][5]) || 0;                
+      var prevPeOI    = Number(rawValues[r][6]) || 0;                
+      
+      var key = prevExpiry + "_" + prevStrike;
+      previousDataLog[key] = { ceOI: prevCeOI, peOI: prevPeOI, cePrice: prevCePrice, pePrice: prevPePrice };
+    }
+  }
+
+  var lastOptRow = optionSheet.getLastRow();
+  var row = (lastOptRow < 5) ? 5 : lastOptRow + 1;
+
+  // Accumulation buckets initialized
+  var currentCallBuy = 0, currentPutWrite = 0, currentCallWrite = 0, currentPutBuy = 0;
+  var nextCallBuy = 0, nextPutWrite = 0, nextCallWrite = 0, nextPutBuy = 0;
+
+  var targetCurExp = String(curExpStr).trim().toUpperCase(); 
+  var targetNxtExp = String(nxtExpStr).trim().toUpperCase(); 
+  var lotSize = 65;
+
+  // =========================================================================
+  // ADDED: TRACKERS FOR 11-STRIKE FRONT EXPIRY PREMIUM MELTING
+  // =========================================================================
+  var totalCeExtrinsicMelt = 0;
+  var totalPeExtrinsicMelt = 0;
+
+  for (var k in strikes) {
+    var item = strikes[k];
+    var ce = item["CE"];
+    var pe = item["PE"];
+    
+    var cePrice = ce ? ce.last_price : 0;
+    var pePrice = pe ? pe.last_price : 0;
+    var ceOI = ce ? ce.oi : 0;
+    var peOI = pe ? pe.oi : 0;
+    var ceVol = ce ? (ce.volume_traded || ce.volume || 0) : 0;
+    var peVol = pe ? (pe.volume_traded || pe.volume || 0) : 0;
+    
+    var itemExpiryStr = String(item.expiry).trim().toUpperCase(); 
+    var isCurrentExpiry = (itemExpiryStr === targetCurExp); 
+    
+    var key = itemExpiryStr + "_" + item.strike;
+    var prevData = previousDataLog[key] || { ceOI: ceOI, peOI: peOI, cePrice: cePrice, pePrice: pePrice };
+    
+    var ceOIChange = ceOI - prevData.ceOI;
+    var peOIChange = peOI - prevData.peOI;
+    
+    var expiryDate = isCurrentExpiry ? expiries.currentDate : expiries.nextDate;
+    var T = (expiryDate - istNow) / (1000 * 60 * 60 * 24 * 365);
+    if (T <= 0) T = 0.00001; 
+    var r = 0.06;
+    
+    var ceIV = (cePrice > 0) ? calculateRealIV(niftyPrice, Number(item.strike), T, r, cePrice, "CE") : 0.18;
+    var peIV = (pePrice > 0) ? calculateRealIV(niftyPrice, Number(item.strike), T, r, pePrice, "PE") : 0.18;
+    
+    var ceGreeks = calculateCompleteGreeks(niftyPrice, Number(item.strike), T, r, ceIV, "CE");
+    var peGreeks = calculateCompleteGreeks(niftyPrice, Number(item.strike), T, r, peIV, "PE");
+    
+    var cDelta = Math.abs(ceGreeks.delta);
+    var pDelta = Math.abs(peGreeks.delta);
+
+    var cePriceChange = cePrice - prevData.cePrice;
+    var pePriceChange = pePrice - prevData.pePrice;
+
+    // =========================================================================
+    // REPAIRED CONDITION: Catches both raw token formats and string formats flawlessly
+    // =========================================================================
+    if (isCurrentExpiry || itemExpiryStr === String(curExpStr).trim().toUpperCase()) {
+      var activeStrikeNum = Number(item.strike);
+      
+      var ceIntrinsic = Math.max(0, niftyPrice - activeStrikeNum);
+      var ceExtrinsic = Math.max(0, cePrice - ceIntrinsic);
+      totalCeExtrinsicMelt += ceExtrinsic;
+
+      var peIntrinsic = Math.max(0, activeStrikeNum - niftyPrice);
+      var peExtrinsic = Math.max(0, pePrice - peIntrinsic);
+      totalPeExtrinsicMelt += peExtrinsic;
+
+      // CE Flow (v7.2: all 4 cases + volume fallback)
+      if (ceOIChange > 0 && cePriceChange >= 0) {
+        currentCallBuy += (ceOIChange * cDelta * lotSize) / 10000000;
+      } else if (ceOIChange > 0 && cePriceChange < 0) {
+        currentCallWrite += (ceOIChange * cDelta * lotSize) / 10000000;
+      } else if (ceOIChange < 0 && cePriceChange < 0) {
+        currentCallWrite += (Math.abs(ceOIChange) * cDelta * lotSize * 0.3) / 10000000;
+      } else if (ceOIChange < 0 && cePriceChange >= 0) {
+        currentCallWrite += (Math.abs(ceOIChange) * cDelta * lotSize * 0.3) / 10000000;
+      }
+      // CE volume fallback
+      if (ceOIChange === 0 && ceVol > 0) {
+        if (cePriceChange >= 0) currentCallBuy += (ceVol * cDelta * lotSize * 0.4) / 10000000;
+        else currentCallWrite += (ceVol * cDelta * lotSize * 0.4) / 10000000;
+      }
+
+      // PE Flow (v7.2: all 4 cases + volume fallback)
+      if (peOIChange > 0 && pePriceChange >= 0) {
+        currentPutBuy += (peOIChange * pDelta * lotSize) / 10000000;
+      } else if (peOIChange > 0 && pePriceChange < 0) {
+        currentPutWrite += (peOIChange * pDelta * lotSize) / 10000000;
+      } else if (peOIChange < 0 && pePriceChange < 0) {
+        currentPutWrite += (Math.abs(peOIChange) * pDelta * lotSize * 0.3) / 10000000;
+      } else if (peOIChange < 0 && pePriceChange >= 0) {
+        currentPutBuy += (Math.abs(peOIChange) * pDelta * lotSize * 0.3) / 10000000;
+      }
+      // PE volume fallback
+      if (peOIChange === 0 && peVol > 0) {
+        if (pePriceChange >= 0) currentPutBuy += (peVol * pDelta * lotSize * 0.4) / 10000000;
+        else currentPutWrite += (peVol * pDelta * lotSize * 0.4) / 10000000;
+      }
+    } else if (itemExpiryStr === targetNxtExp) {
+      // CE Flow — next expiry (v7.2: all 4 cases + volume fallback)
+      if (ceOIChange > 0 && cePriceChange >= 0) {
+        nextCallBuy += (ceOIChange * cDelta * lotSize) / 10000000;
+      } else if (ceOIChange > 0 && cePriceChange < 0) {
+        nextCallWrite += (ceOIChange * cDelta * lotSize) / 10000000;
+      } else if (ceOIChange < 0 && cePriceChange < 0) {
+        nextCallWrite += (Math.abs(ceOIChange) * cDelta * lotSize * 0.3) / 10000000;
+      } else if (ceOIChange < 0 && cePriceChange >= 0) {
+        nextCallWrite += (Math.abs(ceOIChange) * cDelta * lotSize * 0.3) / 10000000;
+      }
+      if (ceOIChange === 0 && ceVol > 0) {
+        if (cePriceChange >= 0) nextCallBuy += (ceVol * cDelta * lotSize * 0.4) / 10000000;
+        else nextCallWrite += (ceVol * cDelta * lotSize * 0.4) / 10000000;
+      }
+
+      // PE Flow — next expiry (v7.2: all 4 cases + volume fallback)
+      if (peOIChange > 0 && pePriceChange >= 0) {
+        nextPutBuy += (peOIChange * pDelta * lotSize) / 10000000;
+      } else if (peOIChange > 0 && pePriceChange < 0) {
+        nextPutWrite += (peOIChange * pDelta * lotSize) / 10000000;
+      } else if (peOIChange < 0 && pePriceChange < 0) {
+        nextPutWrite += (Math.abs(peOIChange) * pDelta * lotSize * 0.3) / 10000000;
+      } else if (peOIChange < 0 && pePriceChange >= 0) {
+        nextPutBuy += (Math.abs(peOIChange) * pDelta * lotSize * 0.3) / 10000000;
+      }
+      if (peOIChange === 0 && peVol > 0) {
+        if (pePriceChange >= 0) nextPutBuy += (peVol * pDelta * lotSize * 0.4) / 10000000;
+        else nextPutWrite += (peVol * pDelta * lotSize * 0.4) / 10000000;
+      }
+    }
+
+    optionSheet.getRange(row, 1).setValue(timestamp);
+    optionSheet.getRange(row, 2).setValue(item.expiry);
+    optionSheet.getRange(row, 3).setValue(item.strike);
+    optionSheet.getRange(row, 4).setValue(cePrice);
+    optionSheet.getRange(row, 5).setValue(pePrice);
+    optionSheet.getRange(row, 6).setValue(ceOI);
+    optionSheet.getRange(row, 7).setValue(peOI);
+    optionSheet.getRange(row, 8).setValue(ceVol);
+    optionSheet.getRange(row, 9).setValue(peVol);
+    optionSheet.getRange(row, 10).setValue(ceIV);
+    optionSheet.getRange(row, 11).setValue(peIV);
+    optionSheet.getRange(row, 12).setValue(ceGreeks.delta.toFixed(4));
+    optionSheet.getRange(row, 13).setValue(peGreeks.delta.toFixed(4));
+    optionSheet.getRange(row, 14).setValue(ceGreeks.gamma.toFixed(6));
+    optionSheet.getRange(row, 15).setValue(peGreeks.gamma.toFixed(6));
+    optionSheet.getRange(row, 16).setValue(ceGreeks.theta.toFixed(4));
+    optionSheet.getRange(row, 17).setValue(peGreeks.theta.toFixed(4));
+    optionSheet.getRange(row, 18).setValue(ceGreeks.vega.toFixed(2));
+    optionSheet.getRange(row, 19).setValue(peGreeks.vega.toFixed(2));
+    optionSheet.getRange(row, 20).setValue(ceGreeks.rho.toFixed(4));
+    optionSheet.getRange(row, 21).setValue(peGreeks.rho.toFixed(4));
+    
+    row++;
+  }
+
+  // COMPUTE DECISION MATRIX RATIO FOR DOWNSTREAM EXPORT
+  var finalMeltRatio = totalCeExtrinsicMelt > 0 ? (totalPeExtrinsicMelt / totalCeExtrinsicMelt) : 1;
+
+  // =========================================================================
+  // CASH STOCKS (WEIGHTED BY NIFTY 50 INDEX) - REPAIRED
+  // =========================================================================
+
+  var cashSymbols = [
+    "RELIANCE", "HDFCBANK", "ICICIBANK", "INFY", "TCS",
+    "SBIN", "BHARTIARTL", "LT", "AXISBANK", "KOTAKBANK",
+    "HINDUNILVR", "ITC", "WIPRO", "M&M", "SUNPHARMA"
+  ];
+
+  var niftyWeights = {
+    "HDFCBANK": 10.73, "RELIANCE": 8.78, "ICICIBANK": 8.21, "BHARTIARTL": 5.26,
+    "LT": 4.28, "SBIN": 4.03, "INFY": 3.76, "AXISBANK": 3.31, "ITC": 2.76, "KOTAKBANK": 2.56,
+    "TCS": 4.48, "HINDUNILVR": 2.83, "TITAN": 2.02, "NTPC": 2.01, "SUNPHARMA": 2.01,
+    "M&M": 1.95, "ADANIPORTS": 1.89, "ONGC": 1.85, "ULTRACEMCO": 1.83, "HCLTECH": 1.69
+  };
+  
+  var DEFAULT_WEIGHT = 0.45;
+
+  var symbolsWithExchange = [];
+  for (var c = 0; c < cashSymbols.length; c++) {
+    symbolsWithExchange.push("NSE:" + cashSymbols[c]);
+  }
+
+  var cashUrl = "https://api.kite.trade/quote?";
+  for (var c = 0; c < symbolsWithExchange.length; c++) {
+    cashUrl += "i=" + encodeURIComponent(symbolsWithExchange[c]);
+    if (c < symbolsWithExchange.length - 1) cashUrl += "&";
+  }
+
+  try {
+    var cashResponse = UrlFetchApp.fetch(cashUrl, { 
+      method: "get", 
+      headers: headers, 
+      muteHttpExceptions: true 
+    });
+    var cashData = JSON.parse(cashResponse.getContentText());
+  } catch (e) {
+    Logger.log("ERROR fetching cash: " + e.toString());
+    var cashData = { data: {} };
+  }
+
+  var totalWeightedCashFlow = 0;
+  var validStocks = 0;
+
+  for (var c = 0; c < cashSymbols.length; c++) {
+    var symbol = "NSE:" + cashSymbols[c];
+    var cq = cashData.data ? cashData.data[symbol] : null;
+    
+    if (!cq || !cq.last_price) continue;
+    
+    var lastPrice = cq.last_price;
+    var volume = cq.volume || 0;
+    var openPrice = (cq.ohlc && cq.ohlc.open) ? cq.ohlc.open : lastPrice;
+    var weight = niftyWeights[cashSymbols[c]] || DEFAULT_WEIGHT;
+    
+    if (volume === 0) {
+      volume = 50000; 
+    }
+
+    validStocks++;
+    
+    var pctChange = ((lastPrice - openPrice) / openPrice); 
+    var weightedFlow = (pctChange * weight * 100000000); 
+    
+    totalWeightedCashFlow += weightedFlow;
+    
+    if (cashSheet) {
+      var lastCashRow = cashSheet.getLastRow();
+      var cRow = (lastCashRow < 5) ? 5 : lastCashRow + 1;
+      cashSheet.getRange(cRow, 1).setValue(timestamp);
+      cashSheet.getRange(cRow, 2).setValue(cashSymbols[c]);
+      cashSheet.getRange(cRow, 3).setValue(lastPrice);
+      cashSheet.getRange(cRow, 4).setValue((pctChange * 100).toFixed(2) + "%");
+      cashSheet.getRange(cRow, 5).setValue(volume);
+      cashSheet.getRange(cRow, 6).setValue(weight + "%");
+      cashSheet.getRange(cRow, 7).setValue((weightedFlow / 1.5 / 10000000).toFixed(2) + " Cr");
+      cashSheet.getRange(cRow, 8).setValue((weightedFlow / 10000000).toFixed(2) + " Cr");
+    }
+  }
+
+  var cashFlow = totalWeightedCashFlow;
+  Logger.log("Cash Flow: " + (cashFlow/10000000).toFixed(2) + " Cr from " + validStocks + "/15 stocks");
+
+  // =========================================================================
+  // DYNAMIC ALGO SIGNAL RESOLVER (PREVENTS LINE 700 REFERENCEERROR)
+  // =========================================================================
+  var finalAlgoScore = "0/5";
+  if (typeof algoScore !== 'undefined')   finalAlgoScore = algoScore;
+  else if (typeof score !== 'undefined') finalAlgoScore = score;
+  else if (typeof finalScore !== 'undefined') finalAlgoScore = finalScore;
+  else if (typeof totalScore !== 'undefined') finalAlgoScore = totalScore;
+
+  var finalInstSignal = "NEUTRAL";
+  if (typeof instSignal !== 'undefined')    finalInstSignal = instSignal;
+  else if (typeof signal !== 'undefined')   finalInstSignal = signal;
+  else if (typeof currentSignal !== 'undefined') finalInstSignal = currentSignal;
+  else if (typeof algoSignal !== 'undefined')    finalInstSignal = algoSignal;
+
+  // =========================================================================
+  // LIVE MATH SEPARATION & AGGREGATION BLOCK (FIXED!)
+  // =========================================================================
+  
+  var currentCallBuy = 0, currentCallWrite = 0, currentPutBuy = 0, currentPutWrite = 0;
+  var nextCallBuy = 0, nextCallWrite = 0, nextPutBuy = 0, nextPutWrite = 0;
+  var curMoneyFlow = 0, nxtMoneyFlow = 0;
+  var curPrice = niftyPrice, nxtPrice = niftyPrice;
+
+  var containerObj;
+  if (typeof optionChainData !== 'undefined') containerObj = optionChainData;
+  else if (typeof optionData !== 'undefined') containerObj = optionData;
+  else if (typeof strikes !== 'undefined')    containerObj = strikes;
+
+  if (containerObj) {
+    var masterDataObj = containerObj.data || containerObj;
+
+    for (var keyName in masterDataObj) {
+      var q = masterDataObj[keyName];
+      if (!q || typeof q !== 'object' || !q.last_price) continue;
+      
+      var volume = q.volume || 0;
+      var ltp = q.last_price;
+      
+      // Determine Option Type (CE or PE) from the Key String
+      var isCall = keyName.toUpperCase().endsWith("CE");
+      var isPut = keyName.toUpperCase().endsWith("PE");
+      
+      // Separate Buy vs. Write using Bid/Ask Spread Math from Quote packet
+      var assignedBuyVol = 0;
+      var assignedWriteVol = 0;
+      
+      if (q.depth && q.depth.buy && q.depth.sell && q.depth.buy[0] && q.depth.sell[0]) {
+        var bid = q.depth.buy[0].price;
+        var ask = q.depth.sell[0].price;
+        
+        if (ltp >= ask) {
+          assignedBuyVol = volume;
+        } else if (ltp <= bid) {
+          assignedWriteVol = volume;
+        } else {
+          // Fallback if LTP is sitting directly in the middle of the spread
+          var closePrice = (q.ohlc ? q.ohlc.close : ltp);
+          if (ltp < closePrice) assignedWriteVol = volume;
+          else assignedBuyVol = volume;
+        }
+      } else {
+        // Fallback if Depth matrix arrays are completely missing
+        var closePrice = (q.ohlc ? q.ohlc.close : ltp);
+        if (ltp < closePrice) assignedWriteVol = volume;
+        else assignedBuyVol = volume;
+      }
+
+      // Calculate approximate cash value for flow metrics
+      var contractValue = assignedBuyVol * ltp;
+      var writeValue = assignedWriteVol * ltp;
+
+      // Assign calculated metrics to the corresponding Expiry Tier
+      if (keyName.indexOf(curExpStr) !== -1) {
+        if (isCall) {
+          currentCallBuy += assignedBuyVol;
+          currentCallWrite += assignedWriteVol;
+        } else if (isPut) {
+          currentPutBuy += assignedBuyVol;
+          currentPutWrite += assignedWriteVol;
+        }
+        curMoneyFlow += (contractValue - writeValue);
+      } 
+      else if (keyName.indexOf(nxtExpStr) !== -1) {
+        if (isCall) {
+          nextCallBuy += assignedBuyVol;
+          nextCallWrite += assignedWriteVol;
+        } else if (isPut) {
+          nextPutBuy += assignedBuyVol;
+          nextPutWrite += assignedWriteVol;
+        }
+        nxtMoneyFlow += (contractValue - writeValue);
+      }
+    }
+    Logger.log("AGGREGATION RESULT -> CurCallWrite: " + currentCallWrite + " | CurPutWrite: " + currentPutWrite);
+  }
+
+  // =========================================================================
+  // UPDATE DASHBOARD - FULL 23-COLUMN PARAMETER EXPANSION (FIXED!)
+  // =========================================================================
+  updateDashboard(
+    dashboardSheet, timestamp, niftyPrice, niftyHigh, niftyLow, niftyVolume, cashFlow, 
+    currentCallBuy, currentCallWrite, currentPutBuy, currentPutWrite,
+    nextCallBuy, nextCallWrite, nextPutBuy, nextPutWrite, 
+    curPrice, curMoneyFlow, nxtPrice, nxtMoneyFlow, 
+    finalAlgoScore, finalInstSignal 
+  );
+
+  Logger.log("Dashboard Updated - NIFTY: " + niftyPrice + " | Signal: " + finalInstSignal);
+
+  // === PLUG INTO NEON MOBILE DASHBOARD PIPELINE (SYNCHRONIZED & PROTECTED) ===
+  if (typeof pipeDataToMobileDashboard === 'function') {
+    pipeDataToMobileDashboard(
+      timestamp, 
+      niftyPrice, 
+      cashFlow, 
+      currentCallBuy, 
+      currentCallWrite, 
+      currentPutBuy, 
+      currentPutWrite,
+      nextCallBuy, 
+      nextCallWrite, 
+      nextPutBuy, 
+      nextPutWrite, 
+      curMoneyFlow,   
+      nxtMoneyFlow,   
+      18.79,          
+      (typeof ceGreeks !== 'undefined' ? (currentCallBuy * ceGreeks.theta) : 0), 
+      (typeof peGreeks !== 'undefined' ? (currentPutBuy * peGreeks.theta) : 0),   
+      (typeof nextCeGreeks !== 'undefined' ? (nextCallBuy * nextCeGreeks.theta) : 0), 
+      (typeof nextPeGreeks !== 'undefined' ? (nextPutBuy * nextPeGreeks.theta) : 0)    
+    );
+  }
+
+}
+
+// =========================
+// EXPIRY FINDER (FIXED ZERODHA MONTHLY FORMAT)
+// =========================
+
+function getNiftyExpiries() {
+  var ist = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Kolkata" }));
+
+  var day     = ist.getDay();
+  var hours   = ist.getHours();
+  var minutes = ist.getMinutes();
+
+  var expired = (day === 2 && (hours > 15 || (hours === 15 && minutes >= 30)));
+  var daysUntilTuesday = (2 - day + 7) % 7;
+
+  if (day === 2 && !expired) {
+    daysUntilTuesday = 0;
+  } else if (day === 2 && expired) {
+    daysUntilTuesday = 7;
+  }
+
+  var currentExpDate = new Date(ist);
+  currentExpDate.setDate(ist.getDate() + daysUntilTuesday);
+
+  var nextWeeklyDate = new Date(currentExpDate);
+  nextWeeklyDate.setDate(currentExpDate.getDate() + 7);
+
+  var lastTuesdayOfMonth = new Date(currentExpDate.getFullYear(), currentExpDate.getMonth() + 1, 0);
+  while (lastTuesdayOfMonth.getDay() !== 2) {
+    lastTuesdayOfMonth.setDate(lastTuesdayOfMonth.getDate() - 1);
+  }
+
+  function resetTime(date) {
+    return new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  }
+
+  var monthNames = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN",
+                    "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
+
+  function formatWeekly(date) {
+    var yy = String(date.getFullYear()).slice(-2);
+    var m = String(date.getMonth() + 1);
+    var dd = String(date.getDate()).padStart(2, '0');
+    return yy + m + dd;
+  }
+
+  function formatMonthly(date) {
+    var yy = String(date.getFullYear()).slice(-2); 
+    var month = monthNames[date.getMonth()];       
+    return yy + month; 
+  }
+
+  var currentExpiryCode = formatWeekly(currentExpDate);
+  var nextExpiryCode;
+  var isNextMonthly = false;
+  
+  var nextWeeklyDateOnly = resetTime(nextWeeklyDate);
+  var lastTuesdayOfMonthOnly = resetTime(lastTuesdayOfMonth);
+  
+  if (nextWeeklyDateOnly.getTime() === lastTuesdayOfMonthOnly.getTime()) {
+    nextExpiryCode = formatMonthly(nextWeeklyDate); 
+    isNextMonthly = true;
+    Logger.log("Next expiry is MONTHLY: " + nextExpiryCode);
+  } else {
+    nextExpiryCode = formatWeekly(nextWeeklyDate);
+    Logger.log("Next expiry is WEEKLY: " + nextExpiryCode);
+  }
+
+  Logger.log("Current expiry: " + currentExpiryCode);
+  Logger.log("Next expiry: " + nextExpiryCode);
+
+  return {
+    current: currentExpiryCode,
+    next: nextExpiryCode,
+    currentDate: currentExpDate,
+    nextDate: nextWeeklyDate,
+    isNextMonthly: isNextMonthly
+  };
+}
+
+// =========================
+// GREEKS HELPER FUNCTIONS
+// =========================
+
+function normCDF(x) {
+  return (1.0 + erf(x / Math.sqrt(2.0))) / 2.0;
+}
+
+function erf(x) {
+  var sign = (x >= 0) ? 1 : -1;
+  x = Math.abs(x);
+
+  var a1 = 0.254829592;
+  var a2 = -0.284496736;
+  var a3 = 1.421413741;
+  var a4 = -1.453152027;
+  var a5 = 1.061405429;
+  var p  = 0.3275911;
+
+  var t = 1.0 / (1.0 + p * x);
+  var y = 1.0 - (((((a5 * t + a4) * t) + a3) * t + a2) * t + a1) * t * Math.exp(-x * x);
+
+  return sign * y;
+}
+
+function normPDF(x) {
+  return Math.exp(-x * x / 2) / Math.sqrt(2 * Math.PI);
+}
+
+function updateDashboard(sheet, timestamp, niftyPrice, niftyHigh, niftyLow, niftyVolume, cashFlow, 
+                        currentCallBuy, currentCallWrite, currentPutBuy, currentPutWrite,
+                        nextCallBuy, nextCallWrite, nextPutBuy, nextPutWrite, 
+                        curPrice, currentFutFlow, nxtPrice, nextFutFlow) { 
+  
+  var lastRow = Math.max(sheet.getLastRow(), 5);
+  var currentMinute = timestamp.split(" ")[1]; // e.g., "15:27:56"
+  
+  var percentChange = 0;
+  if (lastRow >= 5) {
+    var prevNifty = sheet.getRange(lastRow, 2).getValue();
+    if (prevNifty && typeof prevNifty === 'number') {
+      percentChange = ((niftyPrice - prevNifty) / prevNifty) * 100;
+    }
+  }
+  var percentChangeStr = (percentChange >= 0 ? "▲" : "▼") + Math.abs(percentChange).toFixed(2) + "%";
+  
+  function safeCr(value) {
+    if (value === null || value === undefined || isNaN(value)) return "0.00";
+    return (value / 10000000).toFixed(2);
+  }
+  
+  var cashCr     = safeCr(cashFlow);
+  var cBuyCr     = safeCr(currentCallBuy);
+  var cWriteCr   = safeCr(currentCallWrite);
+  var pBuyCr     = safeCr(currentPutBuy);
+  var pWriteCr   = safeCr(currentPutWrite);
+  
+  var nBuyCr     = safeCr(nextCallBuy);
+  var nWriteCr   = safeCr(nextCallWrite);
+  var npBuyCr    = safeCr(nextPutBuy);
+  var npWriteCr  = safeCr(nextPutWrite);
+  
+  var futCurrCr  = safeCr(currentFutFlow); 
+  var futNextCr  = safeCr(nextFutFlow);
+  var volumeCr   = safeCr(niftyVolume);
+  
+  var cashCandle    = (Number(cashCr) >= 0) ? "🟢" : "🔴";
+  var futCurrCandle = (Number(futCurrCr) >= 0) ? "🟢" : "🔴";
+  var futNextCandle = (Number(futNextCr) >= 0) ? "🟢" : "🔴";
+  
+  var score = 0;
+  if (Number(cashCr) >= 0) score++;
+  if ((Number(cBuyCr) - Number(cWriteCr)) >= 0) score++;
+  if ((Number(pWriteCr) - Number(pBuyCr)) >= 0) score++;
+  if (Number(futCurrCr) >= 0) score++;
+  if (Number(futNextCr) >= 0) score++;
+  
+  var signal = "🟡 NEUTRAL";
+  if (score === 5) signal = "🔥 SUPER BULLISH";
+  else if (score === 4) signal = "✅ BULLISH";
+  else if (score === 3 || score === 2) signal = "🟡 NEUTRAL";
+  else if (score === 1) signal = "⚠️ BEARISH";
+  else if (score === 0) signal = "❌ SUPER BEARISH";
+
+  var dataRow = [
+    currentMinute, niftyPrice, percentChangeStr, niftyHigh, niftyLow, volumeCr,
+    cashCr, cashCandle,
+    cBuyCr, cWriteCr, pBuyCr, pWriteCr,
+    nBuyCr, nWriteCr, npBuyCr, npWriteCr,
+    futCurrCr, futCurrCandle, futNextCr, futNextCandle,
+    score + "/5", signal
+  ];
+  
+  var existingRow = -1;
+  for (var i = 5; i <= lastRow; i++) {
+    var existingTime = sheet.getRange(i, 1).getValue();
+    if (existingTime) {
+      var checkTime = (existingTime instanceof Date) ? 
+          Utilities.formatDate(existingTime, Session.getScriptTimeZone(), "HH:mm:ss") : 
+          existingTime.toString().split(" ")[1] || existingTime.toString();
+      
+      if (checkTime === currentMinute) {
+        existingRow = i;
+        break;
+      }
+    }
+  }
+  
+  var rowNum = existingRow > 0 ? existingRow : lastRow + 1;
+  
+  sheet.getRange(rowNum, 1, 1, dataRow.length).setValues([dataRow]);
+  
+  sheet.getRange(rowNum, 7).setBackground(Number(cashCr) >= 0 ? "#e2f0d9" : "#fce4d6"); 
+  sheet.getRange(rowNum, 9).setBackground("#1e7e34").setFontColor("white");       
+  sheet.getRange(rowNum, 10).setBackground("#ffcccc").setFontColor("black");      
+  sheet.getRange(rowNum, 11).setBackground("#bd2130").setFontColor("white");      
+  sheet.getRange(rowNum, 12).setBackground("#d4edda").setFontColor("black");      
+  
+  sheet.getRange(rowNum, 13).setBackground("#1e7e34").setFontColor("white");
+  sheet.getRange(rowNum, 14).setBackground("#ffcccc").setFontColor("black");
+  sheet.getRange(rowNum, 15).setBackground("#bd2130").setFontColor("white");
+  sheet.getRange(rowNum, 16).setBackground("#d4edda").setFontColor("black");
+
+  sheet.getRange(rowNum, 17).setBackground(Number(futCurrCr) >= 0 ? "#e2f0d9" : "#fce4d6");
+  sheet.getRange(rowNum, 19).setBackground(Number(futNextCr) >= 0 ? "#e2f0d9" : "#fce4d6");
+  
+  var signalCell = sheet.getRange(rowNum, 22);
+  if (signal.indexOf("SUPER BULLISH") > -1) signalCell.setBackground("#2ed573").setFontColor("white").setFontWeight("bold");
+  else if (signal.indexOf("SUPER BEARISH") > -1) signalCell.setBackground("#ff4757").setFontColor("white").setFontWeight("bold");
+  else if (signal.indexOf("BULLISH") > -1) signalCell.setBackground("#2ae143").setFontColor("black").setFontWeight("bold");
+  else if (signal.indexOf("BEARISH") > -1) signalCell.setBackground("#ffa500").setFontColor("black").setFontWeight("bold");
+  else signalCell.setBackground("#eccc68").setFontColor("black").setFontWeight("bold");
+  
+  sheet.getRange(rowNum, 3).setFontColor(percentChange >= 0 ? "#2ed573" : "#ff4757");
+
+  sheet.getRange("A3:V4").setWrap(true).setHorizontalAlignment("center").setVerticalAlignment("middle");
+  sheet.setColumnWidths(1, 22, 105); 
+  
+  // =========================================================================
+  // INTEGRATED DUAL COUPLING PIPE: CHART_DATA_HELPER & NIFTY50 DYNAMICS
+  // =========================================================================
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var tz = Session.getScriptTimeZone();
+    var numFutCurr = Number(futCurrCr) || 0;
+    var numFutNext = Number(futNextCr) || 0;
+    
+    // -------------------------------------------------------------------------
+    // 1. NET ZERO OPTION CALCULATIONS (FOR CLEAN BAR CHARTS)
+    // -------------------------------------------------------------------------
+    // A. CURRENT EXPIRY NETTING
+    var rawCurrBull = Number(cBuyCr || 0) + Number(pWriteCr || 0);
+    var rawCurrBear = Number(cWriteCr || 0) + Number(pBuyCr || 0);
+    
+    var netCBuy = "0.00", netPWrite = "0.00";
+    var netCWrite = "0.00", netPBuy = "0.00";
+    
+    if (rawCurrBull > rawCurrBear) {
+      netCBuy = Number(cBuyCr || 0).toFixed(2);
+      netPWrite = Number(pWriteCr || 0).toFixed(2);
+    } else if (rawCurrBear > rawCurrBull) {
+      netCWrite = Number(cWriteCr || 0).toFixed(2);
+      netPBuy = Number(pBuyCr || 0).toFixed(2);
+    }
+
+    // B. NEXT EXPIRY NETTING
+    var rawNextBull = Number(nBuyCr || 0) + Number(npWriteCr || 0);
+    var rawNextBear = Number(nWriteCr || 0) + Number(npBuyCr || 0);
+    
+    var netNBuy = "0.00", netNPWrite = "0.00";
+    var netNWrite = "0.00", netNPBuy = "0.00";
+    
+    if (rawNextBull > rawNextBear) {
+      netNBuy = Number(nBuyCr || 0).toFixed(2);
+      netNPWrite = Number(npWriteCr || 0).toFixed(2);
+    } else if (rawNextBear > rawNextBull) {
+      netNWrite = Number(nWriteCr || 0).toFixed(2);
+      netNPBuy = Number(npBuyCr || 0).toFixed(2);
+    }
+
+    // -------------------------------------------------------------------------
+    // PIPE A: RECORD DATA TO CHART_DATA_HELPER (UPDATED: STARTS AT ROW 5)
+    // -------------------------------------------------------------------------
+    var chartHelperSheet = ss.getSheetByName("CHART_DATA_HELPER");
+    if (chartHelperSheet) {
+      var chartHelperRow = [
+        currentMinute,                                                  // 1. TIME
+        niftyPrice,                                                     // 2. NIFTY_PRICE
+        score + "/5",                                                   // 3. CUMULATIVE_SCORE
+        (Number(cashCr) >= 0 ? cashCr : "0.00"),                        // 4. CASH_IN
+        (Number(cashCr) < 0 ? Math.abs(Number(cashCr)).toFixed(2) : "0.00"), // 5. CASH_OUT
+        
+        // --- NET-ZERO CURRENT EXPIRY OPTIONS ---
+        netCBuy,                                                        // 6. CURR_BULL_CALL_BUY
+        netPWrite,                                                      // 7. CURR_BULL_PUT_WRITE
+        netCWrite,                                                      // 8. CURR_BEAR_CALL_WRITE
+        netPBuy,                                                        // 9. CURR_BEAR_PUT_BUY
+        
+        // --- NET CURRENT FUTURES ---
+        (numFutCurr >= 0 ? futCurrCr : "0.00"),                         // 10. FUT_CURR_IN
+        (numFutCurr < 0 ? Math.abs(numFutCurr).toFixed(2) : "0.00"),    // 11. FUT_CURR_OUT
+        
+        // --- NET-ZERO NEXT EXPIRY OPTIONS ---
+        netNBuy,                                                        // 12. NEXT_BULL_CALL_BUY
+        netNPWrite,                                                     // 13. NEXT_BULL_PUT_WRITE
+        netNWrite,                                                      // 14. NEXT_BEAR_CALL_WRITE
+        netNPBuy,                                                       // 15. NEXT_BEAR_PUT_BUY
+        
+        // --- NET NEXT FUTURES ---
+        (numFutNext >= 0 ? futNextCr : "0.00"),                         // 16. FUT_NEXT_IN
+        (numFutNext < 0 ? Math.abs(numFutNext).toFixed(2) : "0.00")     // 17. FUT_NEXT_OUT
+      ];
+      
+      var helperLastRow = chartHelperSheet.getLastRow();
+      // Logic: If less than 5 rows, start at 5. Otherwise, append to end.
+      var targetHelperRow = (helperLastRow < 5) ? 5 : helperLastRow + 1;
+      
+      // If data exists, check for existing timestamp to update instead of appending
+      if (helperLastRow >= 5) {
+        var helperTimes = chartHelperSheet.getRange(5, 1, helperLastRow - 4, 1).getValues();
+        for (var k = 0; k < helperTimes.length; k++) {
+          var rawCellVal = helperTimes[k][0];
+          if (rawCellVal) {
+            var formattedHelperTime = (rawCellVal instanceof Date) ? 
+                Utilities.formatDate(rawCellVal, tz, "HH:mm:ss") : rawCellVal.toString().trim();
+            if (formattedHelperTime === currentMinute) {
+              targetHelperRow = k + 5; // Maps index k back to the correct row index starting from 5
+              break;
+            }
+          }
+        }
+      }
+      chartHelperSheet.getRange(targetHelperRow, 1, 1, chartHelperRow.length).setValues([chartHelperRow]);
+    }
+    
+    // -------------------------------------------------------------------------
+    // PIPE B: RECORD DATA TO SEPARATE NIFTY50 DYNAMICS SPREADSHEET (28 COLUMNS)
+    // -------------------------------------------------------------------------
+    try {
+      // 🔴 CRITICAL: Paste your exact external Spreadsheet ID inside the quotes below
+      var externalWorkbook = SpreadsheetApp.openById("1YC-seFY6uQRGOQEielLnoFyEYuFtjOrnQb7JlnIi_W4");
+      var dynamicsSheet = externalWorkbook.getSheetByName("NIFTY50 DYNAMICS") || externalWorkbook.getSheets()[0];
+      
+      if (dynamicsSheet) {
+        // Aggregated Premium Totals for your external sheet
+        var totalBullPremium = (rawCurrBull + rawNextBull).toFixed(2);
+        var totalBearPremium = (rawCurrBear + rawNextBear).toFixed(2);
+        
+        // Net out the final calculation columns for the external dashboard charts
+        var netExternalBull = "0.00";
+        var netExternalBear = "0.00";
+        if (Number(totalBullPremium) > Number(totalBearPremium)) {
+          netExternalBull = (Number(totalBullPremium) - Number(totalBearPremium)).toFixed(2);
+        } else if (Number(totalBearPremium) > Number(totalBullPremium)) {
+          netExternalBear = (Number(totalBearPremium) - Number(totalBullPremium)).toFixed(2);
+        }
+
+        // =========================================================================
+        // ON-THE-FLY PREMIUM MELT CALCULATIONS FOR CHARTING PIPELINE
+        // =========================================================================
+        var liveSpot = Number(niftyPrice) || 0;
+        var roundStrike = Math.round(liveSpot / 50) * 50; 
+
+        var rawCEPrice = Number(curPrice) * 0.08 || 120; 
+        var rawPEPrice = Number(curPrice) * 0.07 || 95;
+
+        var ceIntrinsic = Math.max(0, liveSpot - roundStrike);
+        var ceMelt = Math.max(0, rawCEPrice - ceIntrinsic);
+
+        var peIntrinsic = Math.max(0, roundStrike - liveSpot);
+        var peMelt = Math.max(0, rawPEPrice - peIntrinsic);
+
+        var meltRatio = ceMelt > 0 ? (peMelt / ceMelt) : 1;
+
+        // =========================================================================
+        // RE-MAPPED VOLUMES FOR BIG PLAYER ALIGNMENT (RAW INTEGRAL VALUES)
+        // =========================================================================
+        var cleanCallWriteVol = Number(currentCallWrite || 0).toFixed(0);
+        var cleanPutWriteVol = Number(currentPutWrite || 0).toFixed(0);
+
+        // =========================================================================
+        // 🔄 3-MINUTE EXPONENTIAL MOVING AVERAGE (EMA) SHOCK ABSORBER LOGIC
+        // =========================================================================
+        var k = 2 / (3 + 1); // 3-Period smoothing factor multiplier (0.50)
+        var dynamicsLastRow = Math.max(dynamicsSheet.getLastRow(), 4); 
+        
+        // Fallback defaults to current live entries if no past rows exist yet
+        var prevCallWriteVolEMA = Number(cleanCallWriteVol); 
+        var prevPutWriteVolEMA = Number(cleanPutWriteVol);
+        var prevCashFlowEMA = Number(cashCr || 0);
+
+        // Fetch values from the previous row if we are on row 5 or lower down
+        if (dynamicsLastRow >= 5) {
+          var prevRowData = dynamicsSheet.getRange(dynamicsLastRow, 1, 1, 28).getValues()[0];
+          
+          // Safely pull previous raw values from Column Y (Index 24), Z (Index 25), and F (Index 5)
+          if (prevRowData[24] && !isNaN(prevRowData[24])) prevCallWriteVolEMA = Number(prevRowData[24]);
+          if (prevRowData[25] && !isNaN(prevRowData[25])) prevPutWriteVolEMA = Number(prevRowData[25]);
+          if (prevRowData[5]  && !isNaN(prevRowData[5]))  prevCashFlowEMA = Number(prevRowData[5]);
+        }
+
+        // Apply mathematical smoothing calculations frame-by-frame
+        var emaCallWriteVol = (Number(cleanCallWriteVol) * k) + (prevCallWriteVolEMA * (1 - k));
+        var emaPutWriteVol  = (Number(cleanPutWriteVol) * k) + (prevPutWriteVolEMA * (1 - k));
+        var emaCashFlow     = (Number(cashCr || 0) * k) + (prevCashFlowEMA * (1 - k));
+
+        // =========================================================================
+        // 📈 LIVE INTRADAY HIGH / LOW TRACKING
+        // =========================================================================
+        var intradayHigh = liveSpot;
+        var intradayLow = liveSpot;
+
+        // Scans Column B (NIFTY_PRICE) historically to spot the session's outer limits
+        if (dynamicsLastRow >= 5) {
+          var priceRangeRange = dynamicsSheet.getRange(5, 2, dynamicsLastRow - 4, 1).getValues(); 
+          var prices = priceRangeRange.map(function(r) { return Number(r[0]); }).filter(function(p) { return !isNaN(p); });
+          
+          if (prices.length > 0) {
+            intradayHigh = Math.max.apply(null, prices);
+            intradayLow = Math.min.apply(null, prices);
+          }
+        }
+
+        // =========================================================================
+        // 🚨 MINUTE-BY-MINUTE SIGNAL GENERATION LOGIC (COLUMN AA: CONCLUSION)
+        // =========================================================================
+        var minuteSignal = "NEUTRAL";
+        var volDifferencePct = Math.abs(emaCallWriteVol - emaPutWriteVol) / Math.max(emaCallWriteVol, emaPutWriteVol, 1);
+
+        // Track velocity shifts over the last 60 seconds using the stable EMA trends
+        var cashFlowImproving = emaCashFlow - prevCashFlowEMA;
+        var putWriteExpanding = emaPutWriteVol - prevPutWriteVolEMA;
+        var callWriteExpanding = emaCallWriteVol - prevCallWriteVolEMA;
+
+        // 🟩 Condition A: Standard Continuous Bullish Trend
+        if (emaPutWriteVol > emaCallWriteVol && meltRatio < 0.92 && emaCashFlow > -0.5) {
+          minuteSignal = "BULLISH";
+        } 
+        // 🟩 Condition B: Sharp Bullish Reversal Strike (Catching the absolute bottom)
+        else if (liveSpot <= (intradayLow * 1.0005) && putWriteExpanding > (emaCallWriteVol * 0.10) && cashFlowImproving > 0.3) {
+          minuteSignal = "BULLISH"; 
+        }
+        // 🟥 Condition C: Standard Continuous Bearish Trend
+        else if (emaCallWriteVol > emaPutWriteVol && meltRatio > 1.12 && emaCashFlow < 0.5) {
+          minuteSignal = "BEARISH";
+        } 
+        // 🟥 Condition D: Sharp Bearish Reversal Strike (Catching the absolute top)
+        else if (liveSpot >= (intradayHigh * 0.9995) && callWriteExpanding > (emaPutWriteVol * 0.10) && cashFlowImproving < -0.3) {
+          minuteSignal = "BEARISH"; 
+        }
+        // ⚠️ Condition E: Trap Zone Cooldown
+        else if (volDifferencePct < 0.12 && ceMelt > 15 && peMelt > 15) {
+          minuteSignal = "TRAP";
+        }
+
+        // =========================================================================
+        // COMBINATION SIGNAL OSCILLATOR MATRIX ENGINE (COLUMN AB: ULTIMATE SIGNALS)
+        // Evaluates Column D (signal variable) and Column AA (minuteSignal)
+        // =========================================================================
+        var mainSignalUpper = String(signal || "").toUpperCase();
+        var combinationScore = 0; // Starts at Neutral 0
+
+        // Calculate directional weights
+        if (mainSignalUpper.indexOf("BULLISH") > -1) combinationScore += 1.5;
+        if (mainSignalUpper.indexOf("BEARISH") > -1) combinationScore -= 1.5;
+
+        if (minuteSignal === "BULLISH") combinationScore += 1.5;
+        if (minuteSignal === "BEARISH") combinationScore -= 1.5;
+        if (minuteSignal === "TRAP")    combinationScore = 0; // Trap forces a flat center line
+
+        // Final score mapping text tag for easy scanning alongside numbers
+        var displayArrow = "➡️ SIDEWAYS / TRAP";
+        if (combinationScore >= 2)       displayArrow = "▲▲ SUPER BULLISH (" + combinationScore + ")";
+        else if (combinationScore > 0)  displayArrow = "▲ MILD BULLISH (" + combinationScore + ")";
+        else if (combinationScore <= -2) displayArrow = "▼▼ SUPER BEARISH (" + combinationScore + ")";
+        else if (combinationScore < 0)  displayArrow = "▼ MILD BEARISH (" + combinationScore + ")";
+
+        // =========================================================================
+        // ARRAY COMPILATION & DISPATCH PIPELINE
+        // =========================================================================
+        var dynamicsRow = [
+          currentMinute,                                     // A. TIME
+          niftyPrice,                                        // B. NIFTY_PRICE
+          percentChangeStr,                                  // C. NIFTY_%_CHANGE
+          score + "/5",                                      // D. ALGO_SCORE
+          signal,                                            // E. ALGO_SIGNAL
+          cashCr,                                            // F. CASH_FLOW_CR
+          
+          // --- CURRENT EXPIRY ---
+          cBuyCr,                                            // G. CURR_CALL_BUY
+          cWriteCr,                                          // H. CURR_CALL_WRITE
+          pBuyCr,                                            // I. CURR_PUT_BUY
+          pWriteCr,                                          // J. CURR_PUT_WRITE
+          (numFutCurr >= 0 ? futCurrCr : "0.00"),            // K. FUT_CURR_IN
+          (numFutCurr < 0 ? Math.abs(numFutCurr).toFixed(2) : "0.00"), // L. FUT_CURR_OUT
+          
+          // --- NEXT EXPIRY ---
+          nBuyCr,                                            // M. NEXT_CALL_BUY
+          nWriteCr,                                          // N. NEXT_CALL_WRITE
+          npBuyCr,                                           // O. NEXT_PUT_BUY
+          npWriteCr,                                         // P. NEXT_PUT_WRITE
+          (numFutNext >= 0 ? futNextCr : "0.00"),            // Q. FUT_NEXT_IN
+          (numFutNext < 0 ? Math.abs(numFutNext).toFixed(2) : "0.00"), // R. FUT_NEXT_OUT
+          
+          // --- NET AGGREGATED PIE/BAR CHART DATA ---
+          netExternalBull,                                   // S. TOTAL_BULL_PREMIUM
+          netExternalBear,                                   // T. TOTAL_BEAR_PREMIUM
+          volumeCr,                                          // U. NIFTY_TOTAL_VOLUME
+          
+          // --- THE 5 CHARTING COLUMNS ---
+          Number(ceMelt).toFixed(2),                         // V. CE Melt (Column 22)
+          Number(peMelt).toFixed(2),                         // W. PE Melt (Column 23)
+          Number(meltRatio).toFixed(2),                      // X. Melting Ratio (Column 24)
+          cleanCallWriteVol,                                 // Y. CurCallWrite Vol (Column 25)
+          cleanPutWriteVol,                                  // Z. CurPutWrite Vol (Column 26)
+          
+          // --- GRAPHICAL EXPANSION MODES ---
+          minuteSignal,                                      // AA. CONCLUSION (Column 27)
+          combinationScore                                   // AB. ULTIMATE SIGNALS (Column 28)
+        ];
+        
+        // 🛠️ SHIFT WINDOW TO ROW 5 FOR WRITING AND DE-DUPLICATION
+        var targetDynamicsRow = dynamicsLastRow + 1;
+        if (targetDynamicsRow < 5) {
+          targetDynamicsRow = 5;
+        }
+        
+        // Look for duplicate entries to overwrite
+        if (dynamicsLastRow >= 5) {
+          var dynamicsTimes = dynamicsSheet.getRange(1, 1, dynamicsLastRow, 1).getValues();
+          for (var d = 4; d < dynamicsTimes.length; d++) {
+            var rawTimeVal = dynamicsTimes[d][0];
+            if (rawTimeVal) {
+              var formattedTime = (rawTimeVal instanceof Date) ? 
+                  Utilities.formatDate(rawTimeVal, tz, "HH:mm:ss") : rawTimeVal.toString().trim();
+              if (formattedTime === currentMinute) {
+                targetDynamicsRow = d + 1; 
+                break;
+              }
+            }
+          }
+        }
+        
+        // Write the record cleanly on the target row
+        dynamicsSheet.getRange(targetDynamicsRow, 1, 1, dynamicsRow.length).setValues([dynamicsRow]);
+        
+        // Formatting styles for charting columns
+        dynamicsSheet.getRange(targetDynamicsRow, 22, 1, 3).setFontColor("#1f4e78").setFontWeight("bold").setHorizontalAlignment("center");
+        dynamicsSheet.getRange(targetDynamicsRow, 25).setFontColor("#9c0006").setFontWeight("bold").setHorizontalAlignment("center");
+        dynamicsSheet.getRange(targetDynamicsRow, 26).setFontColor("#006100").setFontWeight("bold").setHorizontalAlignment("center");
+        
+        // Style Column AA (CONCLUSION)
+        var cellAA = dynamicsSheet.getRange(targetDynamicsRow, 27);
+        if (minuteSignal === "BULLISH") cellAA.setBackground("#c6efce").setFontColor("#006100").setFontWeight("bold").setHorizontalAlignment("center");
+        else if (minuteSignal === "BEARISH") cellAA.setBackground("#ffc7ce").setFontColor("#9c0006").setFontWeight("bold").setHorizontalAlignment("center");
+        else if (minuteSignal === "TRAP") cellAA.setBackground("#fff2cc").setFontColor("#b45f06").setFontWeight("bold").setHorizontalAlignment("center");
+        else cellAA.setBackground("#ffffff").setFontColor("#7f7f7f").setHorizontalAlignment("center");
+
+        // Style Column AB (ULTIMATE SIGNALS)
+        var cellAB = dynamicsSheet.getRange(targetDynamicsRow, 28);
+        cellAB.setValue(combinationScore).setHorizontalAlignment("center").setFontWeight("bold");
+        
+        // Custom number formatting shows text/arrows on the spreadsheet, keeping the underlying data clean and numeric for charts
+        var scoreFormat = '"' + displayArrow + '"';
+        cellAB.setNumberFormat(scoreFormat);
+      }
+    } catch (externalErr) {
+      Logger.log("⚠️ Pipe B Connection Issue: " + externalErr.toString());
+    }
+
+  // This closes the outer pipeline wrapper safely
+  } catch (err) {
+    Logger.log("Synchronized Data Pipeline Error: " + err.toString());
+  }
+  
+  // Hand off processing to your next structural engine module
+  runAdvancedInstitutionalIndicators(sheet, rowNum, niftyPrice, volumeCr, cashCr, futCurrCr, futNextCr);
+}
+
+// =========================================================================
+// ADVANCED INSTITUTIONAL INDICATOR & SIGNAL GENERATOR ENGINE (V2)
+// =========================================================================
+function runAdvancedInstitutionalIndicators(sheet, rowNum, niftyPrice, volumeCr, cashCr, futCurrCr, futNextCr) {
+  try {
+    if (rowNum < 6) return; 
+    
+    // ---------------------------------------------------------------------
+    // MODULE 1: THE MULTI-EXPIRY OI MULTIPLIER (EXPIRY ROLL VALUE)
+    // ---------------------------------------------------------------------
+    var cBuy   = Number(sheet.getRange(rowNum, 9).getValue())  || 0;
+    var cWrite = Number(sheet.getRange(rowNum, 10).getValue()) || 0;
+    var pBuy   = Number(sheet.getRange(rowNum, 11).getValue()) || 0;
+    var pWrite = Number(sheet.getRange(rowNum, 12).getValue()) || 0;
+    
+    var nBuy   = Number(sheet.getRange(rowNum, 13).getValue()) || 0;
+    var nWrite = Number(sheet.getRange(rowNum, 14).getValue()) || 0;
+    var npBuy  = Number(sheet.getRange(rowNum, 15).getValue()) || 0;
+    var npWrite = Number(sheet.getRange(rowNum, 16).getValue()) || 0;
+
+    var curOptNet = (cBuy + pWrite) - (cWrite + pBuy);
+    var nxtOptNet = (nBuy + npWrite) - (nWrite + npBuy);
+    
+    var expiryRollStatus = "⚡ CALM";
+    if (Math.abs(nxtOptNet) > (Math.abs(curOptNet) * 1.5) && Math.abs(nxtOptNet) > 0) {
+      expiryRollStatus = "🌀 INSTITUTIONAL ROLL OVER";
+    } else if (Math.abs(nxtOptNet) > Math.abs(curOptNet) && Math.abs(nxtOptNet) > 0) {
+      expiryRollStatus = "🔄 ACCUMULATING FAR MONTH";
+    }
+
+    // ---------------------------------------------------------------------
+    // MODULE 2: ORDER BOOK FLOW TOXICITY (VPIN LITE)
+    // ---------------------------------------------------------------------
+    var toxicityStatus = "⚪ RETAIL CHURN";
+    var priceMoveSum = 0;
+    
+    if (rowNum >= 9) { 
+      var historicalPrices = sheet.getRange(rowNum - 3, 2, 4, 1).getValues(); 
+      for (var i = 1; i < historicalPrices.length; i++) {
+        priceMoveSum += (historicalPrices[i][0] - historicalPrices[i-1][0]);
+      }
+      
+      var netFlows = Number(cashCr) + Number(futCurrCr) + Number(futNextCr);
+      
+      if (priceMoveSum > 0 && netFlows > 0) {
+        toxicityStatus = "🟢 INST. ACCUMULATION";
+      } else if (priceMoveSum < 0 && netFlows < 0) {
+        toxicityStatus = "🔴 INST. DISTRIBUTION";
+      }
+    }
+
+    // ---------------------------------------------------------------------
+    // MODULE 3: OPTIONS PREMIUM DIVERGENCE INDEX (PDI)
+    // ---------------------------------------------------------------------
+    var pdiStatus = "✅ ALIGNED";
+    if (rowNum >= 15) { 
+      var priceWindow = sheet.getRange(rowNum - 9, 2, 10, 1).getValues().map(function(r){return r[0];});
+      var callBuyWindow = sheet.getRange(rowNum - 9, 9, 10, 1).getValues().map(function(r){return r[0];});
+      
+      var maxPriceIndex = priceWindow.indexOf(Math.max.apply(null, priceWindow));
+      var maxCallIndex  = callBuyWindow.indexOf(Math.max.apply(null, callBuyWindow));
+      
+      if (maxPriceIndex === 9 && maxCallIndex !== 9) {
+        pdiStatus = "⚠️ BEARISH DIVERGENCE";
+      } else if (priceWindow[9] < priceWindow[0] && callBuyWindow[9] > callBuyWindow[0]) {
+        pdiStatus = "🚀 BULLISH DIVERGENCE";
+      }
+    }
+
+    // ---------------------------------------------------------------------
+    // MODULE 4: HIGH-CONVICTION CONFLUENCE SIGNAL ENGINE
+    // ---------------------------------------------------------------------
+    var finalTradeSignal = "🟡 NEUTRAL / WAIT";
+    var scoreNum = 2; 
+
+    if (rowNum >= 6) {
+      var coreScoreText = sheet.getRange(rowNum, 21).getValue();
+      if (coreScoreText !== null && coreScoreText !== undefined) {
+        if (typeof coreScoreText === 'string' && coreScoreText.indexOf("/") > -1) {
+          scoreNum = parseInt(coreScoreText.split("/")[0]);
+        } else {
+          scoreNum = parseInt(coreScoreText); 
+        }
+      }
+    }
+
+    if (scoreNum >= 4 && toxicityStatus.indexOf("ACCUMULATION") > -1) {
+      if (pdiStatus.indexOf("BULLISH") > -1 || expiryRollStatus !== "⚡ CALM") {
+        finalTradeSignal = "🚀 HIGH-CONVICTION BUY";
+      } else {
+        finalTradeSignal = "🟢 SQUEEZE LONG";
+      }
+    }
+    else if (scoreNum <= 1 && toxicityStatus.indexOf("DISTRIBUTION") > -1) {
+      if (pdiStatus.indexOf("BEARISH") > -1 || expiryRollStatus !== "⚡ CALM") {
+        finalTradeSignal = "⚠️ HIGH-CONVICTION SELL";
+      } else {
+        finalTradeSignal = "🔴 SQUEEZE SHORT";
+      }
+    }
+    else if (pdiStatus.indexOf("BULLISH") > -1 && priceMoveSum < 0) {
+      finalTradeSignal = "🔄 SCALP CALL BUY (REVERSAL)";
+    } 
+    else if (pdiStatus.indexOf("BEARISH") > -1 && priceMoveSum > 0) {
+      finalTradeSignal = "🔄 SCALP PUT BUY (REVERSAL)";
+    }
+
+    // ---------------------------------------------------------------------
+    // WRITE OUTPUT MATRIX TO DASHBOARD (COLUMNS W, X, Y, Z)
+    // ---------------------------------------------------------------------
+    var outputRange = sheet.getRange(rowNum, 23, 1, 4); 
+    outputRange.setValues([[expiryRollStatus, toxicityStatus, pdiStatus, finalTradeSignal]]);
+    outputRange.setHorizontalAlignment("center").setFontWeight("bold");
+
+    // ---------------------------------------------------------------------
+    // FIXED: TARGET EXACT SAME ROW (ROWNUM) FOR METRICS (COLUMNS AA, AB, AC)
+    // ---------------------------------------------------------------------
+    // Uses rowNum to ensure it prints directly beside your trade signals from row 6 onwards
+    var meltOutputRange = sheet.getRange(rowNum, 27, 1, 3); // AA (27), AB (28), AC (29)
+    meltOutputRange.setValues([[
+      typeof totalCeExtrinsicMelt !== 'undefined' ? Number(totalCeExtrinsicMelt) : 0, 
+      typeof totalPeExtrinsicMelt !== 'undefined' ? Number(totalPeExtrinsicMelt) : 0, 
+      typeof finalMeltRatio !== 'undefined' ? Number(finalMeltRatio) : 1
+    ]]);
+    meltOutputRange.setHorizontalAlignment("center").setFontWeight("bold").setFontColor("#2f5597");
+    
+    // ---------------------------------------------------------------------
+    // VISUAL COLOR-CODING LOGIC (COLUMNS W, X, Y, Z)
+    // ---------------------------------------------------------------------
+    sheet.getRange(rowNum, 23).setBackground(expiryRollStatus.indexOf("⚡") > -1 ? "#ffffff" : "#d9e1f2").setFontColor("#1f4e78");
+    
+    var toxCell = sheet.getRange(rowNum, 24);
+    if (toxicityStatus.indexOf("ACCUMULATION") > -1) toxCell.setBackground("#c6efce").setFontColor("#006100");
+    else if (toxicityStatus.indexOf("DISTRIBUTION") > -1) toxCell.setBackground("#ffc7ce").setFontColor("#9c0006");
+    else toxCell.setBackground("#ffffff").setFontColor("#7f7f7f");
+
+    var pdiCell = sheet.getRange(rowNum, 25);
+    if (pdiStatus.indexOf("BEARISH") > -1) pdiCell.setBackground("#ffeb9c").setFontColor("#9c6500");
+    else if (pdiStatus.indexOf("BULLISH") > -1) pdiCell.setBackground("#b4c6e7").setFontColor("#1f4e78");
+    else pdiCell.setBackground("#ffffff").setFontColor("#595959");
+
+    var sigCell = sheet.getRange(rowNum, 26);
+    if (finalTradeSignal.indexOf("HIGH-CONVICTION BUY") > -1) {
+      sigCell.setBackground("#00b050").setFontColor("#ffffff"); 
+    } else if (finalTradeSignal.indexOf("HIGH-CONVICTION SELL") > -1) {
+      sigCell.setBackground("#c00000").setFontColor("#ffffff"); 
+    } else if (finalTradeSignal.indexOf("SQUEEZE LONG") > -1) {
+      sigCell.setBackground("#e2f0d9").setFontColor("#385723"); 
+    } else if (finalTradeSignal.indexOf("SQUEEZE SHORT") > -1) {
+      sigCell.setBackground("#fce4d6").setFontColor("#c65911"); 
+    } else if (finalTradeSignal.indexOf("SCALP") > -1) {
+      sigCell.setBackground("#fff2cc").setFontColor("#7f6000"); 
+    } else {
+      sigCell.setBackground("#f2f2f2").setFontColor("#a6a6a6"); 
+    }
+
+  } catch(err) {
+    Logger.log("Advanced indicators engine exception: " + err.message);
+  }
+}
+// =========================
+// BIG PLAYER DETECTION ENGINE (NON-INTRUSIVE)
+// =========================
+function detectBigPlayerBets() {
+  
+  // =========================
+  // INDIA MARKET TIME FILTER (Same as your main script)
+  // =========================
+  var now = new Date();
+  var istTime = new Date(now.toLocaleString("en-US", { timeZone: "Asia/Kolkata" }));
+  var day = istTime.getDay();
+
+  // Stop on Weekends
+  if (day == 0 || day == 6) {
+    Logger.log("Weekend - Big Player Scanner Closed");
+    return; 
+  }
+
+  var hours = istTime.getHours();
+  var minutes = istTime.getMinutes();
+  var currentMinutes = hours * 60 + minutes;
+
+  var marketOpen  = 9 * 60 + 14; // 9:15 AM
+  var marketClose = 15 * 60 + 30; // 3:30 PM
+
+  // Stop outside market hours
+  if (currentMinutes < marketOpen || currentMinutes > marketClose) {
+    Logger.log("Outside Market Hours - Big Player Scanner Closed");
+    return;
+  }
+
+  Logger.log("Market OPEN - Scanning for Big Players...");
+  
+  try {
+    // Connect to your external sheet
+    var externalWorkbook = SpreadsheetApp.openById("1YC-seFY6uQRGOQEielLnoFyEYuFtjOrnQb7JlnIi_W4");
+    var sheet = externalWorkbook.getSheetByName("NIFTY50 DYNAMICS");
+    
+    if (!sheet) return;
+    var lastRow = sheet.getLastRow();
+    if (lastRow < 5) return; // Wait for data to populate
+    
+    // Read the latest row of data (Columns A to AB / 1 to 28)
+    var rowData = sheet.getRange(lastRow, 1, 1, 28).getValues()[0];
+    
+    // --- EXTRACT DATA FROM YOUR EXISTING COLUMNS ---
+    var pctChangeStr = String(rowData[2] || "0%").replace(/[▲▼%,]/g, '');
+    var pctChange = parseFloat(pctChangeStr) || 0;
+    
+    var cashFlow = Number(rowData[5]) || 0;          // Col F
+    var currCallBuy = Number(rowData[6]) || 0;       // Col G
+    var currCallWrite = Number(rowData[7]) || 0;     // Col H
+    var currPutBuy = Number(rowData[8]) || 0;        // Col I
+    var currPutWrite = Number(rowData[9]) || 0;      // Col J
+    var futCurrIn = Number(rowData[10]) || 0;        // Col K
+    var futCurrOut = Number(rowData[11]) || 0;       // Col L
+    var totalBullPrem = Number(rowData[18]) || 0;    // Col S
+    var totalBearPrem = Number(rowData[19]) || 0;    // Col T
+    var callWriteVol = Number(rowData[24]) || 0;     // Col Y
+    var putWriteVol = Number(rowData[25]) || 0;      // Col Z
+    
+    // --- THRESHOLDS FOR BIG PLAYERS ---
+    var minPremiumCr = 3.0;       
+    var minWriteVol = 50000;      
+    
+    var signal = "WAIT / RETAIL NOISE";
+    var reason = "No institutional alignment";
+    
+    // ==========================================
+    // LOGIC 1: BULLISH BIG PLAYER BET (BUY CALL)
+    // ==========================================
+    var isPriceUp = pctChange > 0.02;
+    var isCashBullish = cashFlow > 0;
+    var isFutBullish = futCurrIn > futCurrOut;
+    
+    var heavyPutWrite = (currPutWrite > minPremiumCr && putWriteVol > minWriteVol);
+    var heavyCallBuy = (currCallBuy > minPremiumCr);
+    
+    if (isPriceUp && isCashBullish && isFutBullish && (heavyPutWrite || heavyCallBuy)) {
+      if (totalBearPrem > (totalBullPrem * 1.2)) {
+        signal = "⚠️ BULL TRAP - DON'T BUY CALL";
+        reason = "Price up, but Bear Premium > Bull Premium. Institutions selling the rally.";
+      } else {
+        signal = "🚀 BUY CALL (BIG PLAYER BULLISH)";
+        reason = "Cash + Fut Inflow + Heavy Put Writing/Call Buying. Smart Money Long.";
+      }
+    }
+    
+    // ==========================================
+    // LOGIC 2: BEARISH BIG PLAYER BET (BUY PUT)
+    // ==========================================
+    var isPriceDown = pctChange < -0.02;
+    var isCashBearish = cashFlow < 0;
+    var isFutBearish = futCurrOut > futCurrIn;
+    
+    var heavyCallWrite = (currCallWrite > minPremiumCr && callWriteVol > minWriteVol);
+    var heavyPutBuy = (currPutBuy > minPremiumCr);
+    
+    if (isPriceDown && isCashBearish && isFutBearish && (heavyCallWrite || heavyPutBuy)) {
+      if (totalBullPrem > (totalBearPrem * 1.2)) {
+        signal = "⚠️ BEAR TRAP - DON'T BUY PUT";
+        reason = "Price down, but Bull Premium > Bear Premium. Institutions buying the dip.";
+      } else {
+        signal = "📉 BUY PUT (BIG PLAYER BEARISH)";
+        reason = "Cash + Fut Outflow + Heavy Call Writing/Put Buying. Smart Money Short.";
+      }
+    }
+    
+    // Write Signals to Columns 30 (AD) and 31 (AE)
+    sheet.getRange(lastRow, 30).setValue(signal);
+    sheet.getRange(lastRow, 31).setValue(reason);
+    
+    // Color Code the Signal Cell
+    var signalCell = sheet.getRange(lastRow, 30);
+    if (signal.indexOf("BUY CALL") > -1) {
+      signalCell.setBackground("#008000").setFontColor("white").setFontWeight("bold");
+    } else if (signal.indexOf("BUY PUT") > -1) {
+      signalCell.setBackground("#FF0000").setFontColor("white").setFontWeight("bold");
+    } else if (signal.indexOf("TRAP") > -1) {
+      signalCell.setBackground("#FFA500").setFontColor("black").setFontWeight("bold");
+    } else {
+      signalCell.setBackground("#808080").setFontColor("white");
+    }
+    
+  } catch (e) {
+    Logger.log("Big Player Detection Error: " + e.toString());
+    runStrikeHeatMap();
+  }
+}
+// =========================================================================
+// STRIKE HEAT MAP v2.1 — FIXED: expiry detection, Date objects, duplicates
+// Reads existing NIFTY50 RAW_OPTIONS sheet → Writes to HEATMAP_EXT_WB tab
+// in the external NIFTY50 DYNAMICS workbook.
+// COMPLETELY STANDALONE — Does NOT touch fetchSmartMoneyData()
+// =========================================================================
+
+var EXTERNAL_WB_ID = "1YC-seFY6uQRGOQEielLnoFyEYuFtjOrnQb7JlnIi_W4";
+var HEATMAP_SHEET_NAME = "HEATMAP_EXT_WB";
+var START_ROW = 5;
+var STRIKE_COUNT = 11;          // ATM±5
+var STRIKE_STEP = 50;
+var NEIGHBOR_RANGE = 2;         // ±2 strikes for average
+var HEAT_THRESHOLD_MULT = 1.2;  // × standard deviation
+var MIN_HEAT_THRESHOLD = 2;     // minimum ₹2
+
+// =========================================================================
+// HELPER: Normalize any timestamp value (Date object or string) to "HH:mm:ss"
+// =========================================================================
+function _hmExtractTimeOnly(val) {
+  if (val instanceof Date) {
+    return Utilities.formatDate(val, "Asia/Kolkata", "HH:mm:ss");
+  }
+  var s = String(val).trim();
+  var match = s.match(/(\d{2}:\d{2}:\d{2})/);
+  return match ? match[1] : s;
+}
+
+// =========================================================================
+// HELPER: Normalize timestamp to "dd/MM/yyyy HH:mm:ss" for consistent comparison
+// =========================================================================
+function _hmNormalizeTime(val) {
+  if (val instanceof Date) {
+    return Utilities.formatDate(val, "Asia/Kolkata", "dd/MM/yyyy HH:mm:ss");
+  }
+  return String(val).trim();
+}
+
+function runStrikeHeatMap() {
+
+  Logger.log("=== STRIKE HEAT MAP v2.1 STARTED ===");
+
+  // =========================
+  // 1. GET SOURCE RAW_OPTIONS SHEET
+  // =========================
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var rawSheet = ss.getSheetByName("RAW_OPTIONS");
+  if (!rawSheet) {
+    Logger.log("ERROR: RAW_OPTIONS sheet not found");
+    return;
+  }
+
+  var lastRow = rawSheet.getLastRow();
+  if (lastRow < START_ROW + STRIKE_COUNT) {
+    Logger.log("Not enough data yet (need 2+ snapshots). Rows: " + lastRow);
+    return;
+  }
+
+  // =========================
+  // 2. READ THE LAST ~50 ROWS (covers 2+ full snapshots of 22 rows each)
+  // =========================
+  var scanRows = Math.min(50, lastRow - START_ROW + 1);
+  var scanStart = lastRow - scanRows + 1;
+  var rawData = rawSheet.getRange(scanStart, 1, scanRows, 7).getValues();
+  // Cols: 0=Time, 1=Expiry, 2=Strike, 3=CE LTP, 4=PE LTP, 5=CE OI, 6=PE OI
+
+  // =========================
+  // 3. FIND UNIQUE TIMESTAMPS (using normalized strings for Date object safety)
+  // =========================
+  var timestamps = [];
+  for (var i = 0; i < rawData.length; i++) {
+    var tNorm = _hmNormalizeTime(rawData[i][0]);
+    if (tNorm === "") continue;
+    if (timestamps.length === 0 || timestamps[timestamps.length - 1] !== tNorm) {
+      timestamps.push(tNorm);
+    }
+  }
+
+  if (timestamps.length < 2) {
+    Logger.log("Only 1 snapshot available. Need at least 2. Waiting...");
+    return;
+  }
+
+  var prevTimestamp = timestamps[timestamps.length - 2];
+  var currTimestamp = timestamps[timestamps.length - 1];
+  var currTimeOnly = _hmExtractTimeOnly(rawData[rawData.length - 1][0]);
+  Logger.log("Previous: " + prevTimestamp + " → Current: " + currTimestamp);
+
+  // =========================
+  // 4. EXTRACT CURRENT WEEK EXPIRY (FIXED v2.1)
+  // =========================
+  // BUG FIX: Don't use "first non-empty expiry in scan window" because the
+  // scan window may start mid-snapshot at a next-week row (26714).
+  // Instead, find the FIRST expiry within the CURRENT timestamp's block.
+  // Within each timestamp, current week rows (26707) ALWAYS come before
+  // next week rows (26714), so the first expiry seen = current week.
+  var currentWeekExpiry = "";
+  for (var i = 0; i < rawData.length; i++) {
+    var tNorm = _hmNormalizeTime(rawData[i][0]);
+    if (tNorm === currTimestamp) {
+      var exp = String(rawData[i][1]).trim();
+      if (exp !== "" && currentWeekExpiry === "") {
+        currentWeekExpiry = exp;
+        break; // First expiry in current timestamp = current week
+      }
+    }
+  }
+
+  if (currentWeekExpiry === "") {
+    Logger.log("ERROR: Could not detect current week expiry");
+    return;
+  }
+  Logger.log("Current Week Expiry: " + currentWeekExpiry);
+
+  // =========================
+  // 5. PARSE PREVIOUS AND CURRENT SNAPSHOT DATA
+  // =========================
+  var prevData = {};
+  var currData = {};
+
+  for (var i = 0; i < rawData.length; i++) {
+    var tNorm = _hmNormalizeTime(rawData[i][0]);
+    var exp = String(rawData[i][1]).trim();
+    var strike = Number(rawData[i][2]);
+    var ceLTP = Number(rawData[i][3]) || 0;
+    var peLTP = Number(rawData[i][4]) || 0;
+    var ceOI = Number(rawData[i][5]) || 0;
+    var peOI = Number(rawData[i][6]) || 0;
+
+    // Only current week expiry
+    if (exp !== currentWeekExpiry) continue;
+    if (strike <= 0) continue;
+
+    var entry = { ceLTP: ceLTP, peLTP: peLTP, ceOI: ceOI, peOI: peOI };
+
+    if (tNorm === prevTimestamp) {
+      prevData[strike] = entry;
+    } else if (tNorm === currTimestamp) {
+      currData[strike] = entry;
+    }
+  }
+
+  // Verify we have all 11 strikes in both snapshots
+  var strikes = Object.keys(currData).map(Number).sort(function(a, b) { return a - b; });
+
+  if (strikes.length < STRIKE_COUNT) {
+    Logger.log("Only " + strikes.length + " strikes in current snapshot for expiry " +
+      currentWeekExpiry + ". Need " + STRIKE_COUNT);
+    return;
+  }
+
+  var prevStrikes = Object.keys(prevData).map(Number).sort(function(a, b) { return a - b; });
+  if (prevStrikes.length < STRIKE_COUNT) {
+    Logger.log("Previous snapshot only has " + prevStrikes.length + " strikes for expiry " +
+      currentWeekExpiry + ". Need " + STRIKE_COUNT);
+    return;
+  }
+
+  Logger.log("Strikes found: " + strikes.join(", "));
+
+  // =========================
+  // 6. CALCULATE PREMIUM CHANGES & OI CHANGES
+  // =========================
+  var cePremiumChange = {};
+  var pePremiumChange = {};
+  var ceOIChange = {};
+  var peOIChange = {};
+
+  for (var s = 0; s < strikes.length; s++) {
+    var stk = strikes[s];
+    if (!prevData[stk]) continue;
+
+    cePremiumChange[stk] = currData[stk].ceLTP - prevData[stk].ceLTP;
+    pePremiumChange[stk] = currData[stk].peLTP - prevData[stk].peLTP;
+    ceOIChange[stk] = currData[stk].ceOI - prevData[stk].ceOI;
+    peOIChange[stk] = currData[stk].peOI - prevData[stk].peOI;
+  }
+
+  // =========================
+  // 7. CALCULATE HEAT SCORES
+  // =========================
+  var ceHeatScore = {};
+  var peHeatScore = {};
+
+  for (var s = 0; s < strikes.length; s++) {
+    var stk = strikes[s];
+    if (cePremiumChange[stk] === undefined) continue;
+
+    var ceNeighborSum = 0;
+    var peNeighborSum = 0;
+    var neighborCount = 0;
+
+    for (var n = -NEIGHBOR_RANGE; n <= NEIGHBOR_RANGE; n++) {
+      if (n === 0) continue;
+      var neighborStrike = stk + (n * STRIKE_STEP);
+      if (cePremiumChange[neighborStrike] !== undefined) {
+        ceNeighborSum += cePremiumChange[neighborStrike];
+        peNeighborSum += pePremiumChange[neighborStrike];
+        neighborCount++;
+      }
+    }
+
+    if (neighborCount > 0) {
+      ceHeatScore[stk] = cePremiumChange[stk] - (ceNeighborSum / neighborCount);
+      peHeatScore[stk] = pePremiumChange[stk] - (peNeighborSum / neighborCount);
+    }
+  }
+
+  // =========================
+  // 8. DYNAMIC THRESHOLD
+  // =========================
+  var allCeHeats = [];
+  var allPeHeats = [];
+  for (var stk in ceHeatScore) {
+    allCeHeats.push(ceHeatScore[stk]);
+    allPeHeats.push(peHeatScore[stk]);
+  }
+
+  function calcStdDev(arr) {
+    if (arr.length < 2) return 0;
+    var sum = 0;
+    for (var i = 0; i < arr.length; i++) sum += arr[i];
+    var mean = sum / arr.length;
+    var sqDiffSum = 0;
+    for (var i = 0; i < arr.length; i++) sqDiffSum += (arr[i] - mean) * (arr[i] - mean);
+    return Math.sqrt(sqDiffSum / arr.length);
+  }
+
+  var ceStdDev = calcStdDev(allCeHeats);
+  var peStdDev = calcStdDev(allPeHeats);
+
+  var ceThreshold = Math.max(MIN_HEAT_THRESHOLD, HEAT_THRESHOLD_MULT * ceStdDev);
+  var peThreshold = Math.max(MIN_HEAT_THRESHOLD, HEAT_THRESHOLD_MULT * peStdDev);
+
+  Logger.log("CE Threshold: " + ceThreshold.toFixed(2) + " (stdDev=" + ceStdDev.toFixed(2) + ")");
+  Logger.log("PE Threshold: " + peThreshold.toFixed(2) + " (stdDev=" + peStdDev.toFixed(2) + ")");
+
+  // =========================
+  // 9. DETERMINE SIGNALS
+  // =========================
+  function getSignal(heatScore, oiChange, optionType) {
+    var oiRising = oiChange > 0;
+    var oiFalling = oiChange < 0;
+
+    if (optionType === "CE") {
+      if (heatScore < -ceThreshold && oiRising) return "🔴 BIG SHORT (Call Writers)";
+      if (heatScore > ceThreshold && oiRising) return "🟢 BIG LONG (Call Buyers)";
+      if (heatScore < -ceThreshold && oiFalling) return "🟡 SHORT COVERING (Calls)";
+      if (heatScore > ceThreshold && oiFalling) return "🟡 LONG UNWINDING (Calls)";
+      return "⚪ Normal";
+    } else {
+      if (heatScore < -peThreshold && oiRising) return "🟢 BIG SHORT (Put Writers)";
+      if (heatScore > peThreshold && oiRising) return "🔴 BIG LONG (Put Buyers)";
+      if (heatScore < -peThreshold && oiFalling) return "🟡 SHORT COVERING (Puts)";
+      if (heatScore > peThreshold && oiFalling) return "🟡 LONG UNWINDING (Puts)";
+      return "⚪ Normal";
+    }
+  }
+
+  // =========================
+  // 10. WRITE TO EXTERNAL WORKBOOK
+  // =========================
+  try {
+    var extWb = SpreadsheetApp.openById(EXTERNAL_WB_ID);
+  } catch (e) {
+    Logger.log("ERROR: Cannot open external workbook: " + e.toString());
+    return;
+  }
+
+  var hmSheet = extWb.getSheetByName(HEATMAP_SHEET_NAME);
+
+  // Create sheet + headers if it doesn't exist
+  if (!hmSheet) {
+    hmSheet = extWb.insertSheet(HEATMAP_SHEET_NAME);
+    hmSheet.getRange(1, 1, 1, 18).setValues([[
+      "STRIKE HEAT MAP — NIFTY50 CURRENT WEEK EXPIRY",
+      "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""
+    ]]);
+    hmSheet.getRange(1, 1, 1, 18).merge().setFontWeight("bold").setFontSize(12)
+      .setBackground("#1a1a2e").setFontColor("#e94560");
+
+    hmSheet.getRange(2, 1, 1, 18).setValues([[
+      "Time", "NIFTY Spot", "Expiry",
+      "CE ₹ Change", "CE Prev LTP", "CE LTP", "CE ΔOI", "CE OI", "CE Heat Score", "CE Signal",
+      "Strike",
+      "PE Signal", "PE Heat Score", "PE OI", "PE ΔOI", "PE LTP", "PE Prev LTP", "PE ₹ Change"
+    ]]);
+    hmSheet.getRange(2, 1, 1, 18).setFontWeight("bold").setFontSize(9)
+      .setBackground("#16213e").setFontColor("#eee");
+
+    hmSheet.getRange(3, 1, 1, 18).setValues([[
+      "Thresholds →", "", "",
+      "CE Thr: (auto)", "", "", "", "", "(1.2×σ=...)", "Signal Logic:",
+      "Heat = Premium Change vs Neighbor Avg",
+      "Signal Logic:", "(1.2×σ=...)", "", "", "", "", "PE Thr: (auto)"
+    ]]);
+    hmSheet.getRange(3, 1, 1, 18).setFontWeight("bold").setFontSize(8)
+      .setBackground("#0f3460").setFontColor("#a8d8ea");
+
+    hmSheet.getRange(4, 1, 1, 18).setValues([["","","","","","","","","","","","","","","","","","",""]]);
+  }
+
+  // Get NIFTY spot price from DYNAMICS tab
+  var niftySpot = 0;
+  try {
+    var dynSheet = extWb.getSheetByName("NIFTY50 DYNAMICS");
+    if (dynSheet) {
+      var dynLastRow = dynSheet.getLastRow();
+      if (dynLastRow >= START_ROW) {
+        niftySpot = Number(dynSheet.getRange(dynLastRow, 2).getValue()) || 0;
+      }
+    }
+  } catch (e) {
+    niftySpot = strikes[Math.floor(strikes.length / 2)];
+  }
+
+  if (niftySpot === 0) {
+    niftySpot = strikes[Math.floor(strikes.length / 2)];
+  }
+
+  // =========================
+  // 11. SAME-MINUTE OVERWRITE (FIXED v2.1)
+  // =========================
+  // BUG FIX: Old code used String(Date).split(" ")[1] which gave "Jul" instead
+  // of time. Now uses _hmExtractTimeOnly() for proper "HH:mm:ss" comparison.
+  // Also FIX: Overwrite starts at block START (lastRow - 10), not at lastRow,
+  // to prevent duplicate rows stacking up.
+  var hmLastRow = hmSheet.getLastRow();
+  var targetRow = (hmLastRow < START_ROW - 1) ? START_ROW : hmLastRow + 1;
+
+  if (hmLastRow >= START_ROW) {
+    var lastHmTimeRaw = hmSheet.getRange(hmLastRow, 1).getValue();
+    var lastHmTimeOnly = _hmExtractTimeOnly(lastHmTimeRaw);
+
+    if (lastHmTimeOnly === currTimeOnly) {
+      // Same minute — overwrite the entire previous block
+      // Previous block of 11 rows ends at hmLastRow, so starts at hmLastRow - 10
+      targetRow = Math.max(START_ROW, hmLastRow - STRIKE_COUNT + 1);
+      Logger.log("Same-minute overwrite: rows " + targetRow + " to " +
+        (targetRow + STRIKE_COUNT - 1));
+    }
+  }
+
+  // =========================
+  // 12. BUILD OUTPUT ROWS
+  // =========================
+  var outputRows = [];
+  for (var s = 0; s < strikes.length; s++) {
+    var stk = strikes[s];
+    var ceLTP = currData[stk] ? currData[stk].ceLTP : 0;
+    var peLTP = currData[stk] ? currData[stk].peLTP : 0;
+    var ceOI = currData[stk] ? currData[stk].ceOI : 0;
+    var peOI = currData[stk] ? currData[stk].peOI : 0;
+    var prevCeLTP = prevData[stk] ? prevData[stk].ceLTP : 0;
+    var prevPeLTP = prevData[stk] ? prevData[stk].peLTP : 0;
+
+    var ceChange = cePremiumChange[stk] !== undefined ? cePremiumChange[stk] : 0;
+    var peChange = pePremiumChange[stk] !== undefined ? pePremiumChange[stk] : 0;
+    var ceHeat = ceHeatScore[stk] !== undefined ? ceHeatScore[stk] : 0;
+    var peHeat = peHeatScore[stk] !== undefined ? peHeatScore[stk] : 0;
+    var ceDO = ceOIChange[stk] !== undefined ? ceOIChange[stk] : 0;
+    var peDO = peOIChange[stk] !== undefined ? peOIChange[stk] : 0;
+
+    var ceSignal = getSignal(ceHeat, ceDO, "CE");
+    var peSignal = getSignal(peHeat, peDO, "PE");
+
+    outputRows.push([
+      currTimeOnly,                          // Col A: Time
+      s === 0 ? niftySpot : "",              // Col B: Spot (first row only)
+      s === 0 ? currentWeekExpiry : "",      // Col C: Expiry (first row only)
+      parseFloat(ceChange.toFixed(2)),       // Col D: CE ₹ Change
+      prevCeLTP,                             // Col E: CE Prev LTP
+      ceLTP,                                 // Col F: CE LTP
+      ceDO,                                  // Col G: CE ΔOI
+      ceOI,                                  // Col H: CE OI
+      parseFloat(ceHeat.toFixed(2)),         // Col I: CE Heat Score
+      ceSignal,                              // Col J: CE Signal
+      stk,                                   // Col K: Strike (CENTER)
+      peSignal,                              // Col L: PE Signal
+      parseFloat(peHeat.toFixed(2)),         // Col M: PE Heat Score
+      peOI,                                  // Col N: PE OI
+      peDO,                                  // Col O: PE ΔOI
+      peLTP,                                 // Col P: PE LTP
+      prevPeLTP,                             // Col Q: PE Prev LTP
+      parseFloat(peChange.toFixed(2))        // Col R: PE ₹ Change
+    ]);
+  }
+
+  // Write batch
+  var writeStartRow = targetRow;
+  hmSheet.getRange(writeStartRow, 1, outputRows.length, 18).setValues(outputRows);
+
+  // =========================
+  // 13. COLOR CODE THE SIGNALS
+  // =========================
+  var redBg = "#ffcccc";
+  var greenBg = "#ccffcc";
+  var yellowBg = "#ffffcc";
+  var greyBg = "#f0f0f0";
+
+  for (var s = 0; s < outputRows.length; s++) {
+    var row = writeStartRow + s;
+    var ceSig = outputRows[s][9];     // CE Signal at index 9 (col J)
+    var peSig = outputRows[s][11];    // PE Signal at index 11 (col L)
+
+    // CE Signal coloring (column J = 10)
+    if (ceSig.indexOf("BIG SHORT") !== -1) {
+      hmSheet.getRange(row, 10).setBackground(redBg).setFontWeight("bold");
+      hmSheet.getRange(row, 9).setBackground("#ff6666");    // CE Heat Score col I
+    } else if (ceSig.indexOf("BIG LONG") !== -1) {
+      hmSheet.getRange(row, 10).setBackground(greenBg).setFontWeight("bold");
+      hmSheet.getRange(row, 9).setBackground("#66ff66");
+    } else if (ceSig.indexOf("COVERING") !== -1 || ceSig.indexOf("UNWINDING") !== -1) {
+      hmSheet.getRange(row, 10).setBackground(yellowBg);
+    } else {
+      hmSheet.getRange(row, 10).setBackground(greyBg);
+    }
+
+    // PE Signal coloring (column L = 12)
+    if (peSig.indexOf("BIG SHORT") !== -1) {
+      hmSheet.getRange(row, 12).setBackground(greenBg).setFontWeight("bold");
+      hmSheet.getRange(row, 13).setBackground("#66ff66");   // PE Heat Score col M
+    } else if (peSig.indexOf("BIG LONG") !== -1) {
+      hmSheet.getRange(row, 12).setBackground(redBg).setFontWeight("bold");
+      hmSheet.getRange(row, 13).setBackground("#ff6666");
+    } else if (peSig.indexOf("COVERING") !== -1 || peSig.indexOf("UNWINDING") !== -1) {
+      hmSheet.getRange(row, 12).setBackground(yellowBg);
+    } else {
+      hmSheet.getRange(row, 12).setBackground(greyBg);
+    }
+
+    if (ceSig.indexOf("BIG") !== -1 || peSig.indexOf("BIG") !== -1) {
+      hmSheet.getRange(row, 1, 1, 18).setFontWeight("bold");
+    }
+  }
+
+  // =========================
+  // 14. UPDATE HEADER WITH LIVE VALUES
+  // =========================
+  hmSheet.getRange(3, 4).setValue("CE Thr: ₹" + ceThreshold.toFixed(2));
+  hmSheet.getRange(3, 9).setValue("(1.2\u00D7\u03C3=" + ceStdDev.toFixed(2) + ")");
+  hmSheet.getRange(3, 18).setValue("PE Thr: ₹" + peThreshold.toFixed(2));
+  hmSheet.getRange(3, 13).setValue("(1.2\u00D7\u03C3=" + peStdDev.toFixed(2) + ")");
+
+  // Format expiry for readable display (26707 → 2026-07-07)
+  var expiryReadable = currentWeekExpiry;
+  if (currentWeekExpiry.length === 5 && isNaN(currentWeekExpiry) === false) {
+    var yy = "20" + currentWeekExpiry.substring(0, 2);
+    var mm = currentWeekExpiry.substring(2, 3);
+    var dd = currentWeekExpiry.substring(3, 5);
+    expiryReadable = yy + "-" + mm + "-" + dd;
+  }
+  hmSheet.getRange(1, 1).setValue(
+    "STRIKE HEAT MAP \u2014 NIFTY50 | Expiry: " + expiryReadable +
+    " | " + currTimeOnly + " | Spot: " + niftySpot
+  );
+
+  Logger.log("=== STRIKE HEAT MAP v2.1 COMPLETE ===");
+  Logger.log("Expiry: " + currentWeekExpiry + " | Strikes: " + strikes.length +
+    " | Rows " + writeStartRow + "-" + (writeStartRow + outputRows.length - 1));
+
+  for (var s = 0; s < outputRows.length; s++) {
+    var stk = outputRows[s][10];    // Strike at index 10 (col K)
+    var ceSig = outputRows[s][9];    // CE Signal at index 9 (col J)
+    var peSig = outputRows[s][11];   // PE Signal at index 11 (col L)
+    if (ceSig.indexOf("BIG") !== -1) Logger.log("\u26A1 " + stk + " CE: " + ceSig);
+    if (peSig.indexOf("BIG") !== -1) Logger.log("\u26A1 " + stk + " PE: " + peSig);
+  }
+}
+
+// =========================================================================
+// DEPLOY: Paste below existing NIFTY50 script. Add  runStrikeHeatMap();
+// at the end of fetchSmartMoneyData() before its closing }.
+// =========================================================================
+
+// TEST FUNCTION
+function testStrikeHeatMap() {
+  Logger.log("=== TEST: Reading RAW_OPTIONS structure ===");
+
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var rawSheet = ss.getSheetByName("RAW_OPTIONS");
+  if (!rawSheet) {
+    Logger.log("ERROR: RAW_OPTIONS sheet not found");
+    return;
+  }
+
+  var lastRow = rawSheet.getLastRow();
+  Logger.log("RAW_OPTIONS last row: " + lastRow);
+
+  if (lastRow < 5) {
+    Logger.log("Not enough data.");
+    return;
+  }
+
+  // Read last 25 rows
+  var scanRows = Math.min(25, lastRow - 4);
+  var rawData = rawSheet.getRange(lastRow - scanRows + 1, 1, scanRows, 7).getValues();
+
+  Logger.log("--- Last " + scanRows + " rows ---");
+  for (var i = 0; i < rawData.length; i++) {
+    var timeVal = rawData[i][0];
+    var timeType = (timeVal instanceof Date) ? "DATE" : "STRING";
+    var timeStr = _hmExtractTimeOnly(timeVal);
+    Logger.log(
+      "Row " + (lastRow - scanRows + 1 + i) + ": " +
+      "Time[" + timeType + "]=" + timeStr +
+      " | Expiry=" + String(rawData[i][1]).trim() +
+      " | Strike=" + rawData[i][2] +
+      " | CE_LTP=" + rawData[i][3] +
+      " | PE_LTP=" + rawData[i][4] +
+      " | CE_OI=" + rawData[i][5] +
+      " | PE_OI=" + rawData[i][6]
+    );
+  }
+
+  // Verify expiry detection fix
+  Logger.log("");
+  Logger.log("=== EXPIRY DETECTION TEST ===");
+  var timestamps = [];
+  for (var i = 0; i < rawData.length; i++) {
+    var tNorm = _hmNormalizeTime(rawData[i][0]);
+    if (tNorm === "") continue;
+    if (timestamps.length === 0 || timestamps[timestamps.length - 1] !== tNorm) {
+      timestamps.push(tNorm);
+    }
+  }
+  Logger.log("Unique timestamps found: " + timestamps.length);
+  if (timestamps.length >= 1) {
+    var lastTs = timestamps[timestamps.length - 1];
+    Logger.log("Latest timestamp: " + lastTs);
+    // Find first expiry within latest timestamp
+    for (var i = 0; i < rawData.length; i++) {
+      if (_hmNormalizeTime(rawData[i][0]) === lastTs) {
+        Logger.log("First expiry in latest timestamp: " + String(rawData[i][1]).trim() +
+          " (this is CURRENT WEEK)");
+        break;
+      }
+    }
+  }
+
+  // External workbook connection test
+  try {
+    var extWb = SpreadsheetApp.openById(EXTERNAL_WB_ID);
+    Logger.log("External workbook connected OK");
+    var sheets = extWb.getSheets();
+    for (var i = 0; i < sheets.length; i++) {
+      Logger.log("  Tab: " + sheets[i].getName());
+    }
+  } catch (e) {
+    Logger.log("External workbook FAILED: " + e.toString());
+  }
+
+  Logger.log("=== TEST COMPLETE ===");
+}

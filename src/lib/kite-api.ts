@@ -152,20 +152,23 @@ export async function getInstruments(exchange?: string): Promise<KiteInstrument[
     const lines = text.trim().split('\n');
     const instruments: KiteInstrument[] = [];
 
+    // Kite CSV column order (2025+ format):
+    // 0:instrument_token 1:exchange_token 2:tradingsymbol 3:name 4:last_price
+    // 5:expiry 6:strike 7:tick_size 8:lot_size 9:instrument_type 10:segment 11:exchange
     for (let i = 1; i < lines.length; i++) { // skip header
       const cols = lines[i].split(',');
-      if (cols.length < 15) continue;
+      if (cols.length < 12) continue;
       instruments.push({
         instrumentToken: parseInt(cols[0]) || 0,
         exchangeToken: parseInt(cols[1]) || 0,
         tradingSymbol: cols[2],
         name: cols[3] || '',
-        exchange: cols[4] || '',
-        segment: cols[5] || '',
-        instrumentType: cols[7] || '',
-        strike: parseFloat(cols[8]) || 0,
-        lotSize: parseInt(cols[6]) || 1,
-        expiry: cols[9] || '',
+        exchange: cols[11] || '',
+        segment: cols[10] || '',
+        instrumentType: cols[9] || '',
+        strike: parseFloat(cols[6]) || 0,
+        lotSize: parseInt(cols[8]) || 1,
+        expiry: cols[5] || '',
       });
     }
 
