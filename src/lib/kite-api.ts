@@ -518,3 +518,216 @@ export async function getInstrumentMeta(
 
 // Stock F&O list (symbols only, for backwards compat)
 export const KITE_STOCK_FO = STOCK_SPECS.map(s => s.symbol);
+
+// ─── Strike Flow Map — Black-Scholes helpers ───
+
+/**
+ * Standard Normal CDF using Abramowitz & Stegun rational approximation
+ * Same as the user's Google Script normCDF + erf
+ */
+function erf(x: number): number {
+  const sign = x >= 0 ? 1 : -1;
+  x = Math.abs(x);
+  const a1 = 0.254829592, a2 = -0.284496736, a3 = 1.421413741;
+  const a4 = -1.453152027, a5 = 1.061405429, p = 0.3275911;
+  const t = 1.0 / (1.0 + p * x);
+  const y = 1.0 - (((((a5 * t + a4) * t) + a3) * t + a2) * t + a1) * t * Math.exp(-x * x);
+  return sign * y;
+}
+
+export function normCDF(x: number): number {
+  return (1.0 + erf(x / Math.sqrt(2.0))) / 2.0;
+}
+
+/**
+ * Black-Scholes delta calculator
+ * Uses IV estimation from moneyness when not available from Kite
+ */
+export function bsDelta(isCall: boolean, S: number, K: number, T: number, r: number, sigma: number): number {
+  if (T < 0.0001) T = 0.0001;
+  if (sigma < 0.01) sigma = 0.15;
+  const d1 = (Math.log(S / K) + (r + sigma * sigma / 2) * T) / (sigma * Math.sqrt(T));
+  if (isCall) {
+    return normCDF(d1);
+  } else {
+    return normCDF(d1) - 1;
+  }
+}
+
+// ─── Strike Flow Snapshot Types ───
+
+export interface StrikeFlowQuote {
+  instrumentToken: number;
+  tradingSymbol: string;
+  lastPrice: number;
+  oi: number;
+  volume: number;
+  averagePrice: number;
+  ohlcHigh: number;
+  ohlcLow: number;
+  ohlcOpen: number;
+  ohlcClose: number;
+}
+
+export interface StrikeFlowStrike {
+  strike: number;
+  isATM: boolean;
+  ce: StrikeFlowQuote | null;
+  pe: StrikeFlowQuote | null;
+  ceDelta: number;
+  peDelta: number;
+}
+
+export interface StrikeFlowSnapshot {
+  mode: 'kite' | 'demo';
+  timestamp: string;
+  symbol: string;
+  spotPrice: number;
+  atmStrike: number;
+  lotSize: number;
+  strikeStep: number;
+  expiry: string;
+  strikes: StrikeFlowStrike[];
+}
+
+// ─── Strike Flow Snapshot Fetcher ───
+
+/**
+ * Get a strike flow snapshot for any symbol (index or stock)
+ * Returns raw data — flow computation happens on the client
+ */
+export async function getStrikeFlowSnapshot(
+  symbol: string,
+  spotPrice?: number,
+): Promise<StrikeFlowSnapshot | null> {
+  const spec = getInstrumentSpec(symbol);
+  if (!spec) return null;
+
+  // 1. Fetch spot price if not provided
+  if (!spotPrice || spotPrice <= 0) {
+    const quotes = await getQuotes([spec.kiteSymbol]);
+    const spotQ = quotes[spec.kiteSymbol];
+    spotPrice = spotQ?.lastPrice || 0;
+  }
+  if (spotPrice <= 0) return null;
+
+  // 2. Get option instruments near ATM
+  const { instruments, meta } = await getOptionInstruments(symbol, spotPrice);
+  if (instruments.length === 0) return null;
+
+  // 3. Batch fetch quotes for all CE/PE instruments
+  const iKeys = instruments.map(i => `${i.exchange}:${i.tradingSymbol}`);
+  const quotes = await getQuotes(iKeys);
+  if (Object.keys(quotes).length === 0) return null;
+
+  // 4. Find nearest expiry string from instruments
+  const expiries = [...new Set(instruments.map(i => i.expiry))].sort();
+  const today = new Date();
+  const nearestExpiry = expiries.find(e => new Date(e) >= new Date(today.toDateString())) || expiries[0];
+
+  // 5. Compute ATM strike
+  const atmStrike = Math.round(spotPrice / meta.strikeStep) * meta.strikeStep;
+
+  // 6. Calculate T (time to expiry in years)
+  const expiryDate = nearestExpiry ? new Date(nearestExpiry) : new Date();
+  // Set expiry to 15:40 IST (market close) on expiry day
+  expiryDate.setHours(15, 40, 0, 0);
+  const now = new Date();
+  const T = Math.max((expiryDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24 * 365), 0.0001);
+  const r = 0.06; // risk-free rate
+
+  // 7. Build strike data with delta
+  const strikeMap = new Map<number, StrikeFlowStrike>();
+
+  for (const inst of instruments) {
+    const key = `${inst.exchange}:${inst.tradingSymbol}`;
+    const q = quotes[key];
+    if (!q) continue;
+
+    if (!strikeMap.has(inst.strike)) {
+      strikeMap.set(inst.strike, {
+        strike: inst.strike,
+        isATM: inst.strike === atmStrike,
+        ce: null,
+        pe: null,
+        ceDelta: 0,
+        peDelta: 0,
+      });
+    }
+
+    const s = strikeMap.get(inst.strike)!;
+    const isCall = inst.tradingSymbol.endsWith('CE');
+
+    const quote: StrikeFlowQuote = {
+      instrumentToken: q.instrumentToken,
+      tradingSymbol: inst.tradingSymbol,
+      lastPrice: q.lastPrice,
+      oi: q.oi,
+      volume: q.volume,
+      averagePrice: q.averagePrice,
+      ohlcHigh: q.high,
+      ohlcLow: q.low,
+      ohlcOpen: q.open,
+      ohlcClose: q.close,
+    };
+
+    if (isCall) {
+      s.ce = quote;
+      // Estimate IV from option price using moneyness heuristic
+      const moneyness = spotPrice / inst.strike;
+      let sigma: number;
+      if (moneyness > 1.05) sigma = 0.12;
+      else if (moneyness > 1.02) sigma = 0.15;
+      else if (moneyness > 0.98) sigma = 0.20;
+      else if (moneyness > 0.95) sigma = 0.25;
+      else sigma = 0.35;
+      // Refine: if LTP > 0, use rough IV from price
+      if (q.lastPrice > 0) {
+        const intrinsic = Math.max(0, isCall ? spotPrice - inst.strike : inst.strike - spotPrice);
+        if (q.lastPrice > intrinsic + 1) {
+          // Has time value — IV is at least moderate
+          sigma = Math.max(sigma, 0.15);
+        }
+      }
+      s.ceDelta = bsDelta(true, spotPrice, inst.strike, T, r, sigma);
+    } else {
+      s.pe = quote;
+      const moneyness = spotPrice / inst.strike;
+      let sigma: number;
+      if (moneyness < 0.95) sigma = 0.12;
+      else if (moneyness < 0.98) sigma = 0.15;
+      else if (moneyness < 1.02) sigma = 0.20;
+      else if (moneyness < 1.05) sigma = 0.25;
+      else sigma = 0.35;
+      if (q.lastPrice > 0) {
+        const intrinsic = Math.max(0, inst.strike - spotPrice);
+        if (q.lastPrice > intrinsic + 1) {
+          sigma = Math.max(sigma, 0.15);
+        }
+      }
+      s.peDelta = bsDelta(false, spotPrice, inst.strike, T, r, sigma);
+    }
+  }
+
+  // 8. Sort strikes
+  const strikes = Array.from(strikeMap.values()).sort((a, b) => a.strike - b.strike);
+
+  return {
+    mode: 'kite',
+    timestamp: new Date().toISOString(),
+    symbol,
+    spotPrice,
+    atmStrike,
+    lotSize: meta.lotSize,
+    strikeStep: meta.strikeStep,
+    expiry: nearestExpiry || '',
+    strikes,
+  };
+}
+
+// ─── All Strike Flow Symbols ───
+
+export const STRIKE_FLOW_SYMBOLS = [
+  ...INDEX_SPECS.map(s => ({ symbol: s.symbol, name: s.name, type: 'index' as const })),
+  ...STOCK_SPECS.map(s => ({ symbol: s.symbol, name: s.name, type: 'stock' as const })),
+];

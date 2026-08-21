@@ -6,6 +6,7 @@ import { Badge } from '@/components/ui/badge';
 import {
   Globe, Activity, Target, Landmark, Thermometer, Settings,
   Wifi, WifiOff, Clock, TrendingUp, TrendingDown, Info, Layers,
+  Crosshair,
 } from 'lucide-react';
 import BirdsEye from '@/components/dashboard/birds-eye';
 import LiveMonitor from '@/components/dashboard/live-monitor';
@@ -14,6 +15,7 @@ import BigMoneyTab from '@/components/dashboard/big-money-tab';
 import OptionsFlowTab from '@/components/dashboard/options-flow-tab';
 import GreeksDecay from '@/components/dashboard/greeks-decay';
 import SettingsConfig from '@/components/dashboard/settings-config';
+import StrikeFlowMap from '@/components/dashboard/strike-flow-map';
 import { generateDemoVIX, getMarketStatus } from '@/lib/demo-data';
 import type { VIXData, NSESessionInfo } from '@/lib/types';
 import { getNSESession } from '@/lib/nse-sessions';
@@ -186,6 +188,11 @@ export default function DashboardPage() {
               <span className="hidden sm:inline">Context</span>
               <span className="sm:hidden">🌍</span>
             </TabsTrigger>
+            <TabsTrigger value="strike-flow" className="flex-1 text-xs gap-1.5 data-[state=active]:bg-pink-500/20 data-[state=active]:text-pink-300 font-bold">
+              <Crosshair className="h-3.5 w-3.5" />
+              <span className="hidden sm:inline">Strike Flow</span>
+              <span className="sm:hidden">🎯</span>
+            </TabsTrigger>
             <TabsTrigger value="greeks" className="flex-1 text-xs gap-1.5 data-[state=active]:bg-cyan-500/20 data-[state=active]:text-cyan-300">
               <Thermometer className="h-3.5 w-3.5" />
               <span className="hidden sm:inline">Greeks</span>
@@ -219,6 +226,10 @@ export default function DashboardPage() {
 
           <TabsContent value="birds-eye" className="mt-0">
             <BirdsEye />
+          </TabsContent>
+
+          <TabsContent value="strike-flow" className="mt-0">
+            <StrikeFlowMap />
           </TabsContent>
 
           <TabsContent value="greeks" className="mt-0">
