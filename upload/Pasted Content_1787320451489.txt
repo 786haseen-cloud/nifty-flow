@@ -1,0 +1,1191 @@
+// ============================================================================
+// HDFC BANK SMART MONEY DETECTION SYSTEM v3.1 (COMPLETE + EXPIRY FIX)
+// INSTITUTIONAL-GRADE OPTIONS ANALYTICS & PREDICTION ENGINE
+//
+// TICKER: HDFCBANK (NSE) | LOT: 650 | STEP: 10 | EXPIRY: Monthly (Last TUESDAY)
+// OUTPUT: RAW_OPTIONS, RAW_FUTURES, RAW_CASH, HDFCBANK_DYNAMICS, HEATMAP, PREDICTION
+// ============================================================================
+
+var LOT_SIZE     = 650;
+var STRIKE_STEP  = 10;
+var STRIKE_COUNT = 11;   // ATM ±5
+
+// --- Heatmap Config ---
+var HM_START_ROW      = 5;
+var HM_NEIGHBOR_RANGE = 2;
+var HM_HEAT_MULT      = 1.2;
+var HM_MIN_THRESHOLD  = 2;
+
+// --- API Config ---
+var API_KEY       = "53n9xmyhl1ez1fyv";
+var ACCESS_TOKEN  = "NIdEq79mviUWceeCifIFQYSBYwJ24Ghg";
+var API_HEADERS   = {
+  "X-Kite-Version": "3",
+  "Authorization": "token " + API_KEY + ":" + ACCESS_TOKEN
+};
+
+// --- State Keys for PropertiesService (momentum tracking) ---
+var PROP_PREV_DELTA    = "hdfcbank_prev_net_delta";
+var PROP_PREV_PCR      = "hdfcbank_prev_pcr";
+var PROP_PREV_SCORE    = "hdfcbank_prev_score";
+var PROP_SCORE_HISTORY = "hdfcbank_score_hist"; // JSON array of last 20 scores
+
+// ============================================================================
+// IST TIME HELPERS (Bulletproof)
+// ============================================================================
+function getISTNow() {
+  return new Date();
+}
+
+function fmtIST(date, pattern) {
+  return Utilities.formatDate(date, "Asia/Kolkata", pattern);
+}
+
+function istNum(date, pattern) {
+  return Number(fmtIST(date, pattern));
+}
+
+function istDayName(date) {
+  return fmtIST(date, "EEE");
+}
+
+// Returns IST day of week as NUMBER: 1=Monday ... 7=Sunday
+// Uses "u" pattern (ISO 8601 day number) which is locale-independent.
+// This is more reliable than checking string names like "Sat"/"Sun"
+// which can fail in non-English locales (e.g. Arabic).
+function istDayNum(date) {
+  return Number(fmtIST(date, "u"));
+}
+
+function istMinutesOfDay(date) {
+  return istNum(date, "HH") * 60 + istNum(date, "mm");
+}
+
+function isMarketOpen() {
+  var now = getISTNow();
+  var dayNum = istDayNum(now);       // 1=Mon ... 7=Sun
+  var dayName = istDayName(now);      // for logging only
+  var mins = istMinutesOfDay(now);
+  var istStr = fmtIST(now, "dd/MM/yyyy HH:mm:ss");
+
+  // Weekend check: 6=Saturday, 7=Sunday (ISO 8601)
+  if (dayNum === 6 || dayNum === 7) {
+    Logger.log("Market CLOSED (weekend). IST: " + istStr + " Day: " + dayName + " (" + dayNum + ")");
+    return false;
+  }
+
+  // Market hours: 09:15 (555 min) to 15:40 (940 min) IST
+  if (mins < 555 || mins > 940) {
+    Logger.log("Market CLOSED (outside hours). IST: " + istStr + " Minutes: " + mins + " (need 555-940)");
+    return false;
+  }
+
+  Logger.log("Market OPEN. IST: " + istStr + " Minutes: " + mins);
+  return true;
+}
+
+// ============================================================================
+// EXPIRY FINDER - HDFC Bank uses Last TUESDAY of Month
+// ============================================================================
+// VERIFIED: HDFCBANK Aug 2026 expiry = 25 Aug 2026 (Tuesday)
+function getHDFCBANKExpiry() {
+  var now = getISTNow();
+  var months = ["JAN","FEB","MAR","APR","MAY","JUN","JUL","AUG","SEP","OCT","NOV","DEC"];
+
+  function lastTuesday(y, m) {
+    var d = new Date(y, m + 1, 0); // last day of month
+    while (d.getDay() !== 2) d.setDate(d.getDate() - 1); // 2 = Tuesday
+    return d;
+  }
+
+  var yr = now.getFullYear();
+  var mo = now.getMonth();
+  var exp = lastTuesday(yr, mo);
+
+  // If today is after expiry 15:40, roll to next month
+  var today = new Date(yr, mo, now.getDate());
+  var expDate = new Date(exp.getFullYear(), exp.getMonth(), exp.getDate());
+  if (today > expDate || (today.getTime() === expDate.getTime() && istMinutesOfDay(now) > 940)) {
+    mo = (mo + 1) % 12;
+    if (mo === 0) yr++;
+    exp = lastThursday(yr, mo);
+  }
+
+  var code = String(yr).slice(-2) + months[mo];
+  return { code: code, date: exp };
+}
+
+// ============================================================================
+// API FETCH WITH RETRY (returns null on failure instead of throwing)
+// ============================================================================
+function kiteFetch(url, retries) {
+  retries = retries || 3;
+  var lastError = "";
+  for (var i = 0; i < retries; i++) {
+    try {
+      var resp = UrlFetchApp.fetch(url, { method: "get", headers: API_HEADERS, muteHttpExceptions: true });
+      var code = resp.getResponseCode();
+      var body = resp.getContentText();
+      var data = JSON.parse(body);
+
+      // Check for Kite API-level errors
+      if (data.status === "error") {
+        lastError = data.message || "Unknown Kite API error";
+        Logger.log("Kite API error (attempt " + (i+1) + "/" + retries + "): " + lastError);
+
+        // Token expired or invalid — no point retrying
+        if (lastError.indexOf("token") > -1 || lastError.indexOf("Token") > -1 ||
+            lastError.indexOf("expired") > -1 || lastError.indexOf("invalid") > -1) {
+          logRunStatus("TOKEN_ERROR", lastError);
+          return null;  // return null instead of throwing
+        }
+        // Rate limit — wait longer
+        if (code === 429 || lastError.indexOf("rate") > -1) {
+          Utilities.sleep(2000 * (i + 1));
+          continue;
+        }
+        // Other API error — retry
+        Utilities.sleep(1000 * (i + 1));
+        continue;
+      }
+
+      // Success
+      return data;
+    } catch (e) {
+      lastError = e.toString();
+      Logger.log("Fetch error (attempt " + (i+1) + "/" + retries + "): " + lastError);
+      Utilities.sleep(1000 * (i + 1));
+    }
+  }
+  // All retries failed — return null (caller handles gracefully)
+  logRunStatus("FETCH_FAILED", lastError);
+  return null;
+}
+
+// ============================================================================
+// RUN STATUS TRACKER (PropertiesService)
+// ============================================================================
+var PROP_LAST_RUN    = "hdfcbank_last_run_time";
+var PROP_LAST_STATUS = "hdfcbank_last_run_status";
+var PROP_LAST_ERROR  = "hdfcbank_last_run_error";
+var PROP_RUN_COUNT   = "hdfcbank_run_count";
+var PROP_ERROR_COUNT = "hdfcbank_error_count";
+
+function logRunStatus(status, errorMsg) {
+  var props = PropertiesService.getScriptProperties();
+  props.setProperty(PROP_LAST_RUN, fmtIST(getISTNow(), "dd/MM/yyyy HH:mm:ss"));
+  props.setProperty(PROP_LAST_STATUS, status);
+  props.setProperty(PROP_LAST_ERROR, errorMsg || "");
+
+  var count = Number(props.getProperty(PROP_RUN_COUNT) || 0) + 1;
+  props.setProperty(PROP_RUN_COUNT, String(count));
+
+  if (status !== "SUCCESS") {
+    var errCount = Number(props.getProperty(PROP_ERROR_COUNT) || 0) + 1;
+    props.setProperty(PROP_ERROR_COUNT, String(errCount));
+  }
+}
+
+// ============================================================================
+// MATH HELPERS
+// ============================================================================
+function normCDF(x) {
+  return (1.0 + erf(x / Math.sqrt(2.0))) / 2.0;
+}
+
+function erf(x) {
+  var sign = (x >= 0) ? 1 : -1;
+  x = Math.abs(x);
+  var a1 = 0.254829592, a2 = -0.284496736, a3 = 1.421413741;
+  var a4 = -1.453152027, a5 = 1.061405429, p = 0.3275911;
+  var t = 1.0 / (1.0 + p * x);
+  var y = 1.0 - (((((a5 * t + a4) * t) + a3) * t + a2) * t + a1) * t * Math.exp(-x * x);
+  return sign * y;
+}
+
+function normPDF(x) {
+  return Math.exp(-x * x / 2) / Math.sqrt(2 * Math.PI);
+}
+
+function calcStdDev(arr) {
+  if (!arr || arr.length < 2) return 0;
+  var mean = arr.reduce(function(a,b){return a+b;}) / arr.length;
+  return Math.sqrt(arr.reduce(function(sq,n){return sq + Math.pow(n-mean,2);}, 0) / arr.length);
+}
+
+function safeNum(v, def) {
+  def = def || 0;
+  var n = Number(v);
+  return (isNaN(n) || !isFinite(n)) ? def : n;
+}
+
+// ============================================================================
+// IV & GREEKS (Robust with bounds)
+// ============================================================================
+function calcIV(S, K, T, r, price, type) {
+  if (price <= 0.1 || S <= 0 || T <= 0.0001) return 0.25;
+  var sigma = 0.25, tol = 0.0001, maxIter = 30;
+  for (var i = 0; i < maxIter; i++) {
+    var d1 = (Math.log(S/K) + (r + sigma*sigma/2)*T) / (sigma*Math.sqrt(T));
+    var d2 = d1 - sigma*Math.sqrt(T);
+    var diff;
+    if (type === "CE") diff = S*normCDF(d1) - K*Math.exp(-r*T)*normCDF(d2) - price;
+    else diff = K*Math.exp(-r*T)*normCDF(-d2) - S*normCDF(-d1) - price;
+    if (Math.abs(diff) < tol) break;
+    var vega = S * Math.sqrt(T) * normPDF(d1);
+    if (vega < 0.0001) vega = 0.0001;
+    sigma -= diff / vega;
+    if (sigma < 0.05) sigma = 0.05;
+    if (sigma > 2.0) sigma = 2.0;
+  }
+  return sigma;
+}
+
+function calcGreeks(S, K, T, r, sigma, type) {
+  if (T < 0.0001) T = 0.0001;
+  if (sigma < 0.01) sigma = 0.15;
+  var d1 = (Math.log(S/K) + (r + sigma*sigma/2)*T) / (sigma*Math.sqrt(T));
+  var d2 = d1 - sigma*Math.sqrt(T);
+  var pdf = normPDF(d1);
+  var gamma = pdf / (S * sigma * Math.sqrt(T));
+  var vega = S * pdf * Math.sqrt(T) / 100;
+  var delta, theta, rho;
+  if (type === "CE") {
+    delta = normCDF(d1);
+    theta = (-S*pdf*sigma/(2*Math.sqrt(T))) - (r*K*Math.exp(-r*T)*normCDF(d2));
+    rho = K * T * Math.exp(-r*T) * normCDF(d2);
+  } else {
+    delta = normCDF(d1) - 1;
+    theta = (-S*pdf*sigma/(2*Math.sqrt(T))) + (r*K*Math.exp(-r*T)*normCDF(-d2));
+    rho = -K * T * Math.exp(-r*T) * normCDF(-d2);
+  }
+  theta = theta / 252;
+  return { delta: delta, gamma: gamma, theta: theta, vega: vega, rho: rho, iv: sigma };
+}
+
+// ============================================================================
+// MARKET MICROSTRUCTURE (NEW)
+// ============================================================================
+
+/**
+ * Calculate Max Pain strike
+ */
+function calcMaxPain(strikesMap) {
+  var strikes = Object.keys(strikesMap).map(Number).sort(function(a,b){return a-b;});
+  var minPain = Infinity, maxPainStrike = strikes[0];
+  for (var i = 0; i < strikes.length; i++) {
+    var k = strikes[i];
+    var pain = 0;
+    for (var j = 0; j < strikes.length; j++) {
+      var sk = strikes[j];
+      if (sk < k) pain += (strikesMap[sk].ceOI || 0) * (k - sk);
+      if (sk > k) pain += (strikesMap[sk].peOI || 0) * (sk - k);
+    }
+    if (pain < minPain) { minPain = pain; maxPainStrike = k; }
+  }
+  return { strike: maxPainStrike, pain: minPain };
+}
+
+/**
+ * Calculate Net Market Delta & Gamma Exposure
+ */
+function calcNetDeltaGEX(strikesMap, spot) {
+  var strikes = Object.keys(strikesMap).map(Number);
+  var netDelta = 0, gex = 0, notional = 0;
+  for (var i = 0; i < strikes.length; i++) {
+    var s = strikes[i];
+    var d = strikesMap[s];
+    var ceD = safeNum(d.ceDelta, 0.5);
+    var peD = safeNum(d.peDelta, -0.5);
+    var ceG = safeNum(d.ceGamma, 0.001);
+    var peG = safeNum(d.peGamma, 0.001);
+    var ceOI = safeNum(d.ceOI, 0);
+    var peOI = safeNum(d.peOI, 0);
+    
+    netDelta += (ceOI * ceD) + (peOI * peD);
+    gex += (ceOI * ceG) + (peOI * peG);
+    notional += (ceOI + peOI) * s;
+  }
+  return { netDelta: netDelta, gex: gex, notional: notional };
+}
+
+/**
+ * Calculate PCR ratios
+ */
+function calcPCR(strikesMap) {
+  var ceOI = 0, peOI = 0, ceVol = 0, peVol = 0;
+  var strikes = Object.keys(strikesMap).map(Number);
+  for (var i = 0; i < strikes.length; i++) {
+    var d = strikesMap[strikes[i]];
+    ceOI += safeNum(d.ceOI, 0);
+    peOI += safeNum(d.peOI, 0);
+    ceVol += safeNum(d.ceVol, 0);
+    peVol += safeNum(d.peVol, 0);
+  }
+  return {
+    pcrOI: ceOI > 0 ? peOI / ceOI : 1,
+    pcrVol: ceVol > 0 ? peVol / ceVol : 1,
+    ceOI: ceOI, peOI: peOI, ceVol: ceVol, peVol: peVol
+  };
+}
+
+/**
+ * Detect OI Walls (Support/Resistance)
+ */
+function detectOIWalls(strikesMap) {
+  var strikes = Object.keys(strikesMap).map(Number).sort(function(a,b){return a-b;});
+  var maxCeOI = 0, maxPeOI = 0, resStrike = 0, supStrike = 0;
+  for (var i = 0; i < strikes.length; i++) {
+    var d = strikesMap[strikes[i]];
+    if (d.ceOI > maxCeOI) { maxCeOI = d.ceOI; resStrike = strikes[i]; }
+    if (d.peOI > maxPeOI) { maxPeOI = d.peOI; supStrike = strikes[i]; }
+  }
+  return { resistance: resStrike, support: supStrike, resOI: maxCeOI, supOI: maxPeOI };
+}
+
+/**
+ * Analyze IV Skew (Risk Reversal)
+ */
+function analyzeIVSkew(strikesMap, atmStrike) {
+  var strikes = Object.keys(strikesMap).map(Number).sort(function(a,b){return a-b;});
+  var otmCeIVs = [], otmPeIVs = [], atmIV = 0;
+  for (var i = 0; i < strikes.length; i++) {
+    var s = strikes[i];
+    var d = strikesMap[s];
+    if (Math.abs(s - atmStrike) < STRIKE_STEP/2) atmIV = (d.ceIV + d.peIV) / 2;
+    if (s > atmStrike + STRIKE_STEP/2) otmCeIVs.push(d.ceIV);
+    if (s < atmStrike - STRIKE_STEP/2) otmPeIVs.push(d.peIV);
+  }
+  var avgOtmCe = otmCeIVs.length > 0 ? otmCeIVs.reduce(function(a,b){return a+b;}) / otmCeIVs.length : atmIV;
+  var avgOtmPe = otmPeIVs.length > 0 ? otmPeIVs.reduce(function(a,b){return a+b;}) / otmPeIVs.length : atmIV;
+  return {
+    atmIV: atmIV,
+    otmCallSkew: atmIV > 0 ? (avgOtmCe / atmIV - 1) : 0,
+    otmPutSkew: atmIV > 0 ? (avgOtmPe / atmIV - 1) : 0,
+    riskReversal: avgOtmCe - avgOtmPe
+  };
+}
+
+/**
+ * Delta-Adjusted Notional Flow (DANF) — True Smart Money Metric
+ */
+function calcDANF(oiChange, delta, price, volume, type) {
+  var lotVal = LOT_SIZE * price;
+  var deltaAdj = Math.abs(delta);
+  var volBoost = volume > 0 ? Math.min(volume / 1000, 5) : 1; // volume confirmation
+  var flow = oiChange * deltaAdj * lotVal * volBoost;
+  return flow / 10000000; // convert to Crores
+}
+
+/**
+ * Calculate VWAP from quote data
+ */
+function calcVWAP(quote) {
+  if (!quote) return 0;
+  var vol = safeNum(quote.volume, 0);
+  if (vol === 0) return safeNum(quote.last_price, 0);
+  // Kite provides average_price
+  return safeNum(quote.average_price, quote.last_price);
+}
+
+// ============================================================================
+// PREDICTION ENGINE (NEW)
+// ============================================================================
+function generatePrediction(spot, metrics, history) {
+  // history: { prevScore, prevPCR, prevNetDelta, scoreHistory }
+  
+  var score = 0; // 0-100
+  var factors = [];
+  
+  // 1. PRICE ACTION vs VWAP (20 points)
+  var vwapDev = metrics.vwap > 0 ? (spot - metrics.vwap) / metrics.vwap : 0;
+  if (vwapDev > 0.005) { score += 18; factors.push("Price > VWAP"); }
+  else if (vwapDev > 0.002) { score += 12; factors.push("Price near VWAP+"); }
+  else if (vwapDev < -0.005) { score += 2; factors.push("Price < VWAP"); }
+  else if (vwapDev < -0.002) { score += 5; factors.push("Price near VWAP-"); }
+  else { score += 10; factors.push("Price at VWAP"); }
+  
+  // 2. FUTURES BASIS (10 points)
+  var basis = metrics.basis || 0;
+  if (basis > 0.3) { score += 9; factors.push("Strong Contango"); }
+  else if (basis > 0.1) { score += 7; factors.push("Mild Contango"); }
+  else if (basis < -0.3) { score += 1; factors.push("Backwardation"); }
+  else if (basis < -0.1) { score += 3; factors.push("Mild Backwardation"); }
+  else { score += 5; factors.push("Flat Basis"); }
+  
+  // 3. OPTIONS FLOW — DANF (20 points)
+  var netCallFlow = metrics.callBuy - metrics.callWrite;
+  var netPutFlow = metrics.putWrite - metrics.putBuy; // put write = bullish
+  var flowScore = netCallFlow + netPutFlow;
+  if (flowScore > 5) { score += 18; factors.push("Massive Call+PutWrite Flow"); }
+  else if (flowScore > 2) { score += 14; factors.push("Strong Bullish Flow"); }
+  else if (flowScore > 0.5) { score += 10; factors.push("Mild Bullish Flow"); }
+  else if (flowScore < -5) { score += 2; factors.push("Massive Bearish Flow"); }
+  else if (flowScore < -2) { score += 4; factors.push("Strong Bearish Flow"); }
+  else if (flowScore < -0.5) { score += 6; factors.push("Mild Bearish Flow"); }
+  else { score += 8; factors.push("Neutral Flow"); }
+  
+  // 4. NET DELTA (15 points)
+  var nd = metrics.netDelta;
+  if (nd > 50000) { score += 14; factors.push("Extreme Net Long Delta"); }
+  else if (nd > 0) { score += 11; factors.push("Net Long Delta"); }
+  else if (nd < -50000) { score += 1; factors.push("Extreme Net Short Delta"); }
+  else if (nd < 0) { score += 4; factors.push("Net Short Delta"); }
+  else { score += 7; factors.push("Neutral Delta"); }
+  
+  // 5. PCR TREND (15 points)
+  var pcr = metrics.pcrOI;
+  var pcrTrend = history.prevPCR > 0 ? pcr - history.prevPCR : 0;
+  if (pcr > 1.2 && pcrTrend > 0) { score += 3; factors.push("PCR rising (Bearish)"); }
+  else if (pcr > 1.2 && pcrTrend <= 0) { score += 5; factors.push("PCR elevated but falling"); }
+  else if (pcr < 0.8 && pcrTrend < 0) { score += 14; factors.push("PCR falling (Bullish)"); }
+  else if (pcr < 0.8 && pcrTrend >= 0) { score += 11; factors.push("PCR low & stable"); }
+  else if (pcr >= 0.8 && pcr <= 1.2 && pcrTrend < -0.05) { score += 12; factors.push("PCR neutral falling"); }
+  else if (pcr >= 0.8 && pcr <= 1.2 && pcrTrend > 0.05) { score += 6; factors.push("PCR neutral rising"); }
+  else { score += 8; factors.push("PCR neutral"); }
+  
+  // 6. MAX PAIN DISTANCE (10 points)
+  var mpDist = metrics.maxPain > 0 ? Math.abs(spot - metrics.maxPain) / metrics.maxPain : 0;
+  if (spot > metrics.maxPain && mpDist < 0.01) { score += 9; factors.push("Spot above MaxPain (pin up)"); }
+  else if (spot < metrics.maxPain && mpDist < 0.01) { score += 1; factors.push("Spot below MaxPain (pin down)"); }
+  else if (spot > metrics.maxPain) { score += 7; factors.push("Spot > MaxPain"); }
+  else { score += 3; factors.push("Spot < MaxPain"); }
+  
+  // 7. IV SKEW (10 points)
+  var skew = metrics.ivSkew || {};
+  if (skew.otmPutSkew > 0.15 && skew.otmCallSkew < 0.05) { score += 3; factors.push("Put panic skew"); }
+  else if (skew.otmCallSkew > 0.15 && skew.otmPutSkew < 0.05) { score += 9; factors.push("Call frenzy skew"); }
+  else if (skew.riskReversal < -0.05) { score += 4; factors.push("Negative risk reversal"); }
+  else if (skew.riskReversal > 0.05) { score += 8; factors.push("Positive risk reversal"); }
+  else { score += 6; factors.push("Balanced skew"); }
+  
+  // Confidence based on data quality and momentum alignment
+  var confidence = 50;
+  if (metrics.dataQuality >= 10) confidence += 15;
+  if (history.scoreHistory && history.scoreHistory.length >= 3) {
+    var recent = history.scoreHistory.slice(-3);
+    var aligned = recent.every(function(s){ return (score > 60 && s > 60) || (score < 40 && s < 40) || (score >= 40 && score <= 60); });
+    if (aligned) confidence += 20;
+    else confidence -= 10;
+  }
+  if (Math.abs(flowScore) > 10) confidence += 10;
+  confidence = Math.max(10, Math.min(95, confidence));
+  
+  // Signal classification
+  var signal, signalClass;
+  if (score >= 80) { signal = "🚀 STRONG BUY CALLS"; signalClass = "STRONG_BULL"; }
+  else if (score >= 65) { signal = "📈 BUY CALLS / SELL PUTS"; signalClass = "BULL"; }
+  else if (score > 55) { signal = "🟢 Mild Bullish — Buy ATM CE"; signalClass = "MILD_BULL"; }
+  else if (score >= 45) { signal = "⚖️ NEUTRAL — Iron Condor / Avoid"; signalClass = "NEUTRAL"; }
+  else if (score > 35) { signal = "🔴 Mild Bearish — Buy ATM PE"; signalClass = "MILD_BEAR"; }
+  else if (score >= 20) { signal = "📉 BUY PUTS / SELL CALLS"; signalClass = "BEAR"; }
+  else { signal = "🔻 STRONG BUY PUTS"; signalClass = "STRONG_BEAR"; }
+  
+  // Target / Stop based on OI walls and Max Pain
+  var target = metrics.resistance;
+  var stop = metrics.support;
+  if (score > 60) {
+    // Bullish: target next resistance, stop at support
+    target = metrics.resistance;
+    stop = metrics.support;
+  } else if (score < 40) {
+    // Bearish: target support, stop at resistance
+    target = metrics.support;
+    stop = metrics.resistance;
+  } else {
+    target = metrics.maxPain;
+    stop = (spot > metrics.maxPain) ? metrics.support : metrics.resistance;
+  }
+  
+  return {
+    score: Math.round(score),
+    confidence: Math.round(confidence),
+    signal: signal,
+    signalClass: signalClass,
+    target: target,
+    stop: stop,
+    maxPain: metrics.maxPain,
+    factors: factors.join(" | ")
+  };
+}
+
+// ============================================================================
+// SHEET INITIALIZATION
+// ============================================================================
+function initSheets(ss) {
+  var sheets = [
+    {name: "RAW_OPTIONS", cols: 21, hdr: ["Time","Expiry","Strike","CE LTP","PE LTP","CE OI","PE OI","CE Volume","PE Volume","CE IV","PE IV","CE Delta","PE Delta","CE Gamma","PE Gamma","CE Theta","PE Theta","CE Vega","PE Vega","CE Rho","PE Rho"]},
+    {name: "RAW_FUTURES", cols: 10, hdr: ["Time","Price","OI","Volume","Avg Price","ΔOI","Activity","Money Flow (Cr)","Basis %","Signal"]},
+    {name: "RAW_CASH", cols: 8, hdr: ["Time","Price","% Chg","Volume","Turnover (Cr)","VWAP","Cash Flow (Cr)","Direction"]},
+    {name: "HDFCBANK_DYNAMICS", cols: 22, hdr: ["Time","Spot","%Chg","High","Low","Volume","VWAP","CashFlow(Cr)","CallBuy(Cr)","CallWrite(Cr)","PutBuy(Cr)","PutWrite(Cr)","FutFlow(Cr)","NetDelta","PCR","MaxPain","Resist","Support","Score","Conf%","Signal","Factors"]},
+    {name: "HEATMAP", cols: 18, hdr: ["Time","Spot","Expiry","CE ₹Chg","CE Prev","CE LTP","CE ΔOI","CE OI","CE Heat","CE Signal","Strike","PE Signal","PE Heat","PE OI","PE ΔOI","PE LTP","PE Prev","PE ₹Chg"]},
+    {name: "PREDICTION", cols: 12, hdr: ["Time","Spot","Signal","Score","Conf%","Target","Stop","MaxPain","PCR","NetDelta","GEX","Recommendation"]}
+  ];
+  
+  for (var i = 0; i < sheets.length; i++) {
+    var s = sheets[i];
+    var sheet = ss.getSheetByName(s.name) || ss.insertSheet(s.name);
+    if (sheet.getLastRow() < 2) {
+      sheet.getRange(1, 1, 1, s.cols).setValues([s.hdr])
+        .setFontWeight("bold").setBackground("#1a1a2e").setFontColor("#00d4ff").setFontSize(9);
+    }
+  }
+  return {
+    opt: ss.getSheetByName("RAW_OPTIONS"),
+    fut: ss.getSheetByName("RAW_FUTURES"),
+    cash: ss.getSheetByName("RAW_CASH"),
+    dyn: ss.getSheetByName("HDFCBANK_DYNAMICS"),
+    hm: ss.getSheetByName("HEATMAP"),
+    pred: ss.getSheetByName("PREDICTION")
+  };
+}
+
+// ============================================================================
+// MAIN FETCH FUNCTION
+// ============================================================================
+function fetchHDFCBANKData(forceRun) {
+  // BUG FIX: isMarketOpen() is now INSIDE try-catch.
+  // Previously it was outside — if it threw, stopFetchTrigger() was never
+  // called and the 1-min trigger entered an infinite crash loop.
+  var marketOpen = false;
+  try {
+    marketOpen = isMarketOpen();
+  } catch (e) {
+    Logger.log("isMarketOpen() error: " + e.toString() + " — treating as CLOSED");
+    marketOpen = false;
+  }
+
+  if (!forceRun && !marketOpen) {
+    stopHdfcFetchTrigger();
+    return;
+  }
+
+  if (forceRun) {
+    Logger.log("⚠️ FORCE RUN — market hours gate BYPASSED. Data will be fetched regardless of market status.");
+  }
+
+  // TOP-LEVEL TRY/CATCH: ensures errors are logged, not silently killing the trigger
+  try {
+    _fetchHDFCBANKDataInner(forceRun);
+    logRunStatus("SUCCESS", "");
+  } catch (e) {
+    Logger.log("FATAL ERROR in fetchHDFCBANKData: " + e.toString());
+    logRunStatus("FATAL_ERROR", e.toString());
+    // Don't re-throw — let the trigger continue firing for the next minute
+  }
+}
+
+function _fetchHDFCBANKDataInner(forceRun) {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheets = initSheets(ss);
+  var timestamp = fmtIST(getISTNow(), "dd/MM/yyyy HH:mm:ss");
+  var timeOnly = fmtIST(getISTNow(), "HH:mm:ss");
+  var exp = getHDFCBANKExpiry();
+
+  Logger.log("=== HDFCBANK Fetch Start | " + timestamp + " | Expiry: " + exp.code + " ===");
+
+  // ==================== FETCH CASH ====================
+  var cashUrl = "https://api.kite.trade/quote?i=NSE%3AHDFCBANK";
+  var cashData = kiteFetch(cashUrl);
+
+  // NULL CHECK: if API failed (expired token, network error), exit gracefully
+  if (!cashData || !cashData.data) {
+    Logger.log("Cash fetch failed — API returned null. Check access token.");
+    return;
+  }
+
+  var cashQ = cashData.data["NSE:HDFCBANK"];
+  
+  var spot = safeNum(cashQ ? cashQ.last_price : 0, 0);
+  var high = safeNum(cashQ && cashQ.ohlc ? cashQ.ohlc.high : 0, spot);
+  var low = safeNum(cashQ && cashQ.ohlc ? cashQ.ohlc.low : 0, spot);
+  var open = safeNum(cashQ && cashQ.ohlc ? cashQ.ohlc.open : 0, spot);
+  var volume = safeNum(cashQ ? cashQ.volume : 0, 0);
+  var vwap = calcVWAP(cashQ);
+  var turnover = (volume * vwap) / 10000000;
+  
+  // Proper intraday money flow: (close - vwap) * volume
+  var cashFlow = (spot - vwap) * volume / 10000000;
+  var cashDir = cashFlow >= 0 ? "IN" : "OUT";
+  
+  var cRow = Math.max(5, sheets.cash.getLastRow() + 1);
+  sheets.cash.getRange(cRow, 1, 1, 8).setValues([[timestamp, spot, ((spot-open)/open*100).toFixed(2)+"%", volume, turnover.toFixed(2), vwap.toFixed(2), cashFlow.toFixed(2), cashDir]]);
+  sheets.cash.getRange(cRow, 8).setBackground(cashDir === "IN" ? "#d4edda" : "#f8d7da");
+  
+  // ==================== FETCH FUTURES ====================
+  var futSym = "NFO:HDFCBANK" + exp.code + "FUT";
+  var futData = kiteFetch("https://api.kite.trade/quote?i=" + encodeURIComponent(futSym));
+  var futQ = (futData && futData.data) ? futData.data[futSym] : null;
+  
+  var futPrice = safeNum(futQ ? futQ.last_price : 0, 0);
+  var futOI = safeNum(futQ ? futQ.oi : 0, 0);
+  var futVol = safeNum(futQ ? futQ.volume : 0, 0);
+  var futAvg = safeNum(futQ ? futQ.average_price : 0, 0);
+  
+  // Basis analysis
+  var basis = (spot > 0) ? ((futPrice - spot) / spot) * 100 : 0;
+  
+  // Future dead check + fallback
+  var futDead = (!futQ) || (futVol === 0 && safeNum(futQ.ohlc ? futQ.ohlc.open : 0, 0) === 0 && futOI < 500);
+  if (futDead && spot > 0) {
+    Logger.log("Future dead / illiquid. Using spot fallback.");
+    futPrice = spot;
+    basis = 0;
+  }
+  
+  var lastFutRow = sheets.fut.getLastRow();
+  var prevFutPrice = 0, prevFutOI = 0;
+  if (lastFutRow >= 5) {
+    prevFutPrice = safeNum(sheets.fut.getRange(lastFutRow, 2).getValue(), 0);
+    prevFutOI = safeNum(sheets.fut.getRange(lastFutRow, 3).getValue(), 0);
+  }
+  var deltaOI = futOI - prevFutOI;
+  var priceUp = futPrice >= prevFutPrice;
+  var activity = "Neutral";
+  if (deltaOI > 0 && priceUp) activity = "Long Buildup";
+  else if (deltaOI > 0 && !priceUp) activity = "Short Buildup";
+  else if (deltaOI < 0 && priceUp) activity = "Short Covering";
+  else if (deltaOI < 0 && !priceUp) activity = "Long Unwinding";
+  
+  var futFlow = 0;
+  if (Math.abs(deltaOI) > 0) {
+    var raw = Math.abs(deltaOI) * futPrice * LOT_SIZE / 10000000;
+    if (activity === "Long Buildup" || activity === "Short Covering") futFlow = raw;
+    else if (activity === "Short Buildup" || activity === "Long Unwinding") futFlow = -raw;
+  }
+  
+  var futSignal = basis > 0.2 ? "Premium" : (basis < -0.2 ? "Discount" : "Fair");
+  
+  var fRow = Math.max(5, lastFutRow + 1);
+  sheets.fut.getRange(fRow, 1, 1, 10).setValues([[timestamp, futPrice, futOI, futVol, futAvg, deltaOI, activity, futFlow.toFixed(2), basis.toFixed(3), futSignal]]);
+  
+  // ==================== REFERENCE PRICE ====================
+  var refPrice = (futPrice > 0 && !futDead) ? futPrice : spot;
+  if (refPrice === 0) refPrice = 1700;
+  var atmStrike = Math.round(refPrice / STRIKE_STEP) * STRIKE_STEP;
+  
+  // ==================== FETCH OPTIONS ====================
+  var opts = [];
+  for (var s = -5; s <= 5; s++) {
+    var stk = atmStrike + (s * STRIKE_STEP);
+    opts.push("NFO:HDFCBANK" + exp.code + stk + "CE");
+    opts.push("NFO:HDFCBANK" + exp.code + stk + "PE");
+  }
+  
+  var url = "https://api.kite.trade/quote?" + opts.map(function(o){return "i=" + encodeURIComponent(o);}).join("&");
+  var optData = kiteFetch(url);
+  
+  // Parse strikes — uses regex to find expiry code (works for ANY ticker length)
+  var strikesMap = {};
+  var MONTHS_RE = /(\d{2})(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)/i;
+  if (optData && optData.data) {
+    for (var key in optData.data) {
+      var q = optData.data[key];
+      if (!q) continue;
+      var sym = key.replace("NFO:", "");
+      var type = sym.slice(-2);
+      var core = sym.substring(0, sym.length - 2); // remove CE/PE
+      var match = core.match(MONTHS_RE);
+      if (!match) continue;
+      var expiryCode = match[1] + match[2].toUpperCase();
+      var strikeStr = core.substring(core.indexOf(match[0]) + match[0].length);
+      var strike = parseFloat(strikeStr);
+      if (!strike) continue;
+      
+      if (!strikesMap[strike]) strikesMap[strike] = { strike: strike, expiry: expiryCode };
+      strikesMap[strike][type] = q;
+      strikesMap[strike][type + "_OI"] = safeNum(q.oi, 0);
+      strikesMap[strike][type + "_Vol"] = safeNum(q.volume_traded, 0);
+      strikesMap[strike][type + "_LTP"] = safeNum(q.last_price, 0);
+    }
+  }
+  
+  // ==================== LOAD PREVIOUS OPTIONS (for OI change) ====================
+  // Key by STRIKE ONLY — avoids Google Sheets auto-converting expiry string to Date
+  // which breaks string matching between current and stored keys.
+  var prevMap = {};
+  var lastOptRow = sheets.opt.getLastRow();
+  if (lastOptRow >= 5) {
+    var scanStart = Math.max(5, lastOptRow - (STRIKE_COUNT * 3));
+    var vals = sheets.opt.getRange(scanStart, 1, lastOptRow - scanStart + 1, 7).getValues();
+    for (var i = vals.length - 1; i >= 0; i--) {
+      var st = String(vals[i][2]).trim();
+      if (!prevMap[st]) {
+        prevMap[st] = {
+          ceLTP: safeNum(vals[i][3], 0), peLTP: safeNum(vals[i][4], 0),
+          ceOI: safeNum(vals[i][5], 0), peOI: safeNum(vals[i][6], 0)
+        };
+      }
+    }
+  }
+  
+  // ==================== CALCULATE EXPIRY T ====================
+  var expiryDT = new Date(exp.date.getFullYear(), exp.date.getMonth(), exp.date.getDate(), 15, 40, 0);
+  var nowIST = getISTNow();
+  var T = (expiryDT.getTime() - nowIST.getTime()) / (1000 * 60 * 60 * 24 * 365);
+  if (T <= 0.0001) T = 0.0001;
+  var r = 0.06;
+  
+  // ==================== PROCESS ALL STRIKES ====================
+  var optRow = Math.max(5, lastOptRow + 1);
+  var callBuy = 0, callWrite = 0, putBuy = 0, putWrite = 0;
+  var totalCeOI = 0, totalPeOI = 0;
+  
+  // For microstructure metrics
+  var msMap = {};
+  
+  var strikeList = Object.keys(strikesMap).map(Number).sort(function(a,b){return a-b;});
+  
+  for (var i = 0; i < strikeList.length; i++) {
+    var stk = strikeList[i];
+    var d = strikesMap[stk];
+    if (String(d.expiry).toUpperCase() !== exp.code) continue;
+    
+    var ceP = safeNum(d.CE_LTP, 0);
+    var peP = safeNum(d.PE_LTP, 0);
+    var ceOI = safeNum(d.CE_OI, 0);
+    var peOI = safeNum(d.PE_OI, 0);
+    var ceV = safeNum(d.CE_Vol, 0);
+    var peV = safeNum(d.PE_Vol, 0);
+    
+    totalCeOI += ceOI;
+    totalPeOI += peOI;
+    
+    var key = String(stk); // strike-only key (single expiry context)
+    var prev = prevMap[key] || { ceLTP: ceP, peLTP: peP, ceOI: ceOI, peOI: peOI };
+    
+    var ceOICh = ceOI - prev.ceOI;
+    var peOICh = peOI - prev.peOI;
+    var cePCh = ceP - prev.ceLTP;
+    var pePCh = peP - prev.peLTP;
+    
+    // Greeks
+    var ceIV = ceP > 0 ? calcIV(refPrice, stk, T, r, ceP, "CE") : 0.18;
+    var peIV = peP > 0 ? calcIV(refPrice, stk, T, r, peP, "PE") : 0.18;
+    var ceG = calcGreeks(refPrice, stk, T, r, ceIV, "CE");
+    var peG = calcGreeks(refPrice, stk, T, r, peIV, "PE");
+    
+    // Store for microstructure
+    msMap[stk] = {
+      ceOI: ceOI, peOI: peOI, ceVol: ceV, peVol: peV,
+      ceDelta: ceG.delta, peDelta: peG.delta,
+      ceGamma: ceG.gamma, peGamma: peG.gamma,
+      ceIV: ceIV, peIV: peIV,
+      ceLTP: ceP, peLTP: peP
+    };
+    
+    // DANF Calculation (Delta-Adjusted Notional Flow)
+    var ceDANF = calcDANF(ceOICh, ceG.delta, ceP, ceV, "CE");
+    var peDANF = calcDANF(peOICh, peG.delta, peP, peV, "PE");
+    
+    if (ceOICh > 0 && cePCh >= 0) callBuy += ceDANF;
+    else if (ceOICh > 0 && cePCh < 0) callWrite += ceDANF;
+    else if (ceOICh <= 0 && cePCh < 0) callWrite += Math.abs(ceDANF) * 0.3;
+    
+    if (peOICh > 0 && pePCh >= 0) putBuy += peDANF;
+    else if (peOICh > 0 && pePCh < 0) putWrite += peDANF;
+    else if (peOICh <= 0 && pePCh < 0) putWrite += Math.abs(peDANF) * 0.3;
+    
+    // Write RAW_OPTIONS
+    sheets.opt.getRange(optRow, 1, 1, 21).setValues([[
+      timestamp, String(d.expiry), stk, ceP, peP, ceOI, peOI, ceV, peV,
+      ceIV, peIV, ceG.delta.toFixed(4), peG.delta.toFixed(4),
+      ceG.gamma.toFixed(6), peG.gamma.toFixed(6),
+      ceG.theta.toFixed(4), peG.theta.toFixed(4),
+      ceG.vega.toFixed(2), peG.vega.toFixed(2),
+      ceG.rho.toFixed(4), peG.rho.toFixed(4)
+    ]]);
+    optRow++;
+  }
+  
+  // ==================== MICROSTRUCTURE METRICS ====================
+  var maxPain = calcMaxPain(msMap);
+  var ndg = calcNetDeltaGEX(msMap, refPrice);
+  var pcr = calcPCR(msMap);
+  var walls = detectOIWalls(msMap);
+  var skew = analyzeIVSkew(msMap, atmStrike);
+  
+  // ==================== MOMENTUM (from PropertiesService) ====================
+  var props = PropertiesService.getScriptProperties();
+  var prevNetDelta = safeNum(props.getProperty(PROP_PREV_DELTA), 0);
+  var prevPCR = safeNum(props.getProperty(PROP_PREV_PCR), 1);
+  var prevScore = safeNum(props.getProperty(PROP_PREV_SCORE), 50);
+  var scoreHistStr = props.getProperty(PROP_SCORE_HISTORY) || "[]";
+  var scoreHist;
+  try { scoreHist = JSON.parse(scoreHistStr); } catch(e) { scoreHist = []; }
+  
+  // ==================== GENERATE PREDICTION ====================
+  var metrics = {
+    vwap: vwap,
+    basis: basis,
+    callBuy: callBuy,
+    callWrite: callWrite,
+    putBuy: putBuy,
+    putWrite: putWrite,
+    netDelta: ndg.netDelta,
+    pcrOI: pcr.pcrOI,
+    maxPain: maxPain.strike,
+    resistance: walls.resistance,
+    support: walls.support,
+    ivSkew: skew,
+    dataQuality: strikeList.length
+  };
+  
+  var history = {
+    prevScore: prevScore,
+    prevPCR: prevPCR,
+    prevNetDelta: prevNetDelta,
+    scoreHistory: scoreHist
+  };
+  
+  var prediction = generatePrediction(spot, metrics, history);
+  
+  // Update momentum history
+  scoreHist.push(prediction.score);
+  if (scoreHist.length > 20) scoreHist.shift();
+  props.setProperty(PROP_SCORE_HISTORY, JSON.stringify(scoreHist));
+  props.setProperty(PROP_PREV_DELTA, String(ndg.netDelta));
+  props.setProperty(PROP_PREV_PCR, String(pcr.pcrOI));
+  props.setProperty(PROP_PREV_SCORE, String(prediction.score));
+  
+  // ==================== WRITE HDFCBANK DYNAMICS ====================
+  var pctChg = open > 0 ? ((spot - open) / open * 100) : 0;
+  var dRow = Math.max(5, sheets.dyn.getLastRow() + 1);
+  
+  sheets.dyn.getRange(dRow, 1, 1, 22).setValues([[
+    timeOnly, spot, (pctChg >= 0 ? "▲" : "▼") + Math.abs(pctChg).toFixed(2) + "%",
+    high, low, volume, vwap.toFixed(2), cashFlow.toFixed(2),
+    callBuy.toFixed(2), callWrite.toFixed(2), putBuy.toFixed(2), putWrite.toFixed(2),
+    futFlow.toFixed(2), Math.round(ndg.netDelta), pcr.pcrOI.toFixed(3),
+    maxPain.strike, walls.resistance, walls.support,
+    prediction.score, prediction.confidence + "%",
+    prediction.signal, prediction.factors
+  ]]);
+
+  // Color the signal cell based on signalClass
+  var sigCell = sheets.dyn.getRange(dRow, 21);
+  var sigBg = "#eccc68", sigFg = "black";
+  if (prediction.signalClass === "STRONG_BULL") { sigBg = "#2ed573"; sigFg = "white"; }
+  else if (prediction.signalClass === "BULL") { sigBg = "#2ae143"; sigFg = "black"; }
+  else if (prediction.signalClass === "MILD_BULL") { sigBg = "#d4edda"; sigFg = "black"; }
+  else if (prediction.signalClass === "MILD_BEAR") { sigBg = "#fce4d6"; sigFg = "black"; }
+  else if (prediction.signalClass === "BEAR") { sigBg = "#ffa500"; sigFg = "black"; }
+  else if (prediction.signalClass === "STRONG_BEAR") { sigBg = "#ff4757"; sigFg = "white"; }
+  sigCell.setBackground(sigBg).setFontColor(sigFg).setFontWeight("bold");
+
+  Logger.log("HDFCBANK_DYNAMICS updated Row " + dRow + " | Score: " + prediction.score + " | " + prediction.signal);
+
+  // ==================== WRITE PREDICTION ====================
+  var pRow = Math.max(5, sheets.pred.getLastRow() + 1);
+  var rec = prediction.signalClass.indexOf("BULL") > -1 ? "BUY CE / SELL PE" :
+            prediction.signalClass.indexOf("BEAR") > -1 ? "BUY PE / SELL CE" :
+            "IRON CONDOR / WAIT";
+  sheets.pred.getRange(pRow, 1, 1, 12).setValues([[
+    timeOnly, spot, prediction.signal, prediction.score, prediction.confidence + "%",
+    prediction.target, prediction.stop, maxPain.strike, pcr.pcrOI.toFixed(3),
+    Math.round(ndg.netDelta), Math.round(ndg.gex), rec
+  ]]);
+  Logger.log("PREDICTION updated Row " + pRow + " | " + prediction.signal + " (" + prediction.score + "/100)");
+
+  // ==================== RUN HEATMAP ====================
+  try {
+    runHDFCBANKHeatMap(sheets.hm, sheets.opt, spot, exp.code, timeOnly);
+  } catch (hmErr) {
+    Logger.log("Heatmap error: " + hmErr.toString());
+  }
+
+  Logger.log("HDFCBANK fetch cycle complete at " + timeOnly);
+}
+
+// ============================================================================
+// HEATMAP GENERATOR
+// ============================================================================
+function runHDFCBANKHeatMap(hmSheet, optSheet, spot, expiryCode, timeOnly) {
+  if (!hmSheet || !optSheet) return;
+  var lastRow = optSheet.getLastRow();
+  if (lastRow < HM_START_ROW + 5) return;
+
+  var scanRows = Math.min(50, lastRow - HM_START_ROW + 1);
+  var rawData = optSheet.getRange(lastRow - scanRows + 1, 1, scanRows, 7).getValues();
+
+  // Find last 2 distinct timestamps
+  var timestamps = [];
+  for (var i = 0; i < rawData.length; i++) {
+    var t = String(rawData[i][0]).trim();
+    if (t !== "" && (timestamps.length === 0 || timestamps[timestamps.length - 1] !== t)) {
+      timestamps.push(t);
+    }
+  }
+  if (timestamps.length < 2) return;
+
+  var prevTs = timestamps[timestamps.length - 2];
+  var currTs = timestamps[timestamps.length - 1];
+
+  var prevData = {}, currData = {};
+  for (var i = 0; i < rawData.length; i++) {
+    var t = String(rawData[i][0]).trim();
+    var stk = Number(rawData[i][2]);
+    var entry = {
+      ceLTP: Number(rawData[i][3]) || 0, peLTP: Number(rawData[i][4]) || 0,
+      ceOI: Number(rawData[i][5]) || 0, peOI: Number(rawData[i][6]) || 0
+    };
+    if (t === prevTs) prevData[stk] = entry;
+    else if (t === currTs) currData[stk] = entry;
+  }
+
+  var strikes = Object.keys(currData).map(Number).sort(function(a,b){return a-b;});
+  if (strikes.length < 5) return;
+
+  var cePremChg = {}, pePremChg = {}, ceOIChg = {}, peOIChg = {};
+  for (var i = 0; i < strikes.length; i++) {
+    var s = strikes[i];
+    if (!prevData[s]) continue;
+    cePremChg[s] = currData[s].ceLTP - prevData[s].ceLTP;
+    pePremChg[s] = currData[s].peLTP - prevData[s].peLTP;
+    ceOIChg[s] = currData[s].ceOI - prevData[s].ceOI;
+    peOIChg[s] = currData[s].peOI - prevData[s].peOI;
+  }
+
+  // Heat score = premium change minus neighbor average
+  var ceHeat = {}, peHeat = {};
+  for (var i = 0; i < strikes.length; i++) {
+    var s = strikes[i];
+    if (cePremChg[s] === undefined) continue;
+    var ceSum = 0, peSum = 0, count = 0;
+    for (var n = -HM_NEIGHBOR_RANGE; n <= HM_NEIGHBOR_RANGE; n++) {
+      if (n === 0) continue;
+      var ns = s + (n * STRIKE_STEP);
+      if (cePremChg[ns] !== undefined) { ceSum += cePremChg[ns]; peSum += pePremChg[ns]; count++; }
+    }
+    if (count > 0) {
+      ceHeat[s] = cePremChg[s] - (ceSum / count);
+      peHeat[s] = pePremChg[s] - (peSum / count);
+    }
+  }
+
+  var allCeHeats = Object.values(ceHeat);
+  var allPeHeats = Object.values(peHeat);
+  var ceStd = calcStdDev(allCeHeats);
+  var peStd = calcStdDev(allPeHeats);
+  var ceThr = Math.max(HM_MIN_THRESHOLD, HM_HEAT_MULT * ceStd);
+  var peThr = Math.max(HM_MIN_THRESHOLD, HM_HEAT_MULT * peStd);
+
+  // Find existing strike rows for in-place update
+  var hmLastRow = hmSheet.getLastRow();
+  var strikeRowMap = {};
+  if (hmLastRow >= HM_START_ROW) {
+    var existing = hmSheet.getRange(HM_START_ROW, 11, hmLastRow - HM_START_ROW + 1, 1).getValues();
+    for (var i = 0; i < existing.length; i++) {
+      if (existing[i][0]) strikeRowMap[existing[i][0]] = HM_START_ROW + i;
+    }
+  }
+
+  for (var i = 0; i < strikes.length; i++) {
+    var s = strikes[i];
+    var targetRow = strikeRowMap[s] ? strikeRowMap[s] : hmSheet.getLastRow() + 1;
+    var ceSig = getHMHeatSignal(ceHeat[s] || 0, ceOIChg[s] || 0, "CE", ceThr);
+    var peSig = getHMHeatSignal(peHeat[s] || 0, peOIChg[s] || 0, "PE", peThr);
+
+    var rowData = [
+      timeOnly, (i === 0 ? spot : ""), expiryCode,
+      (cePremChg[s] || 0).toFixed(2), prevData[s] ? prevData[s].ceLTP : 0, currData[s].ceLTP,
+      ceOIChg[s] || 0, currData[s].ceOI, (ceHeat[s] || 0).toFixed(2), ceSig,
+      s, peSig, (peHeat[s] || 0).toFixed(2), currData[s].peOI, peOIChg[s] || 0,
+      currData[s].peLTP, prevData[s] ? prevData[s].peLTP : 0, (pePremChg[s] || 0).toFixed(2)
+    ];
+
+    hmSheet.getRange(targetRow, 1, 1, 18).setValues([rowData]);
+    // Color coding
+    var ceSigCell = hmSheet.getRange(targetRow, 10);
+    var peSigCell = hmSheet.getRange(targetRow, 12);
+    if (ceSig.indexOf("BIG") > -1) ceSigCell.setBackground(ceSig.indexOf("SHORT") > -1 ? "#ffcccc" : "#ccffcc");
+    else ceSigCell.setBackground("#f0f0f0");
+    if (peSig.indexOf("BIG") > -1) peSigCell.setBackground(peSig.indexOf("SHORT") > -1 ? "#ccffcc" : "#ffcccc");
+    else peSigCell.setBackground("#f0f0f0");
+  }
+
+  // Update title row
+  hmSheet.getRange(1, 1).setValue("STRIKE HEAT MAP - HDFC BANK | Expiry: " + expiryCode + " | Last: " + timeOnly);
+  Logger.log("HEATMAP updated for " + strikes.length + " strikes");
+}
+
+function getHMHeatSignal(heat, oiChange, type, thr) {
+  var rising = oiChange > 0;
+  if (type === "CE") {
+    if (heat < -thr && rising) return "BIG SHORT";
+    if (heat > thr && rising) return "BIG LONG";
+    return "Normal";
+  } else {
+    if (heat < -thr && rising) return "BIG SHORT";
+    if (heat > thr && rising) return "BIG LONG";
+    return "Normal";
+  }
+}
+
+// ============================================================================
+// TRIGGER MANAGEMENT
+// ============================================================================
+function createHDFCBANKTrigger() {
+  deleteHDFCBANKTriggers();
+  // Only create the 1-min fetch trigger if market is currently open
+  if (isMarketOpen()) {
+    ScriptApp.newTrigger('fetchHDFCBANKData').timeBased().everyMinutes(1).create();
+    Logger.log("HDFCBANK 1-min fetch trigger CREATED (market open)");
+  } else {
+    // Market closed — schedule a pre-market trigger instead
+    Logger.log("Market closed — skipping 1-min trigger, will use pre-market schedule");
+  }
+
+  // Midnight cleanup trigger (always needed)
+  ScriptApp.newTrigger('hdfcbankNightCleanup').timeBased().atHour(0).nearMinute(0).everyDays(1).create();
+  Logger.log("HDFCBANK midnight cleanup trigger CREATED");
+}
+
+function deleteHDFCBANKTriggers() {
+  var triggers = ScriptApp.getProjectTriggers();
+  for (var i = 0; i < triggers.length; i++) {
+    var fn = triggers[i].getHandlerFunction();
+    if (fn === 'fetchHDFCBANKData' || fn === 'hdfcbankNightCleanup' || fn === 'hdfcbankPreMarketSetup') {
+      ScriptApp.deleteTrigger(triggers[i]);
+    }
+  }
+  Logger.log("HDFCBANK triggers DELETED");
+}
+
+// Stops only the fetchHDFCBANKData 1-min trigger (called when market closes)
+// RENAMED: was 'stopFetchTrigger' — caused collision when multiple stocks in same project
+function stopHdfcFetchTrigger() {
+  var triggers = ScriptApp.getProjectTriggers();
+  for (var i = 0; i < triggers.length; i++) {
+    if (triggers[i].getHandlerFunction() === 'fetchHDFCBANKData') {
+      ScriptApp.deleteTrigger(triggers[i]);
+      Logger.log("fetchHDFCBANKData 1-min trigger STOPPED (market closed — saving quota)");
+      return true;
+    }
+  }
+  return false; // already deleted or doesn't exist
+}
+
+// Runs at 9:13 AM IST — recreates the 1-min fetch trigger for market hours
+function hdfcbankPreMarketSetup() {
+  // Delete this one-shot trigger (it fires once and self-destructs)
+  var triggers = ScriptApp.getProjectTriggers();
+  for (var i = 0; i < triggers.length; i++) {
+    if (triggers[i].getHandlerFunction() === 'hdfcbankPreMarketSetup') {
+      ScriptApp.deleteTrigger(triggers[i]);
+    }
+  }
+  // Create the 1-min fetch trigger for the trading session
+  ScriptApp.newTrigger('fetchHDFCBANKData').timeBased().everyMinutes(1).create();
+  Logger.log("hdfcbankPreMarketSetup: 1-min fetch trigger RECREATED for new trading day");
+}
+
+function hdfcbankNightCleanup() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var tabs = ["RAW_OPTIONS", "RAW_FUTURES", "RAW_CASH", "HDFCBANK_DYNAMICS", "HEATMAP", "PREDICTION"];
+  for (var i = 0; i < tabs.length; i++) {
+    var sheet = ss.getSheetByName(tabs[i]);
+    if (!sheet) continue;
+    var lr = sheet.getLastRow();
+    if (lr >= 5) sheet.getRange(5, 1, lr - 4, sheet.getLastColumn()).clearContent();
+  }
+  // Clear momentum state
+  var props = PropertiesService.getScriptProperties();
+  props.deleteProperty(PROP_PREV_DELTA);
+  props.deleteProperty(PROP_PREV_PCR);
+  props.deleteProperty(PROP_PREV_SCORE);
+  props.deleteProperty(PROP_SCORE_HISTORY);
+
+  // Ensure fetch trigger is stopped (safety net)
+  stopHdfcFetchTrigger();
+
+  // Schedule pre-market trigger for next day at 9:13 AM IST
+  var triggers = ScriptApp.getProjectTriggers();
+  var hasPreMarket = false;
+  for (var i = 0; i < triggers.length; i++) {
+    if (triggers[i].getHandlerFunction() === 'hdfcbankPreMarketSetup') {
+      hasPreMarket = true;
+      break;
+    }
+  }
+  if (!hasPreMarket) {
+    ScriptApp.newTrigger('hdfcbankPreMarketSetup').timeBased().atHour(9).nearMinute(13).everyDays(1).create();
+    Logger.log("hdfcbankPreMarketSetup trigger CREATED for 9:13 AM tomorrow");
+  }
+
+  Logger.log("HDFCBANK night cleanup complete - all tabs cleared, fetch trigger stopped, pre-market scheduled");
+}
+
+function forceRunHDFCBANK() {
+  fetchHDFCBANKData(true);
+}
+
+// ============================================================================
+// MENU (optional - adds to spreadsheet UI)
+// ============================================================================
+// ============================================================================
+// DIAGNOSTIC: Check run status, trigger status, and token validity
+// ============================================================================
+function checkHDFCBANKStatus() {
+  var props = PropertiesService.getScriptProperties();
+  var lastRun = props.getProperty(PROP_LAST_RUN) || "Never";
+  var lastStatus = props.getProperty(PROP_LAST_STATUS) || "Never run";
+  var lastError = props.getProperty(PROP_LAST_ERROR) || "None";
+  var runCount = props.getProperty(PROP_RUN_COUNT) || "0";
+  var errorCount = props.getProperty(PROP_ERROR_COUNT) || "0";
+
+  var msg = "=== HDFCBANK SCRIPT STATUS ===\n\n";
+  msg += "Last Run Time: " + lastRun + "\n";
+  msg += "Last Status:   " + lastStatus + "\n";
+  msg += "Last Error:    " + lastError + "\n";
+  msg += "Total Runs:    " + runCount + "\n";
+  msg += "Total Errors:  " + errorCount + "\n\n";
+
+  // Check triggers
+  var triggers = ScriptApp.getProjectTriggers();
+  var hdfcbankTriggers = [];
+  for (var i = 0; i < triggers.length; i++) {
+    var fn = triggers[i].getHandlerFunction();
+    if (fn === 'fetchHDFCBANKData' || fn === 'hdfcbankNightCleanup') {
+      hdfcbankTriggers.push(fn);
+    }
+  }
+  msg += "Active Triggers: " + (hdfcbankTriggers.length > 0 ? hdfcbankTriggers.join(", ") : "NONE — run createHDFCBANKTrigger()!") + "\n\n";
+
+  // Test API token
+  msg += "=== API TOKEN TEST ===\n";
+  try {
+    var testData = kiteFetch("https://api.kite.trade/quote?i=NSE%3AHDFCBANK");
+    if (testData && testData.data && testData.data["NSE:HDFCBANK"]) {
+      msg += "Token VALID — NSE:HDFCBANK spot = " + testData.data["NSE:HDFCBANK"].last_price + "\n";
+    } else {
+      msg += "Token INVALID or API ERROR — check ACCESS_TOKEN\n";
+    }
+  } catch (e) {
+    msg += "Token test FAILED: " + e.toString() + "\n";
+  }
+
+  // Market status
+  msg += "\n=== MARKET STATUS ===\n";
+  msg += "IST now: " + fmtIST(getISTNow(), "dd/MM/yyyy HH:mm:ss") + "\n";
+  msg += "Market: " + (isMarketOpen() ? "OPEN" : "CLOSED") + "\n";
+
+  Logger.log(msg);
+  try { SpreadsheetApp.getUi().alert(msg); } catch (e) { /* ignore if no UI */ }
+}
+
+// ============================================================================
+// MENU
+// ============================================================================
+function onOpen() {
+  var ui = SpreadsheetApp.getUi();
+  ui.createMenu('HDFC Bank Smart Money')
+    .addItem('Check Status (diagnostic)', 'checkHDFCBANKStatus')
+    .addItem('Run Now (force)', 'forceRunHDFCBANK')
+    .addSeparator()
+    .addItem('Start 1-Min Trigger', 'createHDFCBANKTrigger')
+    .addItem('Stop Trigger', 'deleteHDFCBANKTriggers')
+    .addSeparator()
+    .addItem('Night Cleanup Now', 'hdfcbankNightCleanup')
+    .addToUi();
+}
