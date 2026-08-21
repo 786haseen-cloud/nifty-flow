@@ -11,23 +11,44 @@ export async function GET(req: NextRequest) {
   if (!isKiteConfigured()) {
     return NextResponse.json({
       mode: 'demo',
-      message: 'Kite API not configured. Set KITE_API_KEY + KITE_ACCESS_TOKEN in .env',
+      message: 'Kite API not configured. Set KITE_API_KEY + KITE_ACCESS_TOKEN in Vercel env vars.',
     });
   }
 
   const symbolsParam = req.nextUrl.searchParams.get('symbols');
 
-  // Default: all 4 indices
+  // Default: all 4 indices (use trading symbols)
   const symbols = symbolsParam
     ? symbolsParam.split(',')
-    : Object.values(KITE_INDEX_INSTRUMENTS);
+    : Object.values(KITE_INDEX_INSTRUMENTS).map(v => v.symbol);
 
-  const quotes = await getQuotes(symbols);
+  try {
+    const quotes = await getQuotes(symbols);
+    const error = (quotes as any)._error;
 
-  return NextResponse.json({
-    mode: 'live',
-    provider: 'Zerodha Kite',
-    timestamp: new Date().toISOString(),
-    quotes,
-  });
+    if (error) {
+      return NextResponse.json({
+        mode: 'live',
+        provider: 'Zerodha Kite',
+        timestamp: new Date().toISOString(),
+        error,
+        symbols_requested: symbols,
+      });
+    }
+
+    return NextResponse.json({
+      mode: 'live',
+      provider: 'Zerodha Kite',
+      timestamp: new Date().toISOString(),
+      quotes,
+      quoteCount: Object.keys(quotes).length,
+    });
+  } catch (err) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    return NextResponse.json({
+      mode: 'live',
+      error: `Server error: ${errMsg}`,
+      timestamp: new Date().toISOString(),
+    }, { status: 500 });
+  }
 }
