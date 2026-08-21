@@ -24,10 +24,13 @@ export async function GET(req: NextRequest) {
 
   const quotes = await getQuotes(symbols);
 
+  // Check for errors
+  const error = (quotes as any)._error;
+
   return NextResponse.json({
     mode: 'live',
     provider: 'Zerodha Kite',
     timestamp: new Date().toISOString(),
-    quotes,
+    ...(error ? { error, symbols_requested: symbols } : { quotes }),
   });
 }

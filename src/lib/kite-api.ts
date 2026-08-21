@@ -138,6 +138,11 @@ export async function getInstruments(exchange?: string): Promise<KiteInstrument[
 
   try {
     const res = await fetch(`${KITE_BASE}/instruments`, { headers: kiteHeaders() });
+    if (!res.ok) {
+      const errText = await res.text();
+      console.error(`[Kite] instruments API ${res.status}: ${errText}`);
+      return [];
+    }
     const text = await res.text();
 
     // Kite returns CSV format
@@ -185,8 +190,18 @@ export async function getQuotes(instruments: string[]): Promise<Record<string, K
       headers: kiteHeaders(),
     });
 
+    // Log non-success for debugging
+    if (!res.ok) {
+      const errText = await res.text();
+      console.error(`[Kite] quote API ${res.status}: ${errText}`);
+      return { _error: `HTTP ${res.status}: ${errText}` } as any;
+    }
+
     const data = await res.json();
-    if (data.status !== 'success' || !data.data) return {};
+    if (data.status !== 'success' || !data.data) {
+      console.error('[Kite] quote API error:', JSON.stringify(data));
+      return { _error: data.message || 'Unknown error' } as any;
+    }
 
     const quotes: Record<string, KiteQuote> = {};
     for (const [key, q] of Object.entries(data.data as Record<string, any>)) {
