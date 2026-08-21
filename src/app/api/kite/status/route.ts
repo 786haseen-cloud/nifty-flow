@@ -35,7 +35,7 @@ export async function GET() {
   // Actually test the connection with a lightweight API call
   try {
     const token = process.env.KITE_ACCESS_TOKEN!.trim();
-    const res = await fetch(`${KITE_BASE}/quote?i=${encodeURIComponent('NSE:NIFTY 50')}`, {
+    const res = await fetch(`${KITE_BASE}/quote?i=${encodeURI('NSE:NIFTY 50')}`, {
       headers: {
         'Authorization': `enctoken ${token}`,
         'Content-Type': 'application/x-www-form-urlencoded',

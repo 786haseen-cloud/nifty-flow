@@ -188,7 +188,9 @@ export async function getQuotes(instruments: string[]): Promise<Record<string, K
 
   try {
     const iList = instruments.join(',');
-    const res = await fetch(`${KITE_BASE}/quote?i=${encodeURIComponent(iList)}`, {
+    // Use encodeURI (not encodeURIComponent) — Kite needs literal colons and commas.
+    // encodeURI only encodes spaces/special chars, preserves : , / ? & =
+    const res = await fetch(`${KITE_BASE}/quote?i=${encodeURI(iList)}`, {
       headers: kiteHeaders(),
     });
 
