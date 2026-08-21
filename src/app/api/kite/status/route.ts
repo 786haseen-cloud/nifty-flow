@@ -27,8 +27,9 @@ export async function GET() {
   }
 
   const token = process.env.KITE_ACCESS_TOKEN!.trim();
+  const apiKey = process.env.KITE_API_KEY || '';
   const headers = {
-    'Authorization': `enctoken ${token}`,
+    'Authorization': `token ${apiKey}:${token}`,
     'X-Kite-Version': '3',
     'Content-Type': 'application/x-www-form-urlencoded',
   };

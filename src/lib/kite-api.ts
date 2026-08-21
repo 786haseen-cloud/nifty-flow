@@ -29,8 +29,10 @@ export function isKiteConfigured(): boolean {
 }
 
 function kiteHeaders() {
+  const apiKey = process.env.KITE_API_KEY || '';
+  const accessToken = process.env.KITE_ACCESS_TOKEN || '';
   return {
-    'Authorization': `enctoken ${process.env.KITE_ACCESS_TOKEN || ''}`,
+    'Authorization': `token ${apiKey}:${accessToken}`,
     'X-Kite-Version': '3',
     'Content-Type': 'application/x-www-form-urlencoded',
   };
