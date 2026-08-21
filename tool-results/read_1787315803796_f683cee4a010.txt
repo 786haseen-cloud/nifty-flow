@@ -1,0 +1,1517 @@
+     1→import {
+     2→  type GlobalIndex,
+     3→  type GIFTNifty,
+     4→  type NextMonthFutures,
+     5→  type ExpiryInfo,
+     6→  type NewsEvent,
+     7→  type VIXData,
+     8→  type InstrumentData,
+     9→  type OptionStrike,
+    10→  type PlayerFlow,
+    11→  type DayComparison,
+    12→  type BigTradeEntry,
+    13→  type NiftyDivergencePoint,
+    14→  type InstrumentType,
+    15→  type BuiltUpType,
+    16→  type NetMoneyFlow,
+    17→  type ExchangeStockData,
+    18→  type DualExchangeStock,
+    19→  type WeightedCashFlowBar,
+    20→  type CashFlowTrend,
+    21→  type InstitutionalDailyData,
+    22→  type InstitutionalNetFlows,
+    23→  type LiveMoneyFlowInference,
+    24→  type InstitutionalRollingWindow,
+    25→  type MarketDataContext,
+    26→  type StrikeOptionsFlow,
+    27→  type InstrumentOptionsFlow,
+    28→  type OptionsFlowBar,
+    29→  type FuturesFlowBar,
+    30→  type CompositeSignal,
+    31→  type TradeAction,
+    32→  GLOBAL_INDICES,
+    33→  INDICES,
+    34→  TOP_STOCKS,
+    35→} from './types';
+    36→
+    37→function rand(min: number, max: number): number {
+    38→  return Math.random() * (max - min) + min;
+    39→}
+    40→
+    41→function randInt(min: number, max: number): number {
+    42→  return Math.floor(rand(min, max + 1));
+    43→}
+    44→
+    45→function round2(n: number): number {
+    46→  return Math.round(n * 100) / 100;
+    47→}
+    48→
+    49→function roundN(n: number, d: number): number {
+    50→  const f = Math.pow(10, d);
+    51→  return Math.round(n * f) / f;
+    52→}
+    53→
+    54→// --- Global Indices ---
+    55→export function generateDemoGlobalIndices(): GlobalIndex[] {
+    56→  const istHour = new Date().getUTCHours() + 5.5;
+    57→  const asiaOpen = istHour >= 6 && istHour < 15;
+    58→
+    59→  return GLOBAL_INDICES.map((idx) => {
+    60→    const changePercent = rand(-1.5, 1.5);
+    61→    const change = roundN(idx.baseValue * changePercent / 100, idx.baseValue > 10000 ? 0 : 2);
+    62→    const value = roundN(idx.baseValue + change, idx.baseValue > 10000 ? 0 : 2);
+    63→    const isUS = idx.country === 'US';
+    64→    const isEurope = idx.country === 'UK' || idx.country === 'Germany';
+    65→    const isAsia = idx.country === 'Japan' || idx.country === 'HK' || idx.country === 'China' || idx.country === 'Korea';
+    66→
+    67→    let status: 'open' | 'closed' | 'pre-market' = 'closed';
+    68→    if (isUS) status = istHour >= 19.5 && istHour < 25 ? 'open' : istHour >= 18 ? 'pre-market' : 'closed';
+    69→    else if (isEurope) status = istHour >= 13 && istHour < 21.5 ? 'open' : 'closed';
+    70→    else if (isAsia) status = asiaOpen ? 'open' : 'closed';
+    71→
+    72→    let impactOnNifty: GlobalIndex['impactOnNifty'];
+    73→    if (Math.abs(changePercent) < 0.15) impactOnNifty = changePercent >= 0 ? 'mild_positive' : 'mild_negative';
+    74→    else if (Math.abs(changePercent) < 0.4) impactOnNifty = changePercent >= 0 ? 'mild_positive' : 'mild_negative';
+    75→    else if (changePercent >= 0) impactOnNifty = 'positive';
+    76→    else impactOnNifty = 'negative';
+    77→
+    78→    if (idx.country === 'China') impactOnNifty = changePercent >= 0 ? 'mild_positive' : 'mild_negative';
+    79→    if (Math.abs(changePercent) > 0.5 && changePercent > 0) impactOnNifty = 'positive';
+    80→    if (Math.abs(changePercent) > 0.5 && changePercent < 0) impactOnNifty = 'negative';
+    81→
+    82→    return {
+    83→      name: idx.name,
+    84→      country: idx.country,
+    85→      value,
+    86→      change,
+    87→      changePercent: round2(changePercent),
+    88→      status,
+    89→      impactOnNifty,
+    90→    };
+    91→  });
+    92→}
+    93→
+    94→// --- GIFT Nifty ---
+    95→export function generateDemoGIFTNifty(niftyClose: number = 24350): GIFTNifty {
+    96→  const change = round2(rand(-80, 80));
+    97→  const value = round2(niftyClose + change + rand(10, 30));
+    98→  return {
+    99→    value,
+   100→    change,
+   101→    indicativeOpen: round2(value - rand(5, 15)),
+   102→  };
+   103→}
+   104→
+   105→// --- Next Month Futures ---
+   106→export function generateDemoNextMonthFutures(): NextMonthFutures {
+   107→  const ltp = round2(rand(24400, 24600));
+   108→  const spot = 24350;
+   109→  const basis = round2(ltp - spot);
+   110→  return {
+   111→    symbol: 'NIFTY',
+   112→    ltp,
+   113→    basis,
+   114→    oi: randInt(8000000, 12000000),
+   115→    premiumDiscount: basis >= 0 ? 'premium' : 'discount',
+   116→  };
+   117→}
+   118→
+   119→// --- Expiry Info ---
+   120→function getNextExpiry(expiryDay: number, expiryType: 'weekly' | 'monthly'): { date: Date; daysToExpiry: number } {
+   121→  const now = new Date();
+   122→  const istOffset = 5.5 * 60 * 60 * 1000;
+   123→  const istNow = new Date(now.getTime() + istOffset);
+   124→
+   125→  if (expiryType === 'weekly') {
+   126→    // Find next expiryDay (0=Sun, 1=Mon, 2=Tue, ..., 6=Sat)
+   127→    const currentDay = istNow.getUTCDay();
+   128→    let daysUntil = expiryDay - currentDay;
+   129→    if (daysUntil <= 0) daysUntil += 7;
+   130→    const expiryDate = new Date(istNow);
+   131→    expiryDate.setUTCDate(expiryDate.getUTCDate() + daysUntil);
+   132→    expiryDate.setUTCHours(15, 30, 0, 0);
+   133→    const diff = expiryDate.getTime() - istNow.getTime();
+   134→    return { date: expiryDate, daysToExpiry: Math.max(1, Math.ceil(diff / (24 * 60 * 60 * 1000))) };
+   135→  } else {
+   136→    // Last specific weekday of current or next month
+   137→    const currentMonth = istNow.getUTCMonth();
+   138→    const currentYear = istNow.getUTCFullYear();
+   139→    const targetDay = expiryDay; // reuse for monthly: -1 means last Tuesday
+   140→
+   141→    const actualDay = expiryDay === -1 ? 2 : expiryDay; // Tuesday = 2 for BankNifty/Finnifty
+   142→    // For Bankex: Thursday = 4 (handled separately in caller)
+   143→
+   144→    let month = currentMonth;
+   145→    let year = currentYear;
+   146→
+   147→    // Find last Tuesday/Thursday of the month
+   148→    const lastDay = new Date(Date.UTC(year, month + 1, 0));
+   149→    let lastTarget = lastDay.getUTCDay();
+   150→    let diff2 = lastTarget - actualDay;
+   151→    if (diff2 < 0) diff2 += 7;
+   152→    if (diff2 > 6) diff2 -= 7;
+   153→    let expiryDayNum = lastDay.getUTCDate() - diff2;
+   154→    let expiryDate = new Date(Date.UTC(year, month, expiryDayNum, 15, 30, 0));
+   155→
+   156→    if (expiryDate <= istNow) {
+   157→      month++;
+   158→      if (month > 11) { month = 0; year++; }
+   159→      const lastDay2 = new Date(Date.UTC(year, month + 1, 0));
+   160→      let lastTarget2 = lastDay2.getUTCDay();
+   161→      let diff3 = lastTarget2 - actualDay;
+   162→      if (diff3 < 0) diff3 += 7;
+   163→      expiryDayNum = lastDay2.getUTCDate() - diff3;
+   164→      expiryDate = new Date(Date.UTC(year, month, expiryDayNum, 15, 30, 0));
+   165→    }
+   166→
+   167→    const diffMs = expiryDate.getTime() - istNow.getTime();
+   168→    return { date: expiryDate, daysToExpiry: Math.max(1, Math.ceil(diffMs / (24 * 60 * 60 * 1000))) };
+   169→  }
+   170→}
+   171→
+   172→export function generateDemoExpiryInfo(): ExpiryInfo[] {
+   173→  const expiryConfigs = [
+   174→    ...INDICES,
+   175→    { symbol: 'BANKEX', name: 'Bankex', lotSize: 15, strikes: 11, step: 100, expiryDay: -1, expiryType: 'monthly' as const },
+   176→  ];
+   177→
+   178→  return expiryConfigs.map((idx) => {
+   179→    let daysToExpiry: number;
+   180→    let nextExpiryDate: string;
+   181→
+   182→    if (idx.symbol === 'BANKEX') {
+   183→      // Last Thursday of month
+   184→      const result = getLastWeekdayOfMonth(4);
+   185→      daysToExpiry = result.daysToExpiry;
+   186→      nextExpiryDate = result.dateStr;
+   187→    } else {
+   188→      const result = getNextExpiry(idx.expiryDay, idx.expiryType);
+   189→      daysToExpiry = result.daysToExpiry;
+   190→      nextExpiryDate = result.date.toLocaleDateString('en-IN', { weekday: 'short', month: 'short', day: 'numeric' });
+   191→    }
+   192→
+   193→    return {
+   194→      symbol: idx.symbol,
+   195→      name: idx.name,
+   196→      nextExpiryDate,
+   197→      daysToExpiry,
+   198→      expiryType: idx.expiryType,
+   199→      isSmartMoneyWindow: daysToExpiry <= 2,
+   200→    };
+   201→  });
+   202→}
+   203→
+   204→function getLastWeekdayOfMonth(weekday: number): { dateStr: string; daysToExpiry: number } {
+   205→  const now = new Date();
+   206→  const istOffset = 5.5 * 60 * 60 * 1000;
+   207→  const istNow = new Date(now.getTime() + istOffset);
+   208→  let month = istNow.getUTCMonth();
+   209→  let year = istNow.getUTCFullYear();
+   210→
+   211→  const lastDay = new Date(Date.UTC(year, month + 1, 0));
+   212→  let diff = lastDay.getUTCDay() - weekday;
+   213→  if (diff < 0) diff += 7;
+   214→  let dayNum = lastDay.getUTCDate() - diff;
+   215→  let expiryDate = new Date(Date.UTC(year, month, dayNum, 15, 30, 0));
+   216→
+   217→  if (expiryDate <= istNow) {
+   218→    month++;
+   219→    if (month > 11) { month = 0; year++; }
+   220→    const lastDay2 = new Date(Date.UTC(year, month + 1, 0));
+   221→    let diff2 = lastDay2.getUTCDay() - weekday;
+   222→    if (diff2 < 0) diff2 += 7;
+   223→    dayNum = lastDay2.getUTCDate() - diff2;
+   224→    expiryDate = new Date(Date.UTC(year, month, dayNum, 15, 30, 0));
+   225→  }
+   226→
+   227→  const diffMs = expiryDate.getTime() - istNow.getTime();
+   228→  const daysToExpiry = Math.max(1, Math.ceil(diffMs / (24 * 60 * 60 * 1000)));
+   229→  const dateStr = expiryDate.toLocaleDateString('en-IN', { weekday: 'short', month: 'short', day: 'numeric' });
+   230→  return { dateStr, daysToExpiry };
+   231→}
+   232→
+   233→// --- News Events ---
+   234→export function generateDemoNews(): NewsEvent[] {
+   235→  const now = new Date();
+   236→  const istH = ((now.getUTCHours() + 5) % 24 + 24) % 24;
+   237→  const istM = now.getUTCMinutes() + 30;
+   238→
+   239→  const newsPool: Omit<NewsEvent, 'time'>[] = [
+   240→    { category: 'geopolitical', headline: 'US-China trade talks resume; tariffs on tech imports discussed', impact: 'high', sentiment: 'bullish' },
+   241→    { category: 'government_data', headline: 'India CPI inflation rises to 5.2% vs 4.8% expected', impact: 'high', sentiment: 'bearish' },
+   242→    { category: 'policy', headline: 'RBI keeps repo rate unchanged at 6.5%; stance remains focused on withdrawal of accommodation', impact: 'high', sentiment: 'neutral' },
+   243→    { category: 'corporate', headline: 'Reliance Q2 results: Net profit up 18% YoY, Jio adds 8M subscribers', impact: 'medium', sentiment: 'bullish' },
+   244→    { category: 'global', headline: 'Fed signals potential rate cut in September; dot plot shifts dovish', impact: 'high', sentiment: 'bullish' },
+   245→    { category: 'geopolitical', headline: 'Middle East tensions ease as ceasefire talks progress', impact: 'medium', sentiment: 'bullish' },
+   246→    { category: 'government_data', headline: 'India IIP grows 4.5% vs 3.2% previous month', impact: 'medium', sentiment: 'bullish' },
+   247→    { category: 'policy', headline: 'SEBI tightens F&O trading rules; lot size changes effective next month', impact: 'high', sentiment: 'bearish' },
+   248→    { category: 'corporate', headline: 'HDFC Bank Q2: NIM stable at 3.5%; provisions decline QoQ', impact: 'medium', sentiment: 'bullish' },
+   249→    { category: 'global', headline: 'ECB holds rates; Lagarde hints at October cut possibility', impact: 'low', sentiment: 'mild_bullish' as NewsEvent['sentiment'], },
+   250→    { category: 'geopolitical', headline: 'Russia-Ukraine conflict: New sanctions imposed on energy sector', impact: 'medium', sentiment: 'bearish' },
+   251→    { category: 'government_data', headline: 'India WPI inflation at 2.1%; remains in comfort zone', impact: 'low', sentiment: 'bullish' },
+   252→    { category: 'corporate', headline: 'TCS wins $2B deal from UK-based financial services firm', impact: 'medium', sentiment: 'bullish' },
+   253→    { category: 'global', headline: 'BOJ ends negative rate policy; yen strengthens to 148/USD', impact: 'medium', sentiment: 'neutral' },
+   254→    { category: 'policy', headline: 'Govt announces PLI scheme extension for semiconductor manufacturing', impact: 'low', sentiment: 'bullish' },
+   255→  ];
+   256→
+   257→  return newsPool.map((n, i) => {
+   258→    const h = istH - i;
+   259→    const m = istM - randInt(0, 30);
+   260→    const timeStr = `${((h % 24) + 24) % 24}:${String(Math.abs(m) % 60).padStart(2, '0')}`;
+   261→    return { ...n, time: timeStr, sentiment: n.sentiment === 'mild_bullish' ? 'bullish' : n.sentiment };
+   262→  });
+   263→}
+   264→
+   265→// --- VIX ---
+   266→export function generateDemoVIX(): VIXData {
+   267→  const value = round2(rand(12, 22));
+   268→  const change = round2(rand(-2, 2));
+   269→  const dayOpen = round2(value - change);
+   270→  const dayHigh = round2(Math.max(value, dayOpen) + rand(0.5, 2));
+   271→  const dayLow = round2(Math.min(value, dayOpen) - rand(0.5, 2));
+   272→
+   273→  let panicLevel: VIXData['panicLevel'];
+   274→  if (value < 12) panicLevel = 'calm';
+   275→  else if (value < 16) panicLevel = 'normal';
+   276→  else if (value < 20) panicLevel = 'elevated';
+   277→  else panicLevel = 'panic';
+   278→
+   279→  let trend: VIXData['trend'];
+   280→  if (change > 0.3) trend = 'rising';
+   281→  else if (change < -0.3) trend = 'falling';
+   282→  else trend = 'stable';
+   283→
+   284→  return {
+   285→    value,
+   286→    change,
+   287→    changePercent: round2((change / dayOpen) * 100),
+   288→    dayHigh,
+   289→    dayLow,
+   290→    dayOpen,
+   291→    trend,
+   292→    percentile: round2(rand(20, 80)),
+   293→    panicLevel,
+   294→  };
+   295→}
+   296→
+   297→// --- Instrument Data ---
+   298→export function generateDemoInstrument(
+   299→  symbol: string = 'NIFTY',
+   300→  name: string = 'Nifty 50',
+   301→  type: InstrumentType = 'index',
+   302→  basePrice: number = 24350
+   303→): InstrumentData {
+   304→  const cashChange = round2(rand(-200, 200));
+   305→  const cashLTP = round2(basePrice + cashChange);
+   306→  const cashChangePercent = round2((cashChange / basePrice) * 100);
+   307→  const futureLTP = round2(cashLTP + rand(-20, 40));
+   308→  const futureBasis = round2(futureLTP - cashLTP);
+   309→
+   310→  const step = symbol === 'NIFTY' || symbol === 'FINNIFTY' ? 50 : 100;
+   311→  const numStrikes = 11;
+   312→  const atmStrike = Math.round(cashLTP / step) * step;
+   313→
+   314→  const strikes: OptionStrike[] = [];
+   315→  const halfStrikes = Math.floor(numStrikes / 2);
+   316→
+   317→  for (let i = -halfStrikes; i <= halfStrikes; i++) {
+   318→    const strike = atmStrike + i * step;
+   319→    const isATM = i === 0;
+   320→    const distFromATM = Math.abs(i);
+   321→
+   322→    const callITM = strike < cashLTP;
+   323→    const putITM = strike > cashLTP;
+   324→
+   325→    const callBase = Math.max(1, cashLTP - strike + rand(-20, 20));
+   326→    const callLTP = round2(Math.max(0.5, callBase * Math.exp(-distFromATM * 0.15)));
+   327→    const putBase = Math.max(1, strike - cashLTP + rand(-20, 20));
+   328→    const putLTP = round2(Math.max(0.5, putBase * Math.exp(-distFromATM * 0.15)));
+   329→
+   330→    const callOI = roundN(rand(50000, 5000000) * (1 + distFromATM * 0.3), 0);
+   331→    const putOI = roundN(rand(50000, 5000000) * (1 + distFromATM * 0.3), 0);
+   332→
+   333→    const callIV = round2(rand(10, 25) + distFromATM * 1.5);
+   334→    const putIV = round2(rand(10, 25) + distFromATM * 1.5);
+   335→
+   336→    const callDelta = round2(callITM ? rand(0.5, 0.99) : rand(0.01, 0.49));
+   337→    const putDelta = round2(-(putITM ? rand(0.5, 0.99) : rand(0.01, 0.49)));
+   338→
+   339→    const callGamma = round2(rand(0.0001, 0.002) * (1 - distFromATM * 0.08));
+   340→    const putGamma = round2(rand(0.0001, 0.002) * (1 - distFromATM * 0.08));
+   341→
+   342→    const callTheta = round2(-rand(1, 20) * (1 + distFromATM * 0.05));
+   343→    const putTheta = round2(-rand(1, 20) * (1 + distFromATM * 0.05));
+   344→
+   345→    const callVega = round2(rand(5, 30) * (1 - distFromATM * 0.06));
+   346→    const putVega = round2(rand(5, 30) * (1 - distFromATM * 0.06));
+   347→
+   348→    let builtUp: BuiltUpType = 'None';
+   349→    const callOIChg = roundN(rand(-200000, 500000), 0);
+   350→    const putOIChg = roundN(rand(-200000, 500000), 0);
+   351→
+   352→    if (callOIChg > 100000 && callLTP < putLTP) builtUp = 'Call Writing';
+   353→    else if (callOIChg > 100000 && callLTP > putLTP) builtUp = 'Call Long Cvr.';
+   354→    else if (putOIChg > 100000 && putLTP < callLTP) builtUp = 'Put Writing';
+   355→    else if (putOIChg > 100000 && putLTP > callLTP) builtUp = 'Put Long Cvr.';
+   356→    else if (putOIChg < -100000) builtUp = 'Put Short Cvr.';
+   357→
+   358→    strikes.push({
+   359→      strike,
+   360→      callLTP,
+   361→      callOI,
+   362→      callOIChg,
+   363→      callVolume: randInt(1000, 500000),
+   364→      callIV,
+   365→      callDelta,
+   366→      callGamma,
+   367→      callTheta,
+   368→      callVega,
+   369→      callChg: round2(rand(-10, 10)),
+   370→      putLTP,
+   371→      putOI,
+   372→      putOIChg,
+   373→      putVolume: randInt(1000, 500000),
+   374→      putIV,
+   375→      putDelta,
+   376→      putGamma,
+   377→      putTheta,
+   378→      putVega,
+   379→      putChg: round2(rand(-10, 10)),
+   380→      isATM,
+   381→      builtUp,
+   382→      callITM,
+   383→      putITM,
+   384→    });
+   385→  }
+   386→
+   387→  const totalCallOI = strikes.reduce((s, k) => s + k.callOI, 0);
+   388→  const totalPutOI = strikes.reduce((s, k) => s + k.putOI, 0);
+   389→  const pcr = round2(totalPutOI / totalCallOI);
+   390→
+   391→  return {
+   392→    symbol,
+   393→    name,
+   394→    type,
+   395→    cashLTP,
+   396→    cashChange,
+   397→    cashChangePercent,
+   398→    futureLTP,
+   399→    futureBasis,
+   400→    nextMonthFutLTP: round2(futureLTP + rand(30, 80)),
+   401→    nextMonthFutBasis: round2(futureLTP + rand(30, 80) - cashLTP),
+   402→    atmStrike,
+   403→    strikes,
+   404→    totalCallOI,
+   405→    totalPutOI,
+   406→    pcr,
+   407→    chgOiPCR: round2(rand(0.5, 1.5)),
+   408→    volumePCR: round2(rand(0.4, 1.2)),
+   409→    maxPainStrike: atmStrike + (Math.random() > 0.5 ? step : -step),
+   410→  };
+   411→}
+   412→
+   413→// --- Institutional Flow ---
+   414→export function generateDemoInstitutionalFlow(): DayComparison {
+   415→  const today = new Date();
+   416→  const dateStr = today.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+   417→
+   418→  const fii: PlayerFlow = {
+   419→    player: 'FII',
+   420→    cashNet: roundN(rand(-3000, -500), 0),
+   421→    futNet: roundN(rand(-1500, 1500), 0),
+   422→    optCallNet: roundN(rand(-2000, 500), 0),
+   423→    optPutNet: roundN(rand(-500, 2000), 0),
+   424→    totalNet: 0,
+   425→  };
+   426→  fii.totalNet = roundN(fii.cashNet + fii.futNet + fii.optCallNet + fii.optPutNet, 0);
+   427→
+   428→  const propdesk: PlayerFlow = {
+   429→    player: 'PROPDESK',
+   430→    cashNet: roundN(rand(-200, 200), 0),
+   431→    futNet: roundN(rand(-800, 800), 0),
+   432→    optCallNet: roundN(rand(-1200, 1200), 0),
+   433→    optPutNet: roundN(rand(-1200, 1200), 0),
+   434→    totalNet: 0,
+   435→  };
+   436→  propdesk.totalNet = roundN(propdesk.cashNet + propdesk.futNet + propdesk.optCallNet + propdesk.optPutNet, 0);
+   437→
+   438→  const client: PlayerFlow = {
+   439→    player: 'CLIENT',
+   440→    cashNet: roundN(rand(500, 3000), 0),
+   441→    futNet: roundN(rand(-1000, 1000), 0),
+   442→    optCallNet: roundN(rand(500, 3000), 0),
+   443→    optPutNet: roundN(rand(-2000, 500), 0),
+   444→    totalNet: 0,
+   445→  };
+   446→  client.totalNet = roundN(client.cashNet + client.futNet + client.optCallNet + client.optPutNet, 0);
+   447→
+   448→  const dii: PlayerFlow = {
+   449→    player: 'DII',
+   450→    cashNet: roundN(rand(500, 2000), 0),
+   451→    futNet: roundN(rand(-50, 50), 0),
+   452→    optCallNet: roundN(rand(-10, 10), 0),
+   453→    optPutNet: roundN(rand(-10, 10), 0),
+   454→    totalNet: 0,
+   455→  };
+   456→  dii.totalNet = roundN(dii.cashNet + dii.futNet + dii.optCallNet + dii.optPutNet, 0);
+   457→
+   458→  return { date: dateStr, label: 'Day-0', fii, propdesk, client, dii };
+   459→}
+   460→
+   461→// --- 3-Day Comparison ---
+   462→export function generateDemo3DayComparison(): DayComparison[] {
+   463→  const result: DayComparison[] = [];
+   464→  const today = new Date();
+   465→
+   466→  for (let d = 2; d >= 0; d--) {
+   467→    const date = new Date(today);
+   468→    date.setDate(date.getDate() - d);
+   469→    const dateStr = date.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+   470→    const label = `Day-${2 - d}`;
+   471→
+   472→    const decay = 1 + (2 - d) * 0.3;
+   473→
+   474→    const fii: PlayerFlow = {
+   475→      player: 'FII',
+   476→      cashNet: roundN(rand(-3000, -500) * decay, 0),
+   477→      futNet: roundN(rand(-1500, 1500) * decay, 0),
+   478→      optCallNet: roundN(rand(-2000, 500) * decay, 0),
+   479→      optPutNet: roundN(rand(-500, 2000) * decay, 0),
+   480→      totalNet: 0,
+   481→    };
+   482→    fii.totalNet = roundN(fii.cashNet + fii.futNet + fii.optCallNet + fii.optPutNet, 0);
+   483→
+   484→    const propdesk: PlayerFlow = {
+   485→      player: 'PROPDESK',
+   486→      cashNet: roundN(rand(-200, 200) * decay, 0),
+   487→      futNet: roundN(rand(-800, 800) * decay, 0),
+   488→      optCallNet: roundN(rand(-1200, 1200) * decay, 0),
+   489→      optPutNet: roundN(rand(-1200, 1200) * decay, 0),
+   490→      totalNet: 0,
+   491→    };
+   492→    propdesk.totalNet = roundN(propdesk.cashNet + propdesk.futNet + propdesk.optCallNet + propdesk.optPutNet, 0);
+   493→
+   494→    const client: PlayerFlow = {
+   495→      player: 'CLIENT',
+   496→      cashNet: roundN(rand(500, 3000) * decay, 0),
+   497→      futNet: roundN(rand(-1000, 1000) * decay, 0),
+   498→      optCallNet: roundN(rand(500, 3000) * decay, 0),
+   499→      optPutNet: roundN(rand(-2000, 500) * decay, 0),
+   500→      totalNet: 0,
+   501→    };
+   502→    client.totalNet = roundN(client.cashNet + client.futNet + client.optCallNet + client.optPutNet, 0);
+   503→
+   504→    const dii: PlayerFlow = {
+   505→      player: 'DII',
+   506→      cashNet: roundN(rand(500, 2000) * decay, 0),
+   507→      futNet: 0,
+   508→      optCallNet: 0,
+   509→      optPutNet: 0,
+   510→      totalNet: 0,
+   511→    };
+   512→    dii.totalNet = dii.cashNet;
+   513→
+   514→    result.push({ date: dateStr, label, fii, propdesk, client, dii });
+   515→  }
+   516→
+   517→  return result;
+   518→}
+   519→
+   520→// --- Big Trades ---
+   521→export function generateDemoBigTrades(): BigTradeEntry[] {
+   522→  const instruments = ['NIFTY', 'BANKNIFTY', 'SENSEX', 'FINNIFTY'];
+   523→  const players: Array<'FII' | 'PROPDESK' | 'CLIENT'> = ['FII', 'PROPDESK', 'CLIENT'];
+   524→  const trades: BigTradeEntry[] = [];
+   525→  const now = Date.now();
+   526→
+   527→  for (let i = 0; i < 20; i++) {
+   528→    const player = players[randInt(0, 2)];
+   529→    const instrument = instruments[randInt(0, 3)];
+   530→    const isCall = Math.random() > 0.5;
+   531→    const isBuy = Math.random() > 0.5;
+   532→
+   533→    trades.push({
+   534→      timestamp: new Date(now - i * randInt(60000, 600000)),
+   535→      instrument,
+   536→      tradeType: isCall ? 'Call' : 'Put',
+   537→      action: isBuy ? 'BUY' : 'SELL',
+   538→      player,
+   539→      quantity: roundN(rand(500, 50000) * (player === 'FII' ? 3 : player === 'PROPDESK' ? 2 : 1), 0),
+   540→      value: roundN(rand(10, 500), 2),
+   541→      strike: roundN(rand(24000, 25000) / 50, 0) * 50,
+   542→    });
+   543→  }
+   544→
+   545→  return trades.sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime());
+   546→}
+   547→
+   548→// --- Nifty Divergence ---
+   549→export function generateDemoNiftyDivergence(): NiftyDivergencePoint[] {
+   550→  const data: NiftyDivergencePoint[] = [];
+   551→  let niftyPrice = 24000;
+   552→  let fiiFlow = 0;
+   553→
+   554→  for (let i = 0; i < 30; i++) {
+   555→    const date = new Date();
+   556→    date.setDate(date.getDate() - (29 - i));
+   557→    niftyPrice += rand(-150, 150);
+   558→    fiiFlow += rand(-500, 400);
+   559→
+   560→    data.push({
+   561→      date: date.toLocaleDateString('en-IN', { day: '2-digit', month: 'short' }),
+   562→      niftyPrice: round2(niftyPrice),
+   563→      fiiNetFlow: roundN(fiiFlow, 0),
+   564→    });
+   565→  }
+   566→
+   567→  return data;
+   568→}
+   569→
+   570→// --- Top Stocks Quick View (with Net Money Flow) ---
+   571→export interface StockQuickView {
+   572→  symbol: string;
+   573→  name: string;
+   574→  ltp: number;
+   575→  change: number;
+   576→  changePercent: number;
+   577→  callOI: number;
+   578→  putOI: number;
+   579→  pcr: number;
+   580→  netMoneyFlow: NetMoneyFlow;    // Money In - Money Out
+   581→  nseLTP: number;                 // NSE price
+   582→  bseLTP: number;                 // BSE price
+   583→  nseBseDiff: number;             // NSE - BSE difference
+   584→}
+   585→
+   586→const STOCK_BASE_PRICES = [
+   587→  { symbol: 'HDFCBANK',  name: 'HDFC Bank',            base: 1680, niftyWeight: 9.97, sensexWeight: 12.03 },
+   588→  { symbol: 'ICICIBANK', name: 'ICICI Bank',           base: 1250, niftyWeight: 9.09, sensexWeight: 10.96 },
+   589→  { symbol: 'RELIANCE',  name: 'Reliance Industries',  base: 2950, niftyWeight: 7.92, sensexWeight: 9.56 },
+   590→  { symbol: 'BHARTIARTL',name: 'Bharti Airtel',       base: 1620, niftyWeight: 5.55, sensexWeight: 6.70 },
+   591→  { symbol: 'LT',        name: 'Larsen & Toubro',      base: 3600, niftyWeight: 4.25, sensexWeight: 5.13 },
+   592→  { symbol: 'SBIN',      name: 'State Bank India',     base: 830,  niftyWeight: 3.95, sensexWeight: 4.77 },
+   593→  { symbol: 'INFY',      name: 'Infosys',              base: 1580, niftyWeight: 3.67, sensexWeight: 4.43 },
+   594→  { symbol: 'AXISBANK',  name: 'Axis Bank',            base: 1170, niftyWeight: 3.13, sensexWeight: 3.78 },
+   595→  { symbol: 'M&M',       name: 'Mahindra & Mahindra',  base: 2900, niftyWeight: 2.74, sensexWeight: 3.30 },
+   596→  { symbol: 'BAJFINANCE',name: 'Bajaj Finance',        base: 7200, niftyWeight: 2.61, sensexWeight: 3.15 },
+   597→  { symbol: 'KOTAKBANK', name: 'Kotak Bank',           base: 1800, niftyWeight: 2.58, sensexWeight: 3.11 },
+   598→  { symbol: 'ITC',       name: 'ITC Limited',          base: 470,  niftyWeight: 2.40, sensexWeight: 2.90 },
+   599→  { symbol: 'TCS',       name: 'Tata Consultancy',     base: 3900, niftyWeight: 2.16, sensexWeight: 2.60 },
+   600→  { symbol: 'ETERNAL',   name: 'Eternal Ltd',          base: 280,  niftyWeight: 2.06, sensexWeight: 2.49 },
+   601→  { symbol: 'TITAN',     name: 'Titan Company',        base: 3550, niftyWeight: 1.87, sensexWeight: 2.25 },
+   602→];
+   603→
+   604→export function generateDemoStocks(): StockQuickView[] {
+   605→  return STOCK_BASE_PRICES.map((s) => {
+   606→    const change = round2(rand(-s.base * 0.02, s.base * 0.02));
+   607→    const ltp = round2(s.base + change);
+   608→    const callOI = roundN(rand(100000, 5000000), 0);
+   609→    const putOI = roundN(rand(100000, 5000000), 0);
+   610→
+   611→    // Net Money Flow: Money In - Money Out
+   612→    // Higher weight stocks have larger absolute flows
+   613→    const moneyIn = roundN(rand(50, 500) * (s.base / 1000) * 10000000, 0);   // In ₹
+   614→    const moneyOut = roundN(rand(40, 480) * (s.base / 1000) * 10000000, 0);  // In ₹
+   615→    const netFlow = moneyIn - moneyOut;
+   616→    const netFlowCr = round2(netFlow / 10000000);
+   617→
+   618→    let intensity: NetMoneyFlow['intensity'];
+   619→    const ratio = netFlowCr / (moneyIn / 10000000);
+   620→    if (ratio > 0.15) intensity = 'heavy_inflow';
+   621→    else if (ratio > 0.05) intensity = 'inflow';
+   622→    else if (ratio > -0.05) intensity = 'neutral';
+   623→    else if (ratio > -0.15) intensity = 'outflow';
+   624→    else intensity = 'heavy_outflow';
+   625→
+   626→    // Dual exchange: NSE and BSE have slightly different prices
+   627→    // NSE typically has higher volume, BSE might have slight price difference
+   628→    const nseLTP = round2(ltp + rand(-2, 2));
+   629→    const bseLTP = round2(ltp + rand(-3, 1));  // BSE often slightly lower
+   630→    const nseBseDiff = round2(nseLTP - bseLTP);
+   631→
+   632→    return {
+   633→      symbol: s.symbol,
+   634→      name: s.name,
+   635→      ltp,
+   636→      change,
+   637→      changePercent: round2((change / s.base) * 100),
+   638→      callOI,
+   639→      putOI,
+   640→      pcr: round2(putOI / callOI),
+   641→      netMoneyFlow: {
+   642→        symbol: s.symbol,
+   643→        moneyIn,
+   644→        moneyOut,
+   645→        netFlow,
+   646→        netFlowCr,
+   647→        intensity,
+   648→      },
+   649→      nseLTP,
+   650→      bseLTP,
+   651→      nseBseDiff,
+   652→    };
+   653→  });
+   654→}
+   655→
+   656→// --- Net Money Flow for all top stocks ---
+   657→export function generateDemoNetMoneyFlow(): NetMoneyFlow[] {
+   658→  return STOCK_BASE_PRICES.map((s) => {
+   659→    const moneyIn = roundN(rand(50, 500) * (s.base / 1000) * 10000000, 0);
+   660→    const moneyOut = roundN(rand(40, 480) * (s.base / 1000) * 10000000, 0);
+   661→    const netFlow = moneyIn - moneyOut;
+   662→    const netFlowCr = round2(netFlow / 10000000);
+   663→
+   664→    let intensity: NetMoneyFlow['intensity'];
+   665→    const ratio = netFlowCr / (moneyIn / 10000000);
+   666→    if (ratio > 0.15) intensity = 'heavy_inflow';
+   667→    else if (ratio > 0.05) intensity = 'inflow';
+   668→    else if (ratio > -0.05) intensity = 'neutral';
+   669→    else if (ratio > -0.15) intensity = 'outflow';
+   670→    else intensity = 'heavy_outflow';
+   671→
+   672→    return {
+   673→      symbol: s.symbol,
+   674→      moneyIn,
+   675→      moneyOut,
+   676→      netFlow,
+   677→      netFlowCr,
+   678→      intensity,
+   679→    };
+   680→  });
+   681→}
+   682→
+   683→// --- Dual Exchange Stock Data ---
+   684→// Same stock, different buyers/sellers on NSE vs BSE
+   685→export function generateDemoDualExchangeStocks(): DualExchangeStock[] {
+   686→  return STOCK_BASE_PRICES.map((s) => {
+   687→    const change = round2(rand(-s.base * 0.02, s.base * 0.02));
+   688→    const baseLTP = round2(s.base + change);
+   689→
+   690→    // NSE: Higher volume, tighter spreads
+   691→    const nseLTP = round2(baseLTP + rand(-1, 1));
+   692→    const nseVolume = roundN(rand(500000, 15000000), 0);
+   693→    const nseBuyVol = roundN(nseVolume * rand(0.4, 0.6), 0);
+   694→    const nseSellVol = nseVolume - nseBuyVol;
+   695→    const nseMoneyIn = roundN(nseBuyVol * nseLTP * rand(0.95, 1.05), 0);
+   696→    const nseMoneyOut = roundN(nseSellVol * nseLTP * rand(0.95, 1.05), 0);
+   697→    const nseVWAP = round2((nseMoneyIn + nseMoneyOut) / nseVolume);
+   698→
+   699→    const nse: ExchangeStockData = {
+   700→      symbol: s.symbol,
+   701→      exchange: 'NSE',
+   702→      ltp: nseLTP,
+   703→      change: round2(nseLTP - s.base),
+   704→      changePercent: round2(((nseLTP - s.base) / s.base) * 100),
+   705→      volume: nseVolume,
+   706→      buyVolume: nseBuyVol,
+   707→      sellVolume: nseSellVol,
+   708→      moneyIn: nseMoneyIn,
+   709→      moneyOut: nseMoneyOut,
+   710→      netMoneyFlow: nseMoneyIn - nseMoneyOut,
+   711→      vwap: nseVWAP,
+   712→    };
+   713→
+   714→    // BSE: Lower volume, slightly different price (sometimes arbitrage opportunity)
+   715→    const bseLTP = round2(baseLTP + rand(-3, 1));  // BSE often slightly lower
+   716→    const bseVolume = roundN(rand(100000, 2000000), 0);  // Much lower volume
+   717→    const bseBuyVol = roundN(bseVolume * rand(0.35, 0.65), 0);
+   718→    const bseSellVol = bseVolume - bseBuyVol;
+   719→    const bseMoneyIn = roundN(bseBuyVol * bseLTP * rand(0.94, 1.06), 0);
+   720→    const bseMoneyOut = roundN(bseSellVol * bseLTP * rand(0.94, 1.06), 0);
+   721→    const bseVWAP = round2((bseMoneyIn + bseMoneyOut) / bseVolume);
+   722→
+   723→    const bse: ExchangeStockData = {
+   724→      symbol: s.symbol,
+   725→      exchange: 'BSE',
+   726→      ltp: bseLTP,
+   727→      change: round2(bseLTP - s.base),
+   728→      changePercent: round2(((bseLTP - s.base) / s.base) * 100),
+   729→      volume: bseVolume,
+   730→      buyVolume: bseBuyVol,
+   731→      sellVolume: bseSellVol,
+   732→      moneyIn: bseMoneyIn,
+   733→      moneyOut: bseMoneyOut,
+   734→      netMoneyFlow: bseMoneyIn - bseMoneyOut,
+   735→      vwap: bseVWAP,
+   736→    };
+   737→
+   738→    const combinedNetFlow = nse.netMoneyFlow + bse.netMoneyFlow;
+   739→    const nseBseDiff = round2(nseLTP - bseLTP);
+   740→    const totalMoneyIn = nseMoneyIn + bseMoneyIn;
+   741→    const totalMoneyOut = nseMoneyOut + bseMoneyOut;
+   742→
+   743→    const dominantExchange: 'NSE' | 'BSE' | 'both' =
+   744→      nseVolume > bseVolume * 5 ? 'NSE' :
+   745→      bseVolume > nseVolume * 2 ? 'BSE' : 'both';
+   746→
+   747→    return {
+   748→      symbol: s.symbol,
+   749→      name: s.name,
+   750→      nse,
+   751→      bse,
+   752→      combinedNetFlow,
+   753→      combinedNetFlowCr: round2(combinedNetFlow / 10000000),
+   754→      nseBseDiff,
+   755→      dominantExchange,
+   756→      totalMoneyIn,
+   757→      totalMoneyOut,
+   758→    };
+   759→  });
+   760→}
+   761→
+   762→// --- Weighted Cash Flow Bars ---
+   763→// Based on Pine Script: CashFlow = (Close-Open) × Volume × Weight%
+   764→// 4 bars per minute (every 15 seconds)
+   765→export function generateDemoWeightedCashFlowBars(numBars: number = 60): WeightedCashFlowBar[] {
+   766→  const bars: WeightedCashFlowBar[] = [];
+   767→  const now = new Date();
+   768→
+   769→  for (let i = numBars - 1; i >= 0; i--) {
+   770→    const ts = new Date(now.getTime() - i * 15000); // 15-second intervals
+   771→    const istH = ((ts.getUTCHours() + 5) % 24 + 24) % 24;
+   772→    const istM = ts.getUTCMinutes();
+   773→    const istS = ts.getUTCSeconds();
+   774→    const timeLabel = `${String(istH).padStart(2, '0')}:${String(istM).padStart(2, '0')}:${String(istS).padStart(2, '0')}`;
+   775→
+   776→    const stockFlows: WeightedCashFlowBar['stockFlows'] = [];
+   777→    let niftyWeightedCF = 0;
+   778→    let sensexWeightedCF = 0;
+   779→    let totalMoneyIn = 0;
+   780→    let totalMoneyOut = 0;
+   781→
+   782→    for (const stock of STOCK_BASE_PRICES) {
+   783→      const base = stock.base;
+   784→      // Simulate intra-bar price movement (15-second candle)
+   785→      const openPrice = base + rand(-base * 0.002, base * 0.002);
+   786→      const closePrice = openPrice + rand(-base * 0.005, base * 0.005);
+   787→      const high = Math.max(openPrice, closePrice) + rand(0, base * 0.002);
+   788→      const low = Math.min(openPrice, closePrice) - rand(0, base * 0.002);
+   789→      const volume = randInt(50000, 2000000);
+   790→
+   791→      // ─── Pine Script: Cash Flow = (Close - Open) × Volume ───
+   792→      let cashFlow = (closePrice - openPrice) * volume;
+   793→
+   794→      // ─── Pine Script: Volume Weighted method ───
+   795→      // cashFlow := cashFlowRaw * (volume_ / smaVolume)
+   796→      // Note: In production, smaVolume would be computed from 20-period SMA
+   797→      // For demo, we approximate with a reasonable SMA value
+   798→      const smaVolume = volume * rand(0.7, 1.3); // Approximate SMA
+   799→      // Using Standard method by default (matching Pine Script default)
+   800→      // Volume Weighted: cashFlow = cashFlow * (volume / smaVolume)
+   801→
+   802→      // ─── Pine Script: Range Adjusted method ───
+   803→      // cashFlowAdj = cashFlowTemp * (1 + (high - low) / smaRange)
+   804→      const priceRange = high - low;
+   805→      const smaRange = priceRange * rand(0.8, 1.2); // Approximate SMA range
+   806→      // Using Standard by default
+   807→
+   808→      // ─── Pine Script: Weighted Cash Flow = CF × Weight% ───
+   809→      const niftyWeighted = cashFlow * (stock.niftyWeight / 100);
+   810→      const sensexWeighted = cashFlow * (stock.sensexWeight / 100);
+   811→
+   812→      // ─── Money In / Money Out ───
+   813→      const moneyIn = cashFlow >= 0 ? cashFlow : 0;
+   814→      const moneyOut = cashFlow < 0 ? Math.abs(cashFlow) : 0;
+   815→
+   816→      stockFlows.push({
+   817→        symbol: stock.symbol,
+   818→        cashFlow: roundN(cashFlow, 0),
+   819→        niftyWeighted: roundN(niftyWeighted, 0),
+   820→        sensexWeighted: roundN(sensexWeighted, 0),
+   821→        weight: stock.niftyWeight,
+   822→        moneyIn: roundN(moneyIn, 0),
+   823→        moneyOut: roundN(moneyOut, 0),
+   824→      });
+   825→
+   826→      niftyWeightedCF += niftyWeighted;
+   827→      sensexWeightedCF += sensexWeighted;
+   828→      totalMoneyIn += moneyIn;
+   829→      totalMoneyOut += moneyOut;
+   830→    }
+   831→
+   832→    bars.push({
+   833→      timestamp: timeLabel,
+   834→      stockFlows,
+   835→      niftyWeightedCF: roundN(niftyWeightedCF, 0),
+   836→      sensexWeightedCF: roundN(sensexWeightedCF, 0),
+   837→      totalMoneyIn: roundN(totalMoneyIn, 0),
+   838→      totalMoneyOut: roundN(totalMoneyOut, 0),
+   839→      netFlow: roundN(totalMoneyIn - totalMoneyOut, 0),
+   840→      isStrongInflow: niftyWeightedCF > 0 && niftyWeightedCF > (bars.length > 0 ? bars[bars.length - 1].niftyWeightedCF : 0),
+   841→      isStrongOutflow: niftyWeightedCF < 0 && niftyWeightedCF < (bars.length > 0 ? bars[bars.length - 1].niftyWeightedCF : 0),
+   842→    });
+   843→  }
+   844→
+   845→  return bars;
+   846→}
+   847→
+   848→// --- Cash Flow Trend (with smoothing & bands from Pine Script) ---
+   849→export function generateDemoCashFlowTrend(): CashFlowTrend {
+   850→  const value = round2(rand(-5000000, 5000000));
+   851→  const smoothed = round2(value * rand(0.6, 0.9));
+   852→  const volatility = round2(Math.abs(value) * rand(0.1, 0.3));
+   853→
+   854→  return {
+   855→    currentValue: value,
+   856→    smoothed,
+   857→    upperBand: round2(smoothed + volatility * 0.5),
+   858→    lowerBand: round2(smoothed - volatility * 0.5),
+   859→    isStrongInflow: value > smoothed + volatility * 0.5 && value > 0,
+   860→    isStrongOutflow: value < smoothed - volatility * 0.5 && value < 0,
+   861→    isUptrend: value > smoothed,
+   862→    isDowntrend: value < smoothed,
+   863→    momentum: round2(rand(-2000000, 2000000)),
+   864→    signalStrength: round2(value > 0 ? Math.min(100, value / 50000) : Math.max(-100, value / 50000)),
+   865→    bearishDivergence: Math.random() < 0.1,
+   866→    bullishDivergence: Math.random() < 0.1,
+   867→  };
+   868→}
+   869→
+   870→// --- Weighted Bars (alias for component) ---
+   871→export function generateDemoWeightedBars(numBars: number = 60): WeightedCashFlowBar[] {
+   872→  return generateDemoWeightedCashFlowBars(numBars);
+   873→}
+   874→
+   875→// --- Compute Cash Flow Trend from actual bars (not random) ---
+   876→export function computeCashFlowTrend(bars: WeightedCashFlowBar[]): CashFlowTrend {
+   877→  if (bars.length < 14) {
+   878→    return {
+   879→      currentValue: 0, smoothed: 0, upperBand: 0, lowerBand: 0,
+   880→      isStrongInflow: false, isStrongOutflow: false,
+   881→      isUptrend: false, isDowntrend: false,
+   882→      momentum: 0, signalStrength: 0,
+   883→      bearishDivergence: false, bullishDivergence: false,
+   884→    };
+   885→  }
+   886→
+   887→  // Use netFlow values from bars
+   888→  const values = bars.map(b => b.netFlow);
+   889→  const current = values[values.length - 1];
+   890→
+   891→  // SMA(14)
+   892→  const smaWindow = values.slice(-14);
+   893→  const smoothed = smaWindow.reduce((s, v) => s + v, 0) / smaWindow.length;
+   894→
+   895→  // Standard deviation
+   896→  const variance = smaWindow.reduce((s, v) => s + Math.pow(v - smoothed, 2), 0) / smaWindow.length;
+   897→  const stdev = Math.sqrt(variance);
+   898→
+   899→  const upperBand = smoothed + 0.5 * stdev;
+   900→  const lowerBand = smoothed - 0.5 * stdev;
+   901→
+   902→  // Momentum (rate of change)
+   903→  const prevSmoothed = values.length > 28
+   904→    ? values.slice(-28, -14).reduce((s, v) => s + v, 0) / 14
+   905→    : smoothed;
+   906→  const momentum = current - prevSmoothed;
+   907→
+   908→  // Signal strength: -100 to +100
+   909→  const signalStrength = Math.max(-100, Math.min(100, (smoothed / (stdev || 1)) * 20));
+   910→
+   911→  // Divergence detection
+   912→  const recentPrices = bars.slice(-14).map(b => b.niftyWeightedCF);
+   913→  const priceTrend = recentPrices[recentPrices.length - 1] - recentPrices[0];
+   914→  const flowTrend = current - smoothed;
+   915→  const bearishDivergence = priceTrend > 0 && flowTrend < 0 && Math.abs(flowTrend) > stdev;
+   916→  const bullishDivergence = priceTrend < 0 && flowTrend > 0 && Math.abs(flowTrend) > stdev;
+   917→
+   918→  return {
+   919→    currentValue: round2(current),
+   920→    smoothed: round2(smoothed),
+   921→    upperBand: round2(upperBand),
+   922→    lowerBand: round2(lowerBand),
+   923→    isStrongInflow: current > upperBand && current > 0,
+   924→    isStrongOutflow: current < lowerBand && current < 0,
+   925→    isUptrend: smoothed > 0,
+   926→    isDowntrend: smoothed < 0,
+   927→    momentum: round2(momentum),
+   928→    signalStrength: round2(signalStrength),
+   929→    bearishDivergence,
+   930→    bullishDivergence,
+   931→  };
+   932→}
+   933→
+   934→// --- Institutional Data: After-Market NSE Participant Data ---
+   935→// This data is ONLY available after NSE releases it (~5:30 PM IST)
+   936→// During live market, we can only see MONEY FLOW, not WHO is behind it
+   937→
+   938→export function generateDemoInstitutionalDailyData(dateOffset: number = 0): InstitutionalDailyData {
+   939→  const d = new Date();
+   940→  d.setDate(d.getDate() - dateOffset);
+   941→  const date = d.toISOString().split('T')[0];
+   942→
+   943→  // FII: Often the biggest driver
+   944→  const fiiCashNet = rand(-2000, 2000);  // ₹ Cr
+   945→  const fiiFutNet = rand(-1500, 1500);
+   946→  const fiiOptCallNet = rand(-3000, 3000);
+   947→  const fiiOptPutNet = rand(-3000, 3000);
+   948→
+   949→  return {
+   950→    date,
+   951→    fiiCashBuy: Math.max(0, fiiCashNet + rand(500, 3000)),
+   952→    fiiCashSell: Math.max(0, -fiiCashNet + rand(500, 3000)),
+   953→    fiiFutBuy: Math.max(0, fiiFutNet + rand(300, 2000)),
+   954→    fiiFutSell: Math.max(0, -fiiFutNet + rand(300, 2000)),
+   955→    fiiOptCallBuy: Math.max(0, fiiOptCallNet + rand(1000, 5000)),
+   956→    fiiOptCallSell: Math.max(0, -fiiOptCallNet + rand(1000, 5000)),
+   957→    fiiOptPutBuy: Math.max(0, fiiOptPutNet + rand(1000, 5000)),
+   958→    fiiOptPutSell: Math.max(0, -fiiOptPutNet + rand(1000, 5000)),
+   959→    // DII: Usually counter to FII in cash
+   960→    diiCashBuy: Math.max(0, -fiiCashNet * 0.4 + rand(200, 1500)),
+   961→    diiCashSell: Math.max(0, fiiCashNet * 0.4 + rand(200, 1500)),
+   962→    diiFutBuy: rand(100, 800),
+   963→    diiFutSell: rand(100, 800),
+   964→    // PropDesk: Smart money, smaller but directional
+   965→    propdeskCashBuy: Math.max(0, rand(-200, 400) + rand(50, 300)),
+   966→    propdeskCashSell: Math.max(0, -rand(-200, 400) + rand(50, 300)),
+   967→    propdeskFutBuy: Math.max(0, rand(-300, 500) + rand(50, 200)),
+   968→    propdeskFutSell: Math.max(0, -rand(-300, 500) + rand(50, 200)),
+   969→    propdeskOptCallBuy: Math.max(0, rand(-500, 800) + rand(100, 600)),
+   970→    propdeskOptCallSell: Math.max(0, -rand(-500, 800) + rand(100, 600)),
+   971→    propdeskOptPutBuy: Math.max(0, rand(-500, 800) + rand(100, 600)),
+   972→    propdeskOptPutSell: Math.max(0, -rand(-500, 800) + rand(100, 600)),
+   973→    // Client (Retail + HNI): Often contrarian
+   974→    clientCashBuy: Math.max(0, rand(-1000, 1500) + rand(200, 2000)),
+   975→    clientCashSell: Math.max(0, -rand(-1000, 1500) + rand(200, 2000)),
+   976→    clientFutBuy: Math.max(0, rand(-800, 1200) + rand(100, 1000)),
+   977→    clientFutSell: Math.max(0, -rand(-800, 1200) + rand(100, 1000)),
+   978→    clientOptCallBuy: Math.max(0, rand(-2000, 3000) + rand(500, 3000)),
+   979→    clientOptCallSell: Math.max(0, -rand(-2000, 3000) + rand(500, 3000)),
+   980→    clientOptPutBuy: Math.max(0, rand(-2000, 3000) + rand(500, 3000)),
+   981→    clientOptPutSell: Math.max(0, -rand(-2000, 3000) + rand(500, 3000)),
+   982→  };
+   983→}
+   984→
+   985→// Convert daily data to net flows for the rolling window
+   986→export function toInstitutionalNetFlows(data: InstitutionalDailyData, label: string): InstitutionalNetFlows {
+   987→  return {
+   988→    date: data.date,
+   989→    label,
+   990→    fii: {
+   991→      player: 'FII',
+   992→      cashNet: data.fiiCashBuy - data.fiiCashSell,
+   993→      futNet: data.fiiFutBuy - data.fiiFutSell,
+   994→      optCallNet: data.fiiOptCallBuy - data.fiiOptCallSell,
+   995→      optPutNet: data.fiiOptPutBuy - data.fiiOptPutSell,
+   996→      totalNet: (data.fiiCashBuy - data.fiiCashSell) + (data.fiiFutBuy - data.fiiFutSell) +
+   997→               (data.fiiOptCallBuy - data.fiiOptCallSell) + (data.fiiOptPutBuy - data.fiiOptPutSell),
+   998→    },
+   999→    dii: {
+  1000→      player: 'DII',
+  1001→      cashNet: data.diiCashBuy - data.diiCashSell,
+  1002→      futNet: data.diiFutBuy - data.diiFutSell,
+  1003→      optCallNet: 0, // DII mostly in cash
+  1004→      optPutNet: 0,
+  1005→      totalNet: (data.diiCashBuy - data.diiCashSell) + (data.diiFutBuy - data.diiFutSell),
+  1006→    },
+  1007→    propdesk: {
+  1008→      player: 'PROPDESK',
+  1009→      cashNet: data.propdeskCashBuy - data.propdeskCashSell,
+  1010→      futNet: data.propdeskFutBuy - data.propdeskFutSell,
+  1011→      optCallNet: data.propdeskOptCallBuy - data.propdeskOptCallSell,
+  1012→      optPutNet: data.propdeskOptPutBuy - data.propdeskOptPutSell,
+  1013→      totalNet: (data.propdeskCashBuy - data.propdeskCashSell) + (data.propdeskFutBuy - data.propdeskFutSell) +
+  1014→               (data.propdeskOptCallBuy - data.propdeskOptCallSell) + (data.propdeskOptPutBuy - data.propdeskOptPutSell),
+  1015→    },
+  1016→    client: {
+  1017→      player: 'CLIENT',
+  1018→      cashNet: data.clientCashBuy - data.clientCashSell,
+  1019→      futNet: data.clientFutBuy - data.clientFutSell,
+  1020→      optCallNet: data.clientOptCallBuy - data.clientOptCallSell,
+  1021→      optPutNet: data.clientOptPutBuy - data.clientOptPutSell,
+  1022→      totalNet: (data.clientCashBuy - data.clientCashSell) + (data.clientFutBuy - data.clientFutSell) +
+  1023→               (data.clientOptCallBuy - data.clientOptCallSell) + (data.clientOptPutBuy - data.clientOptPutSell),
+  1024→    },
+  1025→  };
+  1026→}
+  1027→
+  1028→// Generate 3-day rolling window
+  1029→export function generateDemoRollingWindow(): InstitutionalRollingWindow {
+  1030→  const days: InstitutionalNetFlows[] = [];
+  1031→  for (let i = 0; i < 3; i++) {
+  1032→    const data = generateDemoInstitutionalDailyData(i);
+  1033→    const label = `Day-${i}`;
+  1034→    days.push(toInstitutionalNetFlows(data, label));
+  1035→  }
+  1036→
+  1037→  const totalFIINet3D = days.reduce((s, d) => s + d.fii.totalNet, 0);
+  1038→  const totalPropDeskNet3D = days.reduce((s, d) => s + d.propdesk.totalNet, 0);
+  1039→  const totalClientNet3D = days.reduce((s, d) => s + d.client.totalNet, 0);
+  1040→  const totalDIINet3D = days.reduce((s, d) => s + d.dii.totalNet, 0);
+  1041→
+  1042→  // Trend detection
+  1043→  const fiiTrend = totalFIINet3D > 1000 ? 'accumulating' as const
+  1044→    : totalFIINet3D < -1000 ? 'distributing' as const
+  1045→    : 'neutral' as const;
+  1046→
+  1047→  const propdeskTrend = totalPropDeskNet3D > 500 ? 'accumulating' as const
+  1048→    : totalPropDeskNet3D < -500 ? 'distributing' as const
+  1049→    : 'neutral' as const;
+  1050→
+  1051→  // Client contrarian: if retail buying heavily → bearish signal
+  1052→  const clientTrend = totalClientNet3D > 1500 ? 'contrarian_bearish' as const
+  1053→    : totalClientNet3D < -1500 ? 'contrarian_bullish' as const
+  1054→    : 'neutral' as const;
+  1055→
+  1056→  return {
+  1057→    days,
+  1058→    totalFIINet3D: round2(totalFIINet3D),
+  1059→    totalPropDeskNet3D: round2(totalPropDeskNet3D),
+  1060→    totalClientNet3D: round2(totalClientNet3D),
+  1061→    totalDIINet3D: round2(totalDIINet3D),
+  1062→    fiiTrend,
+  1063→    propdeskTrend,
+  1064→    clientTrend,
+  1065→    dataCompleteness: 1.0,
+  1066→  };
+  1067→}
+  1068→
+  1069→// Generate live money flow inference
+  1070→export function generateDemoLiveInference(): LiveMoneyFlowInference {
+  1071→  const totalMoneyIn = roundN(rand(200, 800) * 10000000, 0);
+  1072→  const totalMoneyOut = roundN(rand(180, 750) * 10000000, 0);
+  1073→  const netFlow = totalMoneyIn - totalMoneyOut;
+  1074→  const flowVelocity = round2(Math.abs(netFlow) / 10000000 / 15 * 60); // Cr/min
+  1075→
+  1076→  // Big flow = likely institutional
+  1077→  const likelyInstitutional = Math.abs(netFlow / 10000000) > 50;
+  1078→
+  1079→  const now = new Date();
+  1080→  const istH = ((now.getUTCHours() + 5) % 24 + 24) % 24;
+  1081→  const istM = now.getUTCMinutes();
+  1082→  const istS = now.getUTCSeconds();
+  1083→  const timestamp = `${String(istH).padStart(2, '0')}:${String(istM).padStart(2, '0')}:${String(istS).padStart(2, '0')} IST`;
+  1084→
+  1085→  return {
+  1086→    timestamp,
+  1087→    totalMoneyIn,
+  1088→    totalMoneyOut,
+  1089→    netFlow,
+  1090→    likelyInstitutional,
+  1091→    flowVelocity,
+  1092→    correlationConfidence: 0, // 0 during live — no after-market data yet
+  1093→  };
+  1094→}
+  1095→
+  1096→// Generate market data context (live vs after-market)
+  1097→export function generateDemoMarketDataContext(): MarketDataContext {
+  1098→  const now = new Date();
+  1099→  const istH = ((now.getUTCHours() + 5) % 24 + 24) % 24;
+  1100→  const istM = now.getUTCMinutes() + 30;
+  1101→  const totalMin = istH * 60 + (istM % 60);
+  1102→
+  1103→  // After 5:30 PM IST, NSE releases participant data
+  1104→  const afterMarketDataAvailable = totalMin >= 1050; // 17:30 IST
+  1105→
+  1106→  if (afterMarketDataAvailable) {
+  1107→    const rollingWindow = generateDemoRollingWindow();
+  1108→    return {
+  1109→      availability: 'after_market_available',
+  1110→      rollingWindow,
+  1111→      correlationMessage: `After-market data available! FII 3-day net: ₹${rollingWindow.totalFIINet3D.toFixed(0)} Cr (${rollingWindow.fiiTrend})`,
+  1112→    };
+  1113→  }
+  1114→
+  1115→  // During live market: only money flow visible
+  1116→  const liveInference = generateDemoLiveInference();
+  1117→  return {
+  1118→    availability: 'live_flow_only',
+  1119→    liveInference,
+  1120→    correlationMessage: 'Live market: Only money flow visible. After ~5:30 PM IST, NSE releases participant data for correlation.',
+  1121→  };
+  1122→}
+  1123→
+  1124→// --- Market Status ---
+  1125→export function getMarketStatus(): 'pre-open' | 'open' | 'closing' | 'closed' {
+  1126→  const now = new Date();
+  1127→  const istH = ((now.getUTCHours() + 5) % 24 + 24) % 24;
+  1128→  const istM = now.getUTCMinutes() + 30;
+  1129→  const totalMin = istH * 60 + (istM % 60);
+  1130→  const day = now.getUTCDay();
+  1131→
+  1132→  if (day === 0 || day === 6) return 'closed';
+  1133→  if (totalMin >= 570 && totalMin < 585) return 'pre-open';
+  1134→  if (totalMin >= 585 && totalMin < 930) return 'open';
+  1135→  if (totalMin >= 930 && totalMin < 935) return 'closing';
+  1136→  return 'closed';
+  1137→}
+  1138→
+  1139→// --- Format Helpers ---
+  1140→export function formatNum(n: number): string {
+  1141→  if (Math.abs(n) >= 10000000) return `${round2(n / 10000000).toFixed(2)} Cr`;
+  1142→  if (Math.abs(n) >= 100000) return `${round2(n / 100000).toFixed(2)} L`;
+  1143→  if (Math.abs(n) >= 1000) return n.toLocaleString('en-IN', { maximumFractionDigits: 0 });
+  1144→  return n.toFixed(2);
+  1145→}
+  1146→
+  1147→export function formatCr(n: number): string {
+  1148→  return `${round2(n / 10000000).toFixed(1)} Cr`;
+  1149→}
+  1150→
+  1151→export function formatLakh(n: number): string {
+  1152→  return `${round2(n / 100000).toFixed(1)} L`;
+  1153→}
+  1154→
+  1155→// =====================================================
+  1156→// OPTIONS FLOW DEMO DATA
+  1157→// At each strike: Call Buy (dark green), Put Write (light green), Put Buy (dark red), Call Write (light red)
+  1158→// Indexes: 11 strikes (ATM ± 5), Stocks: 9 strikes (ATM ± 4)
+  1159→// BSE has NO stock options
+  1160→// =====================================================
+  1161→
+  1162→// ATM strikes for indexes (approximate current levels)
+  1163→const INDEX_ATM: Record<string, number> = {
+  1164→  NIFTY: 24350,
+  1165→  SENSEX: 80100,
+  1166→  BANKNIFTY: 51800,
+  1167→  FINNIFTY: 23200,
+  1168→};
+  1169→
+  1170→// Approximate ATM strikes for top 15 stocks
+  1171→const STOCK_ATM: Record<string, number> = {
+  1172→  HDFCBANK: 1740,
+  1173→  ICICIBANK: 1280,
+  1174→  RELIANCE: 2960,
+  1175→  BHARTIARTL: 1640,
+  1176→  LT: 3620,
+  1177→  SBIN: 830,
+  1178→  INFY: 1620,
+  1179→  AXISBANK: 1170,
+  1180→  'M&M': 2940,
+  1181→  BAJFINANCE: 7450,
+  1182→  KOTAKBANK: 1870,
+  1183→  ITC: 460,
+  1184→  TCS: 3760,
+  1185→  ETERNAL: 710,
+  1186→  TITAN: 3560,
+  1187→};
+  1188→
+  1189→// Generate strike-level options flow for one instrument
+  1190→function generateStrikeFlows(
+  1191→  atmStrike: number,
+  1192→  step: number,
+  1193→  numStrikes: number,
+  1194→  isIndex: boolean,
+  1195→): StrikeOptionsFlow[] {
+  1196→  const halfStrikes = Math.floor(numStrikes / 2);
+  1197→  const strikes: StrikeOptionsFlow[] = [];
+  1198→
+  1199→  for (let i = -halfStrikes; i <= halfStrikes; i++) {
+  1200→    const strike = atmStrike + i * step;
+  1201→    const isATM = i === 0;
+  1202→    const distanceFromATM = Math.abs(i);
+  1203→
+  1204→    // ATM strikes have highest activity; OTM strikes have less
+  1205→    const activityMultiplier = Math.max(0.2, 1 - distanceFromATM * 0.12);
+  1206→
+  1207→    // Base flow values — indexes have larger flows than stocks
+  1208→    const baseFlow = isIndex ? rand(5000, 25000) : rand(2000, 12000);
+  1209→
+  1210→    // Call Buy: Buyers of calls (bullish bet)
+  1211→    // Higher near ATM, even higher if market is slightly bullish
+  1212→    const callBuy = roundN(baseFlow * activityMultiplier * rand(0.5, 1.5), 0);
+  1213→
+  1214→    // Put Write: Sellers of puts (also bullish — they think price won't drop)
+  1215→    // Put writing is often higher than call buying (smart money writes options)
+  1216→    const putWrite = roundN(baseFlow * activityMultiplier * rand(0.4, 1.3), 0);
+  1217→
+  1218→    // Put Buy: Buyers of puts (bearish bet)
+  1219→    // Usually less than call buy in a mildly bullish market
+  1220→    const putBuy = roundN(baseFlow * activityMultiplier * rand(0.3, 1.1), 0);
+  1221→
+  1222→    // Call Write: Sellers of calls (bearish — they think price won't rise)
+  1223→    // Call writing can be high when market makers are hedging
+  1224→    const callWrite = roundN(baseFlow * activityMultiplier * rand(0.3, 1.2), 0);
+  1225→
+  1226→    const bullishFlow = callBuy + putWrite;
+  1227→    const bearishFlow = putBuy + callWrite;
+  1228→
+  1229→    strikes.push({
+  1230→      strike,
+  1231→      isATM,
+  1232→      callBuy,
+  1233→      putWrite,
+  1234→      putBuy,
+  1235→      callWrite,
+  1236→      bullishFlow,
+  1237→      bearishFlow,
+  1238→      netFlow: bullishFlow - bearishFlow,
+  1239→    });
+  1240→  }
+  1241→
+  1242→  return strikes;
+  1243→}
+  1244→
+  1245→// Generate options flow for one instrument (all strikes)
+  1246→function generateInstrumentOptionsFlow(
+  1247→  symbol: string,
+  1248→  name: string,
+  1249→  type: InstrumentType,
+  1250→  atmStrike: number,
+  1251→  step: number,
+  1252→  numStrikes: number,
+  1253→): InstrumentOptionsFlow {
+  1254→  const strikes = generateStrikeFlows(atmStrike, step, numStrikes, type === 'index');
+  1255→
+  1256→  const totalCallBuy = strikes.reduce((s, k) => s + k.callBuy, 0);
+  1257→  const totalPutWrite = strikes.reduce((s, k) => s + k.putWrite, 0);
+  1258→  const totalPutBuy = strikes.reduce((s, k) => s + k.putBuy, 0);
+  1259→  const totalCallWrite = strikes.reduce((s, k) => s + k.callWrite, 0);
+  1260→  const totalBullishFlow = totalCallBuy + totalPutWrite;
+  1261→  const totalBearishFlow = totalPutBuy + totalCallWrite;
+  1262→
+  1263→  return {
+  1264→    symbol,
+  1265→    name,
+  1266→    type,
+  1267→    atmStrike,
+  1268→    strikeStep: step,
+  1269→    strikes,
+  1270→    totalCallBuy,
+  1271→    totalPutWrite,
+  1272→    totalPutBuy,
+  1273→    totalCallWrite,
+  1274→    totalBullishFlow,
+  1275→    totalBearishFlow,
+  1276→    totalNetFlow: totalBullishFlow - totalBearishFlow,
+  1277→  };
+  1278→}
+  1279→
+  1280→// Generate one 15-second OptionsFlowBar for ALL instruments
+  1281→export function generateDemoOptionsFlowBar(): OptionsFlowBar {
+  1282→  const now = new Date();
+  1283→  const istH = ((now.getUTCHours() + 5) % 24 + 24) % 24;
+  1284→  const istM = now.getUTCMinutes();
+  1285→  const istS = now.getUTCSeconds();
+  1286→  const timestamp = `${String(istH).padStart(2, '0')}:${String(istM).padStart(2, '0')}:${String(istS).padStart(2, '0')} IST`;
+  1287→
+  1288→  // Index options flow (all 4 indexes)
+  1289→  const indexFlows: InstrumentOptionsFlow[] = INDICES.map(idx => {
+  1290→    const atm = INDEX_ATM[idx.symbol] || 24000;
+  1291→    return generateInstrumentOptionsFlow(
+  1292→      idx.symbol,
+  1293→      idx.name,
+  1294→      'index',
+  1295→      atm,
+  1296→      idx.step,
+  1297→      idx.strikes, // 11 strikes for indexes
+  1298→    );
+  1299→  });
+  1300→
+  1301→  // Stock options flow (15 NSE F&O stocks — BSE has no stock options)
+  1302→  const stockFlows: InstrumentOptionsFlow[] = TOP_STOCKS.map(stock => {
+  1303→    const atm = STOCK_ATM[stock.symbol] || 1000;
+  1304→    return generateInstrumentOptionsFlow(
+  1305→      stock.symbol,
+  1306→      stock.name,
+  1307→      'stock',
+  1308→      atm,
+  1309→      stock.step,
+  1310→      9, // 9 strikes for stocks (ATM ± 4)
+  1311→    );
+  1312→  });
+  1313→
+  1314→  // Aggregate index totals
+  1315→  const indexTotalCallBuy = indexFlows.reduce((s, f) => s + f.totalCallBuy, 0);
+  1316→  const indexTotalPutWrite = indexFlows.reduce((s, f) => s + f.totalPutWrite, 0);
+  1317→  const indexTotalPutBuy = indexFlows.reduce((s, f) => s + f.totalPutBuy, 0);
+  1318→  const indexTotalCallWrite = indexFlows.reduce((s, f) => s + f.totalCallWrite, 0);
+  1319→
+  1320→  // Aggregate stock totals
+  1321→  const stockTotalCallBuy = stockFlows.reduce((s, f) => s + f.totalCallBuy, 0);
+  1322→  const stockTotalPutWrite = stockFlows.reduce((s, f) => s + f.totalPutWrite, 0);
+  1323→  const stockTotalPutBuy = stockFlows.reduce((s, f) => s + f.totalPutBuy, 0);
+  1324→  const stockTotalCallWrite = stockFlows.reduce((s, f) => s + f.totalCallWrite, 0);
+  1325→
+  1326→  return {
+  1327→    timestamp,
+  1328→    indexFlows,
+  1329→    indexTotalCallBuy,
+  1330→    indexTotalPutWrite,
+  1331→    indexTotalPutBuy,
+  1332→    indexTotalCallWrite,
+  1333→    indexBullishFlow: indexTotalCallBuy + indexTotalPutWrite,
+  1334→    indexBearishFlow: indexTotalPutBuy + indexTotalCallWrite,
+  1335→    indexNetFlow: (indexTotalCallBuy + indexTotalPutWrite) - (indexTotalPutBuy + indexTotalCallWrite),
+  1336→    stockFlows,
+  1337→    stockTotalCallBuy,
+  1338→    stockTotalPutWrite,
+  1339→    stockTotalPutBuy,
+  1340→    stockTotalCallWrite,
+  1341→    stockBullishFlow: stockTotalCallBuy + stockTotalPutWrite,
+  1342→    stockBearishFlow: stockTotalPutBuy + stockTotalCallWrite,
+  1343→    stockNetFlow: (stockTotalCallBuy + stockTotalPutWrite) - (stockTotalPutBuy + stockTotalCallWrite),
+  1344→  };
+  1345→}
+  1346→
+  1347→// Generate multiple historical options flow bars
+  1348→export function generateDemoOptionsFlowBars(numBars: number = 60): OptionsFlowBar[] {
+  1349→  const bars: OptionsFlowBar[] = [];
+  1350→  for (let i = 0; i < numBars; i++) {
+  1351→    bars.push(generateDemoOptionsFlowBar());
+  1352→  }
+  1353→  return bars;
+  1354→}
+  1355→
+  1356→// =====================================================
+  1357→// FUTURES MONEY FLOW DEMO DATA
+  1358→// Futures = leveraged directional bets by institutions
+  1359→// Index futures + Stock futures (NSE only)
+  1360→// =====================================================
+  1361→
+  1362→export function generateDemoFuturesFlowBar(): FuturesFlowBar {
+  1363→  const now = new Date();
+  1364→  const istH = ((now.getUTCHours() + 5) % 24 + 24) % 24;
+  1365→  const istM = now.getUTCMinutes();
+  1366→  const istS = now.getUTCSeconds();
+  1367→  const timestamp = `${String(istH).padStart(2, '0')}:${String(istM).padStart(2, '0')}:${String(istS).padStart(2, '0')} IST`;
+  1368→
+  1369→  // Index futures — big institutional bets
+  1370→  const niftyFutNet = roundN(rand(-800, 800) * 100000, 0);
+  1371→  const sensexFutNet = roundN(rand(-500, 500) * 100000, 0);
+  1372→  const bankNiftyFutNet = roundN(rand(-400, 400) * 100000, 0);
+  1373→  const finNiftyFutNet = roundN(rand(-200, 200) * 100000, 0);
+  1374→
+  1375→  const indexBreakdown = [
+  1376→    { symbol: 'NIFTY', futBuy: Math.max(0, niftyFutNet + rand(1000000, 5000000)), futSell: Math.max(0, -niftyFutNet + rand(1000000, 5000000)), futNet: niftyFutNet, basis: round2(rand(-5, 25)), oiChg: roundN(rand(-50000, 50000), 0) },
+  1377→    { symbol: 'SENSEX', futBuy: Math.max(0, sensexFutNet + rand(500000, 3000000)), futSell: Math.max(0, -sensexFutNet + rand(500000, 3000000)), futNet: sensexFutNet, basis: round2(rand(-5, 20)), oiChg: roundN(rand(-30000, 30000), 0) },
+  1378→    { symbol: 'BANKNIFTY', futBuy: Math.max(0, bankNiftyFutNet + rand(500000, 3000000)), futSell: Math.max(0, -bankNiftyFutNet + rand(500000, 3000000)), futNet: bankNiftyFutNet, basis: round2(rand(-3, 15)), oiChg: roundN(rand(-40000, 40000), 0) },
+  1379→    { symbol: 'FINNIFTY', futBuy: Math.max(0, finNiftyFutNet + rand(200000, 1500000)), futSell: Math.max(0, -finNiftyFutNet + rand(200000, 1500000)), futNet: finNiftyFutNet, basis: round2(rand(-2, 10)), oiChg: roundN(rand(-15000, 15000), 0) },
+  1380→  ];
+  1381→
+  1382→  const indexFutBuy = indexBreakdown.reduce((s, x) => s + x.futBuy, 0);
+  1383→  const indexFutSell = indexBreakdown.reduce((s, x) => s + x.futSell, 0);
+  1384→  const indexFutNet = indexBreakdown.reduce((s, x) => s + x.futNet, 0);
+  1385→
+  1386→  // Stock futures — 15 NSE F&O stocks
+  1387→  const stockFutNet = roundN(rand(-1200, 1200) * 100000, 0);
+  1388→  const stockFutBuy = Math.max(0, stockFutNet + rand(2000000, 10000000));
+  1389→  const stockFutSell = Math.max(0, -stockFutNet + rand(2000000, 10000000));
+  1390→
+  1391→  return {
+  1392→    timestamp,
+  1393→    indexFutBuy,
+  1394→    indexFutSell,
+  1395→    indexFutNet,
+  1396→    indexFutOI: indexBreakdown.reduce((s, x) => s + x.oiChg, 0),
+  1397→    indexFutBasis: round2(indexBreakdown.reduce((s, x) => s + x.basis, 0) / 4),
+  1398→    stockFutBuy,
+  1399→    stockFutSell,
+  1400→    stockFutNet: stockFutBuy - stockFutSell,
+  1401→    stockFutOI: roundN(rand(-100000, 100000), 0),
+  1402→    stockFutBasis: round2(rand(-2, 8)),
+  1403→    indexBreakdown,
+  1404→  };
+  1405→}
+  1406→
+  1407→export function generateDemoFuturesFlowBars(numBars: number = 60): FuturesFlowBar[] {
+  1408→  return Array.from({ length: numBars }, () => generateDemoFuturesFlowBar());
+  1409→}
+  1410→
+  1411→// =====================================================
+  1412→// COMPOSITE SIGNAL GENERATOR
+  1413→// Combines ALL layers into one actionable signal
+  1414→// Score range: -100 (strong bearish) to +100 (strong bullish)
+  1415→// =====================================================
+  1416→
+  1417→export function computeCompositeSignal(
+  1418→  cashNet: number,
+  1419→  idxOptNet: number,
+  1420→  stkOptNet: number,
+  1421→  idxFutNet: number,
+  1422→  stkFutNet: number,
+  1423→  priceTrend: number, // positive = price going up, negative = going down
+  1424→): CompositeSignal {
+  1425→  const now = new Date();
+  1426→  const istH = ((now.getUTCHours() + 5) % 24 + 24) % 24;
+  1427→  const istM = now.getUTCMinutes();
+  1428→  const istS = now.getUTCSeconds();
+  1429→  const timestamp = `${String(istH).padStart(2, '0')}:${String(istM).padStart(2, '0')}:${String(istS).padStart(2, '0')} IST`;
+  1430→
+  1431→  // Normalize each component to -100 to +100
+  1432→  const normalize = (val: number, scale: number) => Math.max(-100, Math.min(100, (val / scale) * 100));
+  1433→
+  1434→  const priceTrendScore = normalize(priceTrend, 50);   // 50 points = 100 score
+  1435→  const cashFlowScore = normalize(cashNet, 50000000);   // 50Cr = 100 score
+  1436→  const idxOptScore = normalize(idxOptNet, 2000000);    // 20L = 100 score
+  1437→  const stkOptScore = normalize(stkOptNet, 3000000);    // 30L = 100 score
+  1438→  const idxFutScore = normalize(idxFutNet, 50000000);   // 50Cr = 100 score
+  1439→  const stkFutScore = normalize(stkFutNet, 80000000);   // 80Cr = 100 score
+  1440→
+  1441→  // Weighted composite score
+  1442→  // Price trend is the most important — it's what we're trying to predict
+  1443→  // Options flow is the second most important — it shows where money is positioning
+  1444→  // Cash flow is third — it confirms or diverges from options
+  1445→  // Futures is fourth — it's leveraged so can be more noise
+  1446→  const W = { price: 0.30, cash: 0.20, idxOpt: 0.20, stkOpt: 0.10, idxFut: 0.10, stkFut: 0.10 };
+  1447→
+  1448→  const score = round2(
+  1449→    W.price * priceTrendScore +
+  1450→    W.cash * cashFlowScore +
+  1451→    W.idxOpt * idxOptScore +
+  1452→    W.stkOpt * stkOptScore +
+  1453→    W.idxFut * idxFutScore +
+  1454→    W.stkFut * stkFutScore
+  1455→  );
+  1456→
+  1457→  // Confidence: how many components agree?
+  1458→  const components = [priceTrendScore, cashFlowScore, idxOptScore, stkOptScore, idxFutScore, stkFutScore];
+  1459→  const allPositive = components.filter(c => c > 10).length;
+  1460→  const allNegative = components.filter(c => c < -10).length;
+  1461→  const agreement = Math.max(allPositive, allNegative) / components.length;
+  1462→  const confidence = round2(Math.min(100, agreement * 150)); // Scale up
+  1463→
+  1464→  // Divergence detection
+  1465→  const cashOptDivergence = (cashFlowScore > 20 && idxOptScore < -20) || (cashFlowScore < -20 && idxOptScore > 20);
+  1466→  const futCashDivergence = (idxFutScore > 20 && cashFlowScore < -20) || (idxFutScore < -20 && cashFlowScore > 20);
+  1467→
+  1468→  // Action determination
+  1469→  let action: TradeAction = 'WAIT';
+  1470→  if (score > 35 && confidence > 40 && !cashOptDivergence) action = 'BUY_CALL';
+  1471→  else if (score < -35 && confidence > 40 && !cashOptDivergence) action = 'BUY_PUT';
+  1472→  else if (score > 50 && confidence > 60) action = 'BUY_CALL'; // Override divergence if very strong
+  1473→  else if (score < -50 && confidence > 60) action = 'BUY_PUT';
+  1474→
+  1475→  // Suggested trade details (ATM Nifty)
+  1476→  const atmStrike = 24350;
+  1477→  const suggestedStrike = score > 0
+  1478→    ? atmStrike + Math.round(score / 100) * 50  // Slightly OTM call
+  1479→    : atmStrike - Math.round(Math.abs(score) / 100) * 50;  // Slightly OTM put
+  1480→
+  1481→  const suggestedPremium = round2(score > 0 ? 150 + Math.abs(score) * 0.5 : 120 + Math.abs(score) * 0.4);
+  1482→  const stopLoss = round2(suggestedPremium * 0.5);
+  1483→  const target1 = round2(suggestedPremium * 1.5);
+  1484→  const target2 = round2(suggestedPremium * 2.5);
+  1485→  const riskReward = round2((target1 - suggestedPremium) / (suggestedPremium - stopLoss) || 0);
+  1486→
+  1487→  // Reasoning
+  1488→  const reasoningParts: string[] = [];
+  1489→  if (Math.abs(priceTrendScore) > 30) reasoningParts.push(`Price trend ${priceTrendScore > 0 ? '↑' : '↓'} ${Math.abs(priceTrendScore).toFixed(0)}`);
+  1490→  if (Math.abs(cashFlowScore) > 20) reasoningParts.push(`Cash ${cashFlowScore > 0 ? 'inflow' : 'outflow'} ${Math.abs(cashFlowScore).toFixed(0)}`);
+  1491→  if (Math.abs(idxOptScore) > 20) reasoningParts.push(`Idx opt ${idxOptScore > 0 ? 'bullish' : 'bearish'} ${Math.abs(idxOptScore).toFixed(0)}`);
+  1492→  if (cashOptDivergence) reasoningParts.push('⚠️ Cash-Opt divergence');
+  1493→  if (futCashDivergence) reasoningParts.push('⚠️ Fut-Cash divergence');
+  1494→
+  1495→  return {
+  1496→    timestamp,
+  1497→    action,
+  1498→    confidence,
+  1499→    score,
+  1500→    priceTrendScore: round2(priceTrendScore),
+  1501→    cashFlowScore: round2(cashFlowScore),
+  1502→    idxOptScore: round2(idxOptScore),
+  1503→    stkOptScore: round2(stkOptScore),
+  1504→    idxFutScore: round2(idxFutScore),
+  1505→    stkFutScore: round2(stkFutScore),
+  1506→    suggestedStrike,
+  1507→    suggestedPremium,
+  1508→    stopLoss,
+  1509→    target1,
+  1510→    target2,
+  1511→    riskReward,
+  1512→    reasoning: reasoningParts.join(' | '),
+  1513→    cashOptDivergence,
+  1514→    futCashDivergence,
+  1515→  };
+  1516→}
+  1517→

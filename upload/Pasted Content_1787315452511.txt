@@ -1,0 +1,770 @@
+// =============================================================================
+// STRIKE FLOW MAP — Per-Strike Smart Money Tracker  (v5 — 4-case + vol fallback)
+// =============================================================================
+// Standalone script — paste into a NEW .gs file in Apps Script editor
+// Does NOT touch your existing NIFTY_SMART_MONEY_TERMINAL script
+//
+// HOW IT WORKS:
+//   1. Reads RAW_OPTIONS sheet (populated by your main script every minute)
+//   2. Compares last 2 snapshots to calculate per-strike OI + price changes
+//   3. Applies the same Greek-powered 4-color flow logic
+//   4. Writes 1 row/min to STRIKE_FLOW tab (24-col color table + NET FLOW in col M)
+//   5. Writes 4 raw values per strike to SF_RAWFLOW tab (for Google Sheets charts)
+//   6. Colors: CE Write=Light Red, CE Buy=Bright Green, PE Write=Light Green, PE Buy=Bright Red
+//   7. Thick black border on highest single bet per minute
+//
+// SHEETS CREATED:
+//   STRIKE_FLOW  — minute-by-minute color table with NET FLOW (rows grow all day)
+//   SF_RAWFLOW   — raw 4 values per strike (for native Google Sheets stacked bar chart)
+//   SF_TOTAL     — total flow across all strikes (4 cols: CE Buy, CE Write, PE Write, PE Buy)
+//                  CE Write & PE Buy stored negative → select all data → Insert stacked bar chart
+//
+// SETUP (one-time):
+//   1. In Apps Script editor, click + next to Files > New Script
+//   2. Name it "STRIKE_FLOW_MAP"
+//   3. Select ALL > Delete > Paste this ENTIRE file > Save
+//   4. Set trigger: Triggers > Add Trigger > runStrikeFlowMap > Time-driven > Every minute
+//      (offset by 15-20 sec so it runs AFTER your main script)
+//
+// =============================================================================
+
+var LOT_SIZE = 65;
+var STRIKE_COUNT = 11;
+var STRIKE_STEP = 50;
+var START_ROW = 5;
+var SF_DATA_START = 7;
+
+// Expiry auto-rollover: on expiry day after ROLLOVER_HOUR, switch to next expiry
+var EXPIRY_DAY = 2;        // 0=Sun, 1=Mon, 2=Tue, 3=Wed, 4=Thu, 5=Fri, 6=Sat
+var ROLLOVER_HOUR = 12;    // Switch to next expiry after 12:00 IST on expiry day
+
+// =============================================================================
+// PASTE YOUR EXTERNAL SPREADSHEET ID HERE
+// =============================================================================
+var EXTERNAL_WB_ID = "1YC-seFY6uQRGOQEielLnoFyEYuFtjOrnQb7JlnIi_W4";
+
+// =============================================================================
+// HELPERS
+// =============================================================================
+function _sfNormTime(rawTime) {
+  if (!rawTime) return "";
+  if (rawTime instanceof Date)
+    return Utilities.formatDate(rawTime, "Asia/Kolkata", "yyyy-MM-dd HH:mm:ss");
+  return String(rawTime).trim();
+}
+
+function _sfTimeOnly(rawTime) {
+  if (!rawTime) return "";
+  if (rawTime instanceof Date)
+    return Utilities.formatDate(rawTime, "Asia/Kolkata", "HH:mm:ss");
+  var s = String(rawTime).trim();
+  var p = s.split(" ");
+  return p.length > 1 ? p[p.length - 1] : s;
+}
+
+function _getExtWb() {
+  return SpreadsheetApp.openById(EXTERNAL_WB_ID);
+}
+
+// =============================================================================
+// MAIN FUNCTION
+// =============================================================================
+function runStrikeFlowMap() {
+
+  // --- Market hours filter ---
+  var now = new Date();
+  var ist = new Date(now.toLocaleString("en-US", {timeZone: "Asia/Kolkata"}));
+  var day = ist.getDay();
+  if (day === 0 || day === 6) { Logger.log("[SF] Weekend"); return; }
+  var mins = ist.getHours() * 60 + ist.getMinutes();
+  if (mins < 555 || mins > 931) { Logger.log("[SF] Outside Market Hours"); return; }
+
+  // --- Read RAW_OPTIONS ---
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var rawSheet = ss.getSheetByName("RAW_OPTIONS");
+  if (!rawSheet) { Logger.log("[SF] ERROR: RAW_OPTIONS not found"); return; }
+
+  var lastRow = rawSheet.getLastRow();
+  if (lastRow < START_ROW + STRIKE_COUNT) {
+    Logger.log("[SF] Not enough data. Rows: " + lastRow); return;
+  }
+
+  var scanRows = Math.min(100, lastRow - START_ROW + 1);
+  var scanStart = lastRow - scanRows + 1;
+  var rawData = rawSheet.getRange(scanStart, 1, scanRows, 13).getValues();
+
+  // --- Find 2 unique timestamps ---
+  var timestamps = [];
+  for (var i = 0; i < rawData.length; i++) {
+    var t = _sfNormTime(rawData[i][0]);
+    if (t === "") continue;
+    if (timestamps.length === 0 || timestamps[timestamps.length - 1] !== t)
+      timestamps.push(t);
+  }
+  if (timestamps.length < 2) { Logger.log("[SF] Only 1 snapshot"); return; }
+
+  var prevTs = timestamps[timestamps.length - 2];
+  var currTs = timestamps[timestamps.length - 1];
+
+  // --- Validate timestamps are within 2 minutes (skip if gap/spike) ---
+  var prevTime = new Date(prevTs);
+  var currTime = new Date(currTs);
+  var tsGapMs = currTime.getTime() - prevTime.getTime();
+  if (tsGapMs > 2 * 60 * 1000 || tsGapMs <= 0) {
+    Logger.log("[SF] SKIP: Timestamp gap " + (tsGapMs / 1000).toFixed(0) + "s (>2 min). Prev: " + prevTs + " | Curr: " + currTs); return;
+  }
+
+  var currTimeOnly = _sfTimeOnly(rawData[rawData.length - 1][0]);
+  Logger.log("[SF] Prev: " + prevTs + " | Curr: " + currTs + " | Gap: " + (tsGapMs / 1000).toFixed(0) + "s");
+
+  // --- Smart expiry selection (auto-rollover on expiry day) ---
+  var allExpiries = [];
+  for (var i = 0; i < rawData.length; i++) {
+    if (_sfNormTime(rawData[i][0]) === currTs) {
+      var e = String(rawData[i][1]).trim();
+      if (e !== "" && allExpiries.indexOf(e) === -1) allExpiries.push(e);
+    }
+  }
+  if (allExpiries.length === 0) { Logger.log("[SF] ERROR: No expiry found"); return; }
+
+  // On expiry day after ROLLOVER_HOUR, use next expiry (index 1)
+  var expiryIndex = 0;
+  if (day === EXPIRY_DAY && ist.getHours() >= ROLLOVER_HOUR && allExpiries.length > 1) {
+    expiryIndex = 1;
+  }
+  var expiry = allExpiries[expiryIndex];
+  Logger.log("[SF] Expiries: " + allExpiries.join(", ") + " | Using: " + expiry +
+    (expiryIndex === 1 ? " (ROLLOVER)" : " (normal)"));
+
+  // --- Parse prev & curr data ---
+  var prevData = {}, currData = {};
+  for (var i = 0; i < rawData.length; i++) {
+    var t = _sfNormTime(rawData[i][0]);
+    var exp = String(rawData[i][1]).trim();
+    var strike = Number(rawData[i][2]);
+    if (exp !== expiry || strike <= 0) continue;
+
+    var entry = {
+      ceLTP: Number(rawData[i][3]) || 0,
+      peLTP: Number(rawData[i][4]) || 0,
+      ceOI:  Number(rawData[i][5]) || 0,
+      peOI:  Number(rawData[i][6]) || 0,
+      ceVol: Number(rawData[i][7]) || 0,
+      peVol: Number(rawData[i][8]) || 0,
+      ceDelta: Math.abs(Number(rawData[i][11]) || 0.5),
+      peDelta: Math.abs(Number(rawData[i][12]) || 0.5)
+    };
+
+    if (t === prevTs) prevData[strike] = entry;
+    else if (t === currTs) currData[strike] = entry;
+  }
+
+  var strikes = Object.keys(currData).map(Number).sort(function(a,b){return a-b;});
+  if (strikes.length < STRIKE_COUNT) {
+    Logger.log("[SF] Only " + strikes.length + " strikes"); return;
+  }
+  if (Object.keys(prevData).length < STRIKE_COUNT) {
+    Logger.log("[SF] Prev snapshot incomplete"); return;
+  }
+
+  // --- Get Nifty spot ---
+  var niftySpot = 0;
+  try {
+    var extWb = _getExtWb();
+    var dyn = extWb.getSheetByName("NIFTY50 DYNAMICS");
+    if (dyn) {
+      var dr = dyn.getLastRow();
+      if (dr >= 5) {
+        var spotVal = Number(dyn.getRange(dr, 2).getValue()) || 0;
+        if (spotVal > 10000) niftySpot = spotVal;  // Nifty50 is 22000+, reject bad values
+      }
+    }
+  } catch(e) { niftySpot = 0; }
+  // Fallback — use midpoint of actual strikes from data
+  if (niftySpot === 0 || niftySpot < 10000)
+    niftySpot = strikes[Math.floor(strikes.length / 2)];
+
+  var liveATM = Math.round(niftySpot / 50) * 50;
+  Logger.log("[SF] Spot: " + niftySpot + " | ATM: " + liveATM);
+
+  // --- Calculate 4-color flows ---
+  var ceBuy = {}, ceWrite = {}, peBuy = {}, peWrite = {};
+
+  for (var si = 0; si < strikes.length; si++) {
+    var stk = strikes[si];
+    if (!prevData[stk]) continue;
+    var c = currData[stk], p = prevData[stk];
+    var dceOI = c.ceOI - p.ceOI;
+    var dpeOI = c.peOI - p.peOI;
+    var dceP = c.ceLTP - p.ceLTP;
+    var dpeP = c.peLTP - p.peLTP;
+
+    // === CE Flow (v5: all 4 cases) ===
+    if (dceOI > 0 && dceP >= 0)
+      ceBuy[stk] = (dceOI * c.ceDelta * LOT_SIZE) / 10000000;
+    else if (dceOI > 0 && dceP < 0)
+      ceWrite[stk] = (dceOI * c.ceDelta * LOT_SIZE) / 10000000;
+    else if (dceOI < 0 && dceP < 0)
+      ceWrite[stk] = (Math.abs(dceOI) * c.ceDelta * LOT_SIZE * 0.3) / 10000000;
+    else if (dceOI < 0 && dceP >= 0)
+      ceWrite[stk] = (Math.abs(dceOI) * c.ceDelta * LOT_SIZE * 0.3) / 10000000;
+
+    // === PE Flow (v5: all 4 cases) ===
+    if (dpeOI > 0 && dpeP >= 0)
+      peBuy[stk] = (dpeOI * c.peDelta * LOT_SIZE) / 10000000;
+    else if (dpeOI > 0 && dpeP < 0)
+      peWrite[stk] = (dpeOI * c.peDelta * LOT_SIZE) / 10000000;
+    else if (dpeOI < 0 && dpeP < 0)
+      peWrite[stk] = (Math.abs(dpeOI) * c.peDelta * LOT_SIZE * 0.3) / 10000000;
+    else if (dpeOI < 0 && dpeP >= 0)
+      peBuy[stk] = (Math.abs(dpeOI) * c.peDelta * LOT_SIZE * 0.3) / 10000000;
+
+    // === v5: Volume fallback when OI unchanged ===
+    if (!ceBuy[stk] && !ceWrite[stk] && (c.ceVol > 0)) {
+      var vf = 0.4;
+      if (dceP >= 0) ceBuy[stk] = (c.ceVol * c.ceDelta * LOT_SIZE * vf) / 10000000;
+      else ceWrite[stk] = (c.ceVol * c.ceDelta * LOT_SIZE * vf) / 10000000;
+    }
+    if (!peBuy[stk] && !peWrite[stk] && (c.peVol > 0)) {
+      var vf = 0.4;
+      if (dpeP >= 0) peBuy[stk] = (c.peVol * c.peDelta * LOT_SIZE * vf) / 10000000;
+      else peWrite[stk] = (c.peVol * c.peDelta * LOT_SIZE * vf) / 10000000;
+    }
+  }
+
+  // =========================
+  // WRITE TO STRIKE_FLOW TAB
+  // =========================
+  var extWb = _getExtWb();
+  var sfSheet = extWb.getSheetByName("STRIKE_FLOW");
+  if (!sfSheet) {
+    sfSheet = extWb.insertSheet("STRIKE_FLOW");
+    _buildHeaders(sfSheet);
+  }
+
+  var ceOff = [250,200,150,100,50,0,-50,-100,-150,-200,-250];
+  var peOff = [-250,-200,-150,-100,-50,0,50,100,150,200,250];
+
+  // Update strike headers
+  for (var ci = 0; ci < 11; ci++) {
+    sfSheet.getRange(4, 2+ci).setValue((liveATM + ceOff[ci]) + " CE");
+    sfSheet.getRange(4, 14+ci).setValue((liveATM + peOff[ci]) + " PE");
+  }
+
+  // Build 24-col row
+  var sfRow = new Array(24);
+  sfRow[0] = currTimeOnly;
+
+  // Calculate NET FLOW for column M (index 12)
+  // Positive = CE Buy + PE Write (bullish) | Negative = CE Write + PE Buy (bearish)
+  var totalCEBuy = 0, totalCEWrite = 0, totalPEBuy = 0, totalPEWrite = 0;
+  var allFlowKeys = Object.keys(ceBuy).concat(Object.keys(ceWrite))
+    .concat(Object.keys(peBuy)).concat(Object.keys(peWrite));
+  var seenStk = {};
+  for (var k = 0; k < allFlowKeys.length; k++) {
+    if (!seenStk[allFlowKeys[k]]) {
+      seenStk[allFlowKeys[k]] = true;
+      var s = Number(allFlowKeys[k]);
+      totalCEBuy   += Number(ceBuy[s]   || 0);
+      totalCEWrite += Number(ceWrite[s] || 0);
+      totalPEBuy   += Number(peBuy[s]   || 0);
+      totalPEWrite += Number(peWrite[s] || 0);
+    }
+  }
+  var netFlow = (totalCEBuy + totalPEWrite) - (totalCEWrite + totalPEBuy);
+  sfRow[12] = Number(netFlow.toFixed(2));
+
+  for (var ci = 0; ci < 11; ci++) {
+    var stk = liveATM + ceOff[ci];
+    var bv = Number(ceBuy[stk]||0), wv = Number(ceWrite[stk]||0);
+    sfRow[ci+1] = (bv > 0 || wv > 0) ? (bv >= wv ? Number(bv.toFixed(2)) : Number(wv.toFixed(2))) : 0;
+  }
+  for (var pi = 0; pi < 11; pi++) {
+    var stk = liveATM + peOff[pi];
+    var bv = Number(peBuy[stk]||0), wv = Number(peWrite[stk]||0);
+    sfRow[pi+13] = (bv > 0 || wv > 0) ? (wv >= bv ? Number(wv.toFixed(2)) : Number(bv.toFixed(2))) : 0;
+  }
+
+  // De-dup same minute
+  var sfLast = sfSheet.getLastRow();
+  var target = (sfLast < SF_DATA_START) ? SF_DATA_START : sfLast + 1;
+  if (sfLast >= SF_DATA_START) {
+    var times = sfSheet.getRange(SF_DATA_START, 1, sfLast - SF_DATA_START + 1, 1).getValues();
+    for (var si = 0; si < times.length; si++) {
+      if (times[si][0]) {
+        var ft = (times[si][0] instanceof Date) ?
+          Utilities.formatDate(times[si][0], "Asia/Kolkata", "HH:mm:ss") : times[si][0].toString().trim();
+        if (ft === currTimeOnly) { target = si + SF_DATA_START; break; }
+      }
+    }
+  }
+
+  sfSheet.getRange(target, 1, 1, 24).setValues([sfRow]);
+
+  // --- Color coding ---
+  var CE_W = "#FFCCCC", CE_B = "#00B050", PE_W = "#C6EFCE", PE_B = "#BD2130";
+  var DARK = "#1a1a2e", ZERO = "#555555";
+
+  sfSheet.getRange(target, 1).setBackground(DARK).setFontColor("#a8d8ea").setFontSize(9);
+
+  // Column M: NET FLOW color — green if bullish, red if bearish
+  var netCell = sfSheet.getRange(target, 13);
+  if (netFlow > 0)
+    netCell.setBackground("#00B050").setFontColor("#ffffff").setFontWeight("bold");
+  else if (netFlow < 0)
+    netCell.setBackground("#BD2130").setFontColor("#ffffff").setFontWeight("bold");
+  else
+    netCell.setBackground(DARK).setFontColor(ZERO).setFontWeight("normal");
+  netCell.setHorizontalAlignment("center").setFontSize(9);
+
+  var maxVal = 0, maxCol = 0;
+
+  // CE columns B-L
+  for (var ci = 0; ci < 11; ci++) {
+    var stk = liveATM + ceOff[ci];
+    var bv = Number(ceBuy[stk]||0), wv = Number(ceWrite[stk]||0);
+    var cell = sfSheet.getRange(target, 2+ci);
+    if (bv <= 0 && wv <= 0)
+      cell.setBackground(DARK).setFontColor(ZERO).setFontWeight("normal");
+    else if (bv >= wv)
+      cell.setBackground(CE_B).setFontColor("#ffffff").setFontWeight("bold");
+    else
+      cell.setBackground(CE_W).setFontColor("#9c0006").setFontWeight("bold");
+    cell.setHorizontalAlignment("center").setFontSize(9);
+    var dom = Math.max(bv, wv);
+    if (dom > maxVal) { maxVal = dom; maxCol = 2+ci; }
+  }
+
+  // PE columns N-X
+  for (var pi = 0; pi < 11; pi++) {
+    var stk = liveATM + peOff[pi];
+    var bv = Number(peBuy[stk]||0), wv = Number(peWrite[stk]||0);
+    var cell = sfSheet.getRange(target, 14+pi);
+    if (bv <= 0 && wv <= 0)
+      cell.setBackground(DARK).setFontColor(ZERO).setFontWeight("normal");
+    else if (wv >= bv)
+      cell.setBackground(PE_W).setFontColor("#006100").setFontWeight("bold");
+    else
+      cell.setBackground(PE_B).setFontColor("#ffffff").setFontWeight("bold");
+    cell.setHorizontalAlignment("center").setFontSize(9);
+    var dom = Math.max(bv, wv);
+    if (dom > maxVal) { maxVal = dom; maxCol = 14+pi; }
+  }
+
+  // Thick black border on highest bet
+  if (maxVal > 0) {
+    sfSheet.getRange(target, maxCol).setBorder(
+      true, true, true, true, null, null, "#000000", SpreadsheetApp.BorderStyle.SOLID_THICK
+    );
+  }
+
+  Logger.log("[SF] Row " + target + " | Net: " + netFlow.toFixed(2) + " Cr | Max: " + maxVal.toFixed(2) + " Cr | Spot: " + niftySpot);
+
+  // =========================
+  // WRITE TO SF_RAWFLOW TAB
+  // =========================
+  _writeRawFlow(ceBuy, ceWrite, peBuy, peWrite, liveATM, currTimeOnly);
+
+  // =========================
+  // WRITE TO SF_TOTAL TAB
+  // =========================
+  _writeTotalFlow(ceBuy, ceWrite, peBuy, peWrite, currTimeOnly);
+}
+
+
+// =============================================================================
+// SF_RAWFLOW — All 4 raw flow values per strike, minute by minute
+// =============================================================================
+// Layout: 45 columns total
+//   Col A: TIME
+//   Cols B-E: ATM-250 -> CE Buy | CE Write | PE Write | PE Buy
+//   Cols F-I: ATM-200 -> CE Buy | CE Write | PE Write | PE Buy
+//   ... (11 strikes x 4 sub-cols = 44 data cols)
+//   CE Write and PE Buy stored as NEGATIVE numbers for charting.
+//   User can select all data -> Insert -> Stacked bar chart in Google Sheets.
+//   Green bars go UP (CE Buy + PE Write), Red bars go DOWN (CE Write + PE Buy).
+// =============================================================================
+var RF_DATA_START = 7;
+
+function _writeRawFlow(ceBuy, ceWrite, peBuy, peWrite, liveATM, currTimeOnly) {
+  var extWb = _getExtWb();
+  var off = [-250,-200,-150,-100,-50,0,50,100,150,200,250];
+  var TOTAL_COLS = 1 + 11 * 4; // 45
+
+  var rf = extWb.getSheetByName("SF_RAWFLOW");
+  if (!rf) {
+    rf = extWb.insertSheet("SF_RAWFLOW");
+    _buildRawFlowHeaders(rf, liveATM, off);
+  }
+
+  // Update strike labels in row 1 (batch — no merge, avoids timeout on external sheet)
+  var hdrRow = ["TIME"];
+  for (var i = 0; i < 11; i++) {
+    var stk = liveATM + off[i];
+    var label = off[i] === 0 ? "ATM " + stk : String(stk);
+    hdrRow.push(label, label, label, label);
+  }
+  rf.getRange(1, 1, 1, 45).setValues([hdrRow]);
+
+  // Build 45-col row
+  var row = new Array(TOTAL_COLS);
+  row[0] = currTimeOnly;
+
+  for (var i = 0; i < 11; i++) {
+    var stk = liveATM + off[i];
+    var b = 1 + i * 4; // 0-indexed position in row array
+    row[b]     =  Number((ceBuy[stk]   || 0).toFixed(2)); // CE Buy   (positive)
+    row[b + 1] = -Number((ceWrite[stk] || 0).toFixed(2)); // CE Write (negative)
+    row[b + 2] =  Number((peWrite[stk] || 0).toFixed(2)); // PE Write (positive)
+    row[b + 3] = -Number((peBuy[stk]   || 0).toFixed(2)); // PE Buy   (negative)
+  }
+
+  // De-dup same minute
+  var lastR = rf.getLastRow();
+  var target = (lastR < RF_DATA_START) ? RF_DATA_START : lastR + 1;
+  if (lastR >= RF_DATA_START) {
+    var times = rf.getRange(RF_DATA_START, 1, lastR - RF_DATA_START + 1, 1).getValues();
+    for (var si = 0; si < times.length; si++) {
+      if (times[si][0]) {
+        var ft = (times[si][0] instanceof Date) ?
+          Utilities.formatDate(times[si][0], "Asia/Kolkata", "HH:mm:ss") : times[si][0].toString().trim();
+        if (ft === currTimeOnly) { target = si + RF_DATA_START; break; }
+      }
+    }
+  }
+
+  rf.getRange(target, 1, 1, TOTAL_COLS).setValues([row]);
+
+  // Color coding — use 4 batch getRangedList calls (non-contiguous but single API call each)
+  // Google Sheets supports getRangeList for styling multiple non-adjacent ranges at once
+  var DARK = "#1a1a2e", ZERO = "#555555";
+  rf.getRange(target, 1).setBackground(DARK).setFontColor("#a8d8ea").setFontSize(8);
+
+  // Collect ranges per flow type, then batch-style
+  var cbCols = [], cwCols = [], pwCols = [], pbCols = [];
+  for (var i = 0; i < 11; i++) {
+    var stk = liveATM + off[i];
+    var base = 2 + i * 4;
+    var cb = Number(ceBuy[stk]||0), cw = Number(ceWrite[stk]||0);
+    var pw = Number(peWrite[stk]||0), pb = Number(peBuy[stk]||0);
+    if (cb > 0) cbCols.push("R" + target + "C" + base);
+    else rf.getRange(target, base).setBackground(DARK).setFontColor(ZERO);
+    if (cw > 0) cwCols.push("R" + target + "C" + (base+1));
+    else rf.getRange(target, base+1).setBackground(DARK).setFontColor(ZERO);
+    if (pw > 0) pwCols.push("R" + target + "C" + (base+2));
+    else rf.getRange(target, base+2).setBackground(DARK).setFontColor(ZERO);
+    if (pb > 0) pbCols.push("R" + target + "C" + (base+3));
+    else rf.getRange(target, base+3).setBackground(DARK).setFontColor(ZERO);
+  }
+
+  // Batch style non-zero cells by type (each is 1 API call regardless of how many cells)
+  if (cbCols.length > 0) rf.getRangeList(cbCols).setBackground("#00B050").setFontColor("#fff").setFontSize(8).setHorizontalAlignment("center");
+  if (cwCols.length > 0) rf.getRangeList(cwCols).setBackground("#FFCCCC").setFontColor("#9c0006").setFontSize(8).setHorizontalAlignment("center");
+  if (pwCols.length > 0) rf.getRangeList(pwCols).setBackground("#C6EFCE").setFontColor("#006100").setFontSize(8).setHorizontalAlignment("center");
+  if (pbCols.length > 0) rf.getRangeList(pbCols).setBackground("#BD2130").setFontColor("#fff").setFontSize(8).setHorizontalAlignment("center");
+
+  Logger.log("[SF] SF_RAWFLOW row " + target + " written");
+}
+
+
+function _buildRawFlowHeaders(rf, liveATM, off) {
+  // --- Build header data in memory, then batch-write (avoids 100+ API calls on external sheet) ---
+  var row1 = ["TIME"];
+  var row2 = [""];
+  for (var i = 0; i < 11; i++) {
+    var stk = liveATM + off[i];
+    var label = off[i] === 0 ? "ATM " + stk : String(stk);
+    row1.push(label, label, label, label);
+    row2.push("CE Buy", "CE Write", "PE Write", "PE Buy");
+  }
+
+  // Batch write both header rows in ONE call
+  rf.getRange(1, 1, 2, 45).setValues([row1, row2]);
+
+  // Batch style row 1 — TIME cell
+  rf.getRange(1, 1).setBackground("#16213e").setFontColor("#eeeeee")
+    .setFontWeight("bold").setFontSize(9).setHorizontalAlignment("center");
+
+  // Batch style row 1 — all strike labels at once (no merge needed)
+  rf.getRange(1, 2, 1, 44).setBackground("#0f3460").setFontColor("#a8d8ea")
+    .setFontWeight("bold").setFontSize(8).setHorizontalAlignment("center");
+
+  // Batch style row 2 — sub-headers all at once
+  rf.getRange(2, 1).setBackground("#16213e");
+  rf.getRange(2, 2, 1, 44).setBackground("#16213e").setFontColor("#cccccc")
+    .setFontWeight("bold").setFontSize(7).setHorizontalAlignment("center");
+
+  // Row heights
+  rf.setRowHeight(1, 22);
+  rf.setRowHeight(2, 18);
+
+  // Column width — TIME col only (skip 44 individual width calls to avoid timeout)
+  rf.setColumnWidth(1, 12);
+
+  Logger.log("[SF] SF_RAWFLOW headers built");
+}
+
+
+// =============================================================================
+// SF_TOTAL — Total flow across all 11 strikes, 4 values per minute
+// =============================================================================
+// Layout: 5 columns: TIME | CE Buy (+) | CE Write (-) | PE Write (+) | PE Buy (-)
+// CE Write & PE Buy stored as NEGATIVE so stacked bar chart shows red going DOWN.
+// Select rows 7 onwards → Insert → Chart → Stacked column chart.
+// =============================================================================
+var FT_DATA_START = 7;
+
+function _writeTotalFlow(ceBuy, ceWrite, peBuy, peWrite, currTimeOnly) {
+  var extWb = _getExtWb();
+  var TOTAL_COLS = 5;
+
+  // Sum across all strikes
+  var sumCB = 0, sumCW = 0, sumPW = 0, sumPB = 0;
+  var allKeys = Object.keys(ceBuy).concat(Object.keys(ceWrite))
+    .concat(Object.keys(peWrite)).concat(Object.keys(peBuy));
+  var seen = {};
+  for (var k = 0; k < allKeys.length; k++) {
+    if (!seen[allKeys[k]]) {
+      seen[allKeys[k]] = true;
+      var s = Number(allKeys[k]);
+      sumCB += Number(ceBuy[s]   || 0);
+      sumCW += Number(ceWrite[s] || 0);
+      sumPW += Number(peWrite[s] || 0);
+      sumPB += Number(peBuy[s]   || 0);
+    }
+  }
+
+  var ft = extWb.getSheetByName("SF_TOTAL");
+  if (!ft) {
+    ft = extWb.insertSheet("SF_TOTAL");
+    _buildTotalHeaders(ft);
+  }
+
+  // Build 5-col row
+  var row = [
+    currTimeOnly,
+    Number(sumCB.toFixed(2)),              // CE Buy   (positive)
+    -Number(sumCW.toFixed(2)),              // CE Write (negative)
+    Number(sumPW.toFixed(2)),              // PE Write (positive)
+    -Number(sumPB.toFixed(2))               // PE Buy   (negative)
+  ];
+
+  // De-dup same minute
+  var lastR = ft.getLastRow();
+  var target = (lastR < FT_DATA_START) ? FT_DATA_START : lastR + 1;
+  if (lastR >= FT_DATA_START) {
+    var times = ft.getRange(FT_DATA_START, 1, lastR - FT_DATA_START + 1, 1).getValues();
+    for (var si = 0; si < times.length; si++) {
+      if (times[si][0]) {
+        var tstr = (times[si][0] instanceof Date) ?
+          Utilities.formatDate(times[si][0], "Asia/Kolkata", "HH:mm:ss") : times[si][0].toString().trim();
+        if (tstr === currTimeOnly) { target = si + FT_DATA_START; break; }
+      }
+    }
+  }
+
+  ft.getRange(target, 1, 1, TOTAL_COLS).setValues([row]);
+
+  // Color coding
+  var DARK = "#1a1a2e", ZERO = "#555555";
+  ft.getRange(target, 1).setBackground(DARK).setFontColor("#a8d8ea").setFontSize(9);
+
+  // CE Buy (col B)
+  if (sumCB > 0)
+    ft.getRange(target, 2).setBackground("#00B050").setFontColor("#fff").setFontWeight("bold");
+  else
+    ft.getRange(target, 2).setBackground(DARK).setFontColor(ZERO);
+  ft.getRange(target, 2).setHorizontalAlignment("center").setFontSize(9);
+
+  // CE Write (col C) — stored negative
+  if (sumCW > 0)
+    ft.getRange(target, 3).setBackground("#FFCCCC").setFontColor("#9c0006").setFontWeight("bold");
+  else
+    ft.getRange(target, 3).setBackground(DARK).setFontColor(ZERO);
+  ft.getRange(target, 3).setHorizontalAlignment("center").setFontSize(9);
+
+  // PE Write (col D)
+  if (sumPW > 0)
+    ft.getRange(target, 4).setBackground("#C6EFCE").setFontColor("#006100").setFontWeight("bold");
+  else
+    ft.getRange(target, 4).setBackground(DARK).setFontColor(ZERO);
+  ft.getRange(target, 4).setHorizontalAlignment("center").setFontSize(9);
+
+  // PE Buy (col E) — stored negative
+  if (sumPB > 0)
+    ft.getRange(target, 5).setBackground("#BD2130").setFontColor("#fff").setFontWeight("bold");
+  else
+    ft.getRange(target, 5).setBackground(DARK).setFontColor(ZERO);
+  ft.getRange(target, 5).setHorizontalAlignment("center").setFontSize(9);
+
+  Logger.log("[SF] SF_TOTAL row " + target + " | CB:" + sumCB.toFixed(2) + " CW:" + (-sumCW).toFixed(2) + " PW:" + sumPW.toFixed(2) + " PB:" + (-sumPB).toFixed(2));
+}
+
+
+function _buildTotalHeaders(ft) {
+  // Build ALL header data in memory first, then batch-write
+  var row1 = ["TOTAL FLOW \u2014 All Strikes Combined (Cr) | Stacked Bar Chart Data", "", "", "", ""];
+  var row2 = ["Green UP = Bullish (CE Buy + PE Write)  |  Red DOWN = Bearish (CE Write + PE Buy)", "", "", "", ""];
+  var row3 = ["COLOR KEY", "CE Buy (+)", "CE Write (-)", "PE Write (+)", "PE Buy (-)"];
+  var row4 = ["", "", "", "", ""];
+  var row5 = ["", "BULLISH (UP)", "BULLISH (UP)", "BEARISH (DOWN)", "BEARISH (DOWN)"];
+  var row6 = ["TIME", "CE Buy", "CE Write", "PE Write", "PE Buy"];
+
+  // ONE call to write all 6 rows
+  ft.getRange(1, 1, 6, 5).setValues([row1, row2, row3, row4, row5, row6]);
+
+  // Merges
+  ft.getRange(1, 1, 1, 5).merge();
+  ft.getRange(2, 1, 1, 5).merge();
+  ft.getRange(5, 2, 1, 2).merge();
+  ft.getRange(5, 4, 1, 2).merge();
+
+  // Row 1 style
+  ft.getRange(1, 1, 1, 5).setBackground("#1a1a2e").setFontColor("#e94560").setFontWeight("bold").setSize(12).setHorizontalAlignment("center");
+
+  // Row 2 style
+  ft.getRange(2, 1, 1, 5).setBackground("#0f3460").setFontColor("#a8d8ea").setFontWeight("bold").setSize(9).setHorizontalAlignment("center");
+
+  // Row 3 color key
+  ft.getRange(3, 1).setBackground("#1a1a2e").setFontColor("#e94560").setFontWeight("bold").setSize(8);
+  ft.getRange(3, 2).setBackground("#00B050").setFontColor("#fff").setSize(8);
+  ft.getRange(3, 3).setBackground("#FFCCCC").setFontColor("#9c0006").setSize(8);
+  ft.getRange(3, 4).setBackground("#C6EFCE").setFontColor("#006100").setSize(8);
+  ft.getRange(3, 5).setBackground("#BD2130").setFontColor("#fff").setSize(8);
+
+  // Row 4 dark fill
+  ft.getRange(4, 1, 1, 5).setBackground("#1a1a2e");
+
+  // Row 5 direction
+  ft.getRange(5, 1).setBackground("#1a1a2e");
+  ft.getRange(5, 2, 1, 2).setBackground("#0a2e0a").setFontColor("#00B050").setFontWeight("bold").setSize(9).setHorizontalAlignment("center");
+  ft.getRange(5, 4, 1, 2).setBackground("#2e0a0a").setFontColor("#BD2130").setFontWeight("bold").setSize(9).setHorizontalAlignment("center");
+
+  // Row 6 headers
+  ft.getRange(6, 1, 1, 5).setBackground("#16213e").setFontWeight("bold").setSize(9).setHorizontalAlignment("center");
+  ft.getRange(6, 1).setFontColor("#eeeeee");
+  ft.getRange(6, 2).setFontColor("#00B050");
+  ft.getRange(6, 3).setFontColor("#FF6666");
+  ft.getRange(6, 4).setFontColor("#66CC66");
+  ft.getRange(6, 5).setFontColor("#FF4444");
+
+  // Row heights
+  ft.setRowHeight(1, 28);
+  ft.setRowHeight(2, 24);
+  ft.setRowHeight(3, 22);
+  ft.setRowHeight(5, 20);
+  ft.setRowHeight(6, 22);
+
+  // Column width — TIME only (skip 4 individual width calls)
+  ft.setColumnWidth(1, 11);
+
+  Logger.log("[SF] SF_TOTAL headers built");
+}
+
+
+// =============================================================================
+// HEADER BUILDER (called once when STRIKE_FLOW sheet is first created)
+// =============================================================================
+function _buildHeaders(sf) {
+
+  // Row 1: Title
+  sf.getRange(1,1,1,24).merge()
+    .setValue("STRIKE FLOW MAP \u2014 NIFTY50 | Per-Strike Smart Money Tracker (Current Week Expiry)")
+    .setFontWeight("bold").setFontSize(13)
+    .setBackground("#1a1a2e").setFontColor("#e94560")
+    .setHorizontalAlignment("center");
+  sf.setRowHeight(1, 30);
+
+  // Row 2: Section headers
+  sf.setRowHeight(2, 30);
+  sf.getRange(2,1).setValue("TIME")
+    .setFontWeight("bold").setBackground("#16213e").setFontColor("#eeeeee").setHorizontalAlignment("center");
+  sf.getRange(2,2,1,11).merge()
+    .setValue("\u2190 CALL SIDE (CE) \u2014 Big Player Flow per Strike")
+    .setFontWeight("bold").setBackground("#0f3460").setFontColor("#a8d8ea").setHorizontalAlignment("center");
+  sf.getRange(2,14,1,11).merge()
+    .setValue("PUT SIDE (PE) \u2014 Big Player Flow per Strike \u2192")
+    .setFontWeight("bold").setBackground("#0f3460").setFontColor("#a8d8ea").setHorizontalAlignment("center");
+  // Row 2 col M: NET FLOW header
+  sf.getRange(2,13).setValue("NET\nFLOW")
+    .setFontWeight("bold").setBackground("#0f3460").setFontColor("#FFD700")
+    .setHorizontalAlignment("center").setFontSize(8).setWrapping(true);
+
+  // Row 3: OTM/ATM/ITM
+  sf.setRowHeight(3, 20);
+  sf.getRange(3,1).setBackground("#16213e");
+  var cat = {
+    "OTM":{"bg":"#3D2200","fg":"#FFA500"},
+    "ATM":{"bg":"#3D3D00","fg":"#FFD700"},
+    "ITM":{"bg":"#003040","fg":"#00BFFF"}
+  };
+  var ceC = ["OTM","OTM","OTM","OTM","OTM","ATM","ITM","ITM","ITM","ITM","ITM"];
+  var peC = ["ITM","ITM","ITM","ITM","ITM","ATM","OTM","OTM","OTM","OTM","OTM"];
+  for (var i = 0; i < 11; i++) {
+    sf.getRange(3,2+i).setValue(ceC[i]).setFontWeight("bold").setFontSize(8)
+      .setBackground(cat[ceC[i]].bg).setFontColor(cat[ceC[i]].fg).setHorizontalAlignment("center");
+    sf.getRange(3,14+i).setValue(peC[i]).setFontWeight("bold").setFontSize(8)
+      .setBackground(cat[peC[i]].bg).setFontColor(cat[peC[i]].fg).setHorizontalAlignment("center");
+  }
+  sf.getRange(3,13).setValue("BULL|BEAR").setFontWeight("bold").setFontSize(7)
+    .setBackground("#2C3E50").setFontColor("#FFD700").setHorizontalAlignment("center");
+
+  // Row 4: Strike headers
+  sf.setRowHeight(4, 22);
+  sf.getRange(4,1).setValue("HH:MM:SS").setFontWeight("bold").setBackground("#16213e")
+    .setFontColor("#aaaaaa").setHorizontalAlignment("center").setFontSize(8);
+  var co = [250,200,150,100,50,0,-50,-100,-150,-200,-250];
+  var po = [-250,-200,-150,-100,-50,0,50,100,150,200,250];
+  for (var i = 0; i < 11; i++) {
+    var cl = co[i]===0 ? "ATM CE" : "ATM"+(co[i]>0?"+":"")+co[i]+" CE";
+    sf.getRange(4,2+i).setValue(cl).setFontWeight("bold")
+      .setBackground(co[i]===0?"#2C3E50":"#16213e").setFontColor("#ffffff").setHorizontalAlignment("center");
+    var pl = po[i]===0 ? "ATM PE" : "ATM"+(po[i]>0?"+":"")+po[i]+" PE";
+    sf.getRange(4,14+i).setValue(pl).setFontWeight("bold")
+      .setBackground(po[i]===0?"#2C3E50":"#16213e").setFontColor("#ffffff").setHorizontalAlignment("center");
+  }
+  sf.getRange(4,13).setValue("NET (Cr)").setFontWeight("bold").setFontSize(7)
+    .setBackground("#2C3E50").setFontColor("#ffffff").setHorizontalAlignment("center");
+
+  // Row 5: Sub-headers
+  sf.setRowHeight(5, 24);
+  sf.getRange(5,1).setValue("FLOW").setBackground("#16213e").setFontColor("#888888").setFontSize(7).setHorizontalAlignment("center");
+  for (var i = 0; i < 11; i++) {
+    sf.getRange(5,2+i).setValue("CE Write|Buy").setBackground("#16213e").setFontColor("#888888").setFontSize(7).setHorizontalAlignment("center");
+    sf.getRange(5,14+i).setValue("PE Write|Buy").setBackground("#16213e").setFontColor("#888888").setFontSize(7).setHorizontalAlignment("center");
+  }
+  sf.getRange(5,13).setValue("(CE Buy+PE Write)\n-(CE Write+PE Buy)").setBackground("#16213e")
+    .setFontColor("#aaaaaa").setFontSize(6).setHorizontalAlignment("center").setWrapping(true);
+
+  // Row 6: Color legend
+  sf.setRowHeight(6, 22);
+  for (var lc = 1; lc <= 24; lc++) sf.getRange(6,lc).setBackground("#1a1a2e");
+  sf.getRange(6,1).setValue("COLOR KEY").setFontColor("#e94560").setFontWeight("bold").setFontSize(8);
+  sf.getRange(6,2).setBackground("#FFCCCC");
+  sf.getRange(6,3).setValue("CE Write").setFontColor("#eeeeee");
+  sf.getRange(6,5).setBackground("#00B050");
+  sf.getRange(6,6).setValue("CE Buy").setFontColor("#eeeeee");
+  sf.getRange(6,8).setBackground("#C6EFCE");
+  sf.getRange(6,9).setValue("PE Write").setFontColor("#eeeeee");
+  sf.getRange(6,11).setBackground("#BD2130");
+  sf.getRange(6,12).setValue("PE Buy").setFontColor("#eeeeee");
+
+  // Column widths
+  sf.setColumnWidth(1, 12);
+  for (var wc = 2; wc <= 12; wc++) sf.setColumnWidth(wc, 13);
+  sf.setColumnWidth(13, 9);
+  for (var wc = 14; wc <= 24; wc++) sf.setColumnWidth(wc, 13);
+
+  Logger.log("[SF] Headers built");
+}
+
+
+// =============================================================================
+// TEST RUNNER
+// =============================================================================
+function testStrikeFlowMap() {
+  Logger.log("=== STRIKE_FLOW TEST START ===");
+  var t = new Date();
+  runStrikeFlowMap();
+  Logger.log("=== DONE in " + ((new Date() - t) / 1000).toFixed(1) + "s ===");
+}
