@@ -219,7 +219,10 @@ export async function getQuotes(instruments: string[]): Promise<Record<string, K
     }
 
     const iList = tokenList.join(',');
-    const res = await fetch(`${KITE_BASE}/quote?i=${iList}`, {
+    // Kite requires SEPARATE 'i' query params for multiple instruments.
+    // ?i=256265&i=260105 works, but ?i=256265,260105 returns empty data.
+    const params = tokenList.map(t => `i=${t}`).join('&');
+    const res = await fetch(`${KITE_BASE}/quote?${params}`, {
       headers: kiteHeaders(),
     });
 
@@ -391,10 +394,10 @@ export async function getOptionsFlow(symbol: string, spotPrice: number) {
   const { instruments: optInstruments, meta } = await getOptionInstruments(symbol, spotPrice);
   if (optInstruments.length === 0) return null;
 
-  // Build instrument keys for batch quote
-  const iKeys = optInstruments.map(i => `${i.exchange}:${i.tradingSymbol}`);
+  // Build instrument keys for batch quote — use instrument TOKENS (numeric, no encoding issues)
+  const iKeys = optInstruments.map(i => String(i.instrumentToken));
 
-  // Batch fetch quotes (max ~500 per call)
+  // Batch fetch quotes
   const quotes = await getQuotes(iKeys);
   if (Object.keys(quotes).length === 0) return null;
 
@@ -405,7 +408,8 @@ export async function getOptionsFlow(symbol: string, spotPrice: number) {
   const atmStrike = Math.round(spotPrice / meta.strikeStep) * meta.strikeStep;
 
   for (const inst of optInstruments) {
-    const key = `${inst.exchange}:${inst.tradingSymbol}`;
+    // Quotes are keyed by instrument token (string)
+    const key = String(inst.instrumentToken);
     const q = quotes[key];
     if (!q) continue;
 
@@ -447,7 +451,7 @@ export async function getOptionsFlow(symbol: string, spotPrice: number) {
 
 export const KITE_INDEX_INSTRUMENTS: Record<string, { symbol: string; token: number }> = {
   NIFTY:      { symbol: 'NSE:NIFTY 50',           token: 256265 },
-  SENSEX:     { symbol: 'BSE:SENSEX',              token: 1 },  // will be resolved from CSV
+  SENSEX:     { symbol: 'BSE:SENSEX',              token: 265 },
   BANKNIFTY:  { symbol: 'NSE:NIFTY BANK',         token: 260105 },
   FINNIFTY:   { symbol: 'NSE:NIFTY FIN SERVICE',  token: 64033 },
 };
