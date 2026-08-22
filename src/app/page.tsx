@@ -6,7 +6,7 @@ import { Badge } from '@/components/ui/badge';
 import {
   Globe, Activity, Target, Landmark, Thermometer, Settings,
   Wifi, WifiOff, Clock, TrendingUp, TrendingDown, Info, Layers, Crosshair, Trophy,
-  Shield, Bell, BookOpen,
+  Shield, Bell, BookOpen, BarChart3, Clock4,
 } from 'lucide-react';
 import BirdsEye from '@/components/dashboard/birds-eye';
 import LiveMonitor from '@/components/dashboard/live-monitor';
@@ -20,6 +20,7 @@ import AlertsTab from '@/components/dashboard/alerts-tab';
 import JournalTab from '@/components/dashboard/journal-tab';
 import GreeksDecay from '@/components/dashboard/greeks-decay';
 import SettingsConfig from '@/components/dashboard/settings-config';
+import FuturesBasisTab from '@/components/dashboard/futures-basis-tab';
 import { generateDemoVIX, getMarketStatus } from '@/lib/demo-data';
 import type { VIXData, NSESessionInfo } from '@/lib/types';
 import { getNSESession } from '@/lib/nse-sessions';
@@ -206,6 +207,11 @@ export default function DashboardPage() {
               <span className="hidden sm:inline">OI Walls</span>
               <span className="sm:hidden">🛡</span>
             </TabsTrigger>
+            <TabsTrigger value="futures-basis" className="flex-1 text-xs gap-1.5 data-[state=active]:bg-sky-500/20 data-[state=active]:text-sky-300">
+              <BarChart3 className="h-3.5 w-3.5" />
+              <span className="hidden sm:inline">Basis</span>
+              <span className="sm:hidden">📊</span>
+            </TabsTrigger>
             <TabsTrigger value="alerts" className="flex-1 text-xs gap-1.5 data-[state=active]:bg-orange-500/20 data-[state=active]:text-orange-300">
               <Bell className="h-3.5 w-3.5" />
               <span className="hidden sm:inline">Alerts</span>
@@ -262,6 +268,10 @@ export default function DashboardPage() {
 
           <TabsContent value="oi-walls" className="mt-0">
             <OIWallsTab />
+          </TabsContent>
+
+          <TabsContent value="futures-basis" className="mt-0">
+            <FuturesBasisTab />
           </TabsContent>
 
           <TabsContent value="alerts" className="mt-0">
