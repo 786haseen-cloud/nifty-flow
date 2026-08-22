@@ -1,0 +1,831 @@
+     1→'use client';
+     2→
+     3→import { useState, useEffect, useRef, useCallback } from 'react';
+     4→import { Badge } from '@/components/ui/badge';
+     5→import { withCreds } from '@/lib/kite-creds';
+     6→import { Wifi, WifiOff, RefreshCw, Trophy, ArrowUpDown, TrendingUp, TrendingDown, Clock, Zap, Layers } from 'lucide-react';
+     7→import type { StrikeFlowData } from '@/lib/kite-api';
+     8→
+     9→// ═══════════════════════════════════════════
+    10→// TYPES
+    11→// ═══════════════════════════════════════════
+    12→
+    13→interface SymbolBetData {
+    14→  symbol: string;
+    15→  name: string;
+    16→  type: 'index' | 'stock';
+    17→  spotPrice: number;
+    18→  spotVolume: number;
+    19→  spotChange: number;
+    20→  futOI: number;
+    21→  futPrice: number;
+    22→  futLotSize: number;
+    23→  lotSize: number;
+    24→  strikeStep: number;
+    25→  strikes: StrikeFlowData[];
+    26→}
+    27→
+    28→interface BatchSnapshot {
+    29→  timestamp: string;
+    30→  mode: string;
+    31→  symbols: SymbolBetData[];
+    32→}
+    33→
+    34→interface BetRecord {
+    35→  value: number;       // in Crores
+    36→  time: string;        // HH:MM:SS
+    37→  strike?: number;     // which strike (for options)
+    38→  intervalFlow?: number; // total flow in that interval
+    39→}
+    40→
+    41→interface SymbolDayHighest {
+    42→  cash: BetRecord;
+    43→  future: BetRecord;
+    44→  ceBuy: BetRecord;
+    45→  ceWrite: BetRecord;
+    46→  peBuy: BetRecord;
+    47→  peWrite: BetRecord;
+    48→  // Derivatives
+    49→  netFlow: number;
+    50→  peakTime: string;
+    51→  peakStrike: number;
+    52→  peakType: string;
+    53→}
+    54→
+    55→interface IntervalFlow {
+    56→  symbol: string;
+    57→  cash: number;        // per-interval turnover in Cr
+    58→  future: number;      // per-interval OI change in Cr
+    59→  ceBuy: number;
+    60→  ceWrite: number;
+    61→  peBuy: number;
+    62→  peWrite: number;
+    63→  netFlow: number;
+    64→  maxStrike: { type: string; strike: number; value: number } | null;
+    65→}
+    66→
+    67→// ═══════════════════════════════════════════
+    68→// 4-COLOR FLOW ENGINE (same as strike-flow-map)
+    69→// ═══════════════════════════════════════════
+    70→
+    71→const DIVISOR = 10000000; // Convert to Crores
+    72→
+    73→function computeStrikeFlow(
+    74→  prev: StrikeFlowData,
+    75→  curr: StrikeFlowData,
+    76→  lotSize: number,
+    77→): { ceBuy: number; ceWrite: number; peBuy: number; peWrite: number } {
+    78→  const dceOI = curr.ceOI - prev.ceOI;
+    79→  const dceP = curr.ceLTP - prev.ceLTP;
+    80→  let ceBuy = 0, ceWrite = 0;
+    81→
+    82→  if (dceOI > 0 && dceP >= 0) {
+    83→    ceBuy = (dceOI * curr.ceDelta * lotSize) / DIVISOR;
+    84→  } else if (dceOI > 0 && dceP < 0) {
+    85→    ceWrite = (dceOI * curr.ceDelta * lotSize) / DIVISOR;
+    86→  } else if (dceOI < 0 && dceP < 0) {
+    87→    ceWrite = (Math.abs(dceOI) * curr.ceDelta * lotSize * 0.3) / DIVISOR;
+    88→  } else if (dceOI < 0 && dceP >= 0) {
+    89→    ceBuy = (Math.abs(dceOI) * curr.ceDelta * lotSize * 0.3) / DIVISOR;
+    90→  }
+    91→  // Volume fallback when OI unchanged
+    92→  if (dceOI === 0 && (curr.ceVol - prev.ceVol) > 0) {
+    93→    ceBuy = (curr.ceVol * curr.ceDelta * lotSize * 0.4) / DIVISOR;
+    94→  }
+    95→
+    96→  const dpeOI = curr.peOI - prev.peOI;
+    97→  const dpeP = curr.peLTP - prev.peLTP;
+    98→  let peBuy = 0, peWrite = 0;
+    99→
+   100→  if (dpeOI > 0 && dpeP <= 0) {
+   101→    peBuy = (dpeOI * curr.peDelta * lotSize) / DIVISOR;
+   102→  } else if (dpeOI > 0 && dpeP > 0) {
+   103→    peWrite = (dpeOI * curr.peDelta * lotSize) / DIVISOR;
+   104→  } else if (dpeOI < 0 && dpeP > 0) {
+   105→    peWrite = (Math.abs(dpeOI) * curr.peDelta * lotSize * 0.3) / DIVISOR;
+   106→  } else if (dpeOI < 0 && dpeP <= 0) {
+   107→    peBuy = (Math.abs(dpeOI) * curr.peDelta * lotSize * 0.3) / DIVISOR;
+   108→  }
+   109→  if (dpeOI === 0 && (curr.peVol - prev.peVol) > 0) {
+   110→    peBuy = (curr.peVol * curr.peDelta * lotSize * 0.4) / DIVISOR;
+   111→  }
+   112→
+   113→  return { ceBuy, ceWrite, peBuy, peWrite };
+   114→}
+   115→
+   116→// ═══════════════════════════════════════════
+   117→// HELPERS
+   118→// ═══════════════════════════════════════════
+   119→
+   120→function toIST(isoStr: string): string {
+   121→  const d = new Date(isoStr);
+   122→  const utc = d.getTime() + d.getTimezoneOffset() * 60000;
+   123→  const ist = new Date(utc + 5.5 * 60 * 60 * 1000);
+   124→  return ist.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false, timeZone: 'UTC' });
+   125→}
+   126→
+   127→function emptyBetRecord(): BetRecord {
+   128→  return { value: 0, time: '--:--:--' };
+   129→}
+   130→
+   131→function emptyDayHighest(): SymbolDayHighest {
+   132→  return {
+   133→    cash: emptyBetRecord(),
+   134→    future: emptyBetRecord(),
+   135→    ceBuy: emptyBetRecord(),
+   136→    ceWrite: emptyBetRecord(),
+   137→    peBuy: emptyBetRecord(),
+   138→    peWrite: emptyBetRecord(),
+   139→    netFlow: 0,
+   140→    peakTime: '--:--:--',
+   141→    peakStrike: 0,
+   142→    peakType: '-',
+   143→  };
+   144→}
+   145→
+   146→function computeIntervalFlows(
+   147→  prev: BatchSnapshot,
+   148→  curr: BatchSnapshot,
+   149→): IntervalFlow[] {
+   150→  const results: IntervalFlow[] = [];
+   151→
+   152→  for (const cSym of curr.symbols) {
+   153→    const pSym = prev.symbols.find(s => s.symbol === cSym.symbol);
+   154→    if (!pSym || pSym.strikes.length === 0) continue;
+   155→
+   156→    // Cash turnover delta: (curr cumulative vol - prev cumulative vol) × curr price
+   157→    const cashDeltaVol = Math.max(0, cSym.spotVolume - pSym.spotVolume);
+   158→    const cashTurnover = (cashDeltaVol * cSym.spotPrice) / DIVISOR;
+   159→
+   160→    // Future OI change × lotSize × price
+   161→    const futOIDelta = cSym.futOI - pSym.futOI;
+   162→    const futFlow = (Math.abs(futOIDelta) * cSym.futLotSize * cSym.futPrice) / DIVISOR;
+   163→    const futFlowSigned = futOIDelta > 0 ? futFlow : -futFlow;
+   164→
+   165→    // Options: 4-color flow per strike, find max per type
+   166→    let maxCeBuy = 0, maxCeWrite = 0, maxPeBuy = 0, maxPeWrite = 0;
+   167→    let ceBuyStrike = 0, ceWriteStrike = 0, peBuyStrike = 0, peWriteStrike = 0;
+   168→    let totalCeBuy = 0, totalCeWrite = 0, totalPeBuy = 0, totalPeWrite = 0;
+   169→    let maxSingleStrike = 0, maxSingleType = '', maxSingleStrikeVal = 0;
+   170→
+   171→    for (const cStrike of cSym.strikes) {
+   172→      const pStrike = pSym.strikes.find(s => s.strike === cStrike.strike);
+   173→      if (!pStrike) continue;
+   174→
+   175→      const flow = computeStrikeFlow(pStrike, cStrike, cSym.lotSize);
+   176→      totalCeBuy += flow.ceBuy;
+   177→      totalCeWrite += flow.ceWrite;
+   178→      totalPeBuy += flow.peBuy;
+   179→      totalPeWrite += flow.peWrite;
+   180→
+   181→      if (flow.ceBuy > maxCeBuy) { maxCeBuy = flow.ceBuy; ceBuyStrike = cStrike.strike; }
+   182→      if (flow.ceWrite > maxCeWrite) { maxCeWrite = flow.ceWrite; ceWriteStrike = cStrike.strike; }
+   183→      if (flow.peBuy > maxPeBuy) { maxPeBuy = flow.peBuy; peBuyStrike = cStrike.strike; }
+   184→      if (flow.peWrite > maxPeWrite) { maxPeWrite = flow.peWrite; peWriteStrike = cStrike.strike; }
+   185→
+   186→      // Track absolute max single-strike flow
+   187→      const absMax = Math.max(flow.ceBuy, flow.ceWrite, flow.peBuy, flow.peWrite);
+   188→      if (absMax > maxSingleStrike) {
+   189→        maxSingleStrike = absMax;
+   190→        maxSingleStrikeVal = absMax;
+   191→        if (absMax === flow.ceBuy) { maxSingleType = 'CE Buy'; maxSingleStrikeVal = flow.ceBuy; }
+   192→        else if (absMax === flow.ceWrite) { maxSingleType = 'CE Write'; maxSingleStrikeVal = flow.ceWrite; }
+   193→        else if (absMax === flow.peBuy) { maxSingleType = 'PE Buy'; maxSingleStrikeVal = flow.peBuy; }
+   194→        else { maxSingleType = 'PE Write'; maxSingleStrikeVal = flow.peWrite; }
+   195→      }
+   196→    }
+   197→
+   198→    const netFlow = (totalCeBuy + totalPeWrite) - (totalPeBuy + totalCeWrite);
+   199→
+   200→    // Find the absolute peak across all 6 categories
+   201→    const allValues = [
+   202→      { type: 'Cash', value: cashTurnover },
+   203→      { type: 'Future', value: Math.abs(futFlowSigned) },
+   204→      { type: 'CE Buy', value: maxCeBuy },
+   205→      { type: 'CE Write', value: maxCeWrite },
+   206→      { type: 'PE Buy', value: maxPeBuy },
+   207→      { type: 'PE Write', value: maxPeWrite },
+   208→    ];
+   209→    const peak = allValues.reduce((a, b) => a.value > b.value ? a : b, allValues[0]);
+   210→
+   211→    results.push({
+   212→      symbol: cSym.symbol,
+   213→      cash: cashTurnover,
+   214→      future: futFlowSigned,
+   215→      ceBuy: maxCeBuy,
+   216→      ceWrite: maxCeWrite,
+   217→      peBuy: maxPeBuy,
+   218→      peWrite: maxPeWrite,
+   219→      netFlow,
+   220→      maxStrike: maxSingleStrike > 0.01 ? { type: maxSingleType, strike: maxSingleStrikeVal > 0 ? (ceBuyStrike || peBuyStrike || ceWriteStrike || peWriteStrike || 0) : 0, value: maxSingleStrike } : null,
+   221→    });
+   222→  }
+   223→
+   224→  return results;
+   225→}
+   226→
+   227→// ═══════════════════════════════════════════
+   228→// LOCALSTORAGE PERSISTENCE
+   229→// ═══════════════════════════════════════════
+   230→
+   231→const LS_KEY = 'highest-bet-day';
+   232→
+   233→function getTodayKey(): string {
+   234→  const d = new Date();
+   235→  const utc = d.getTime() + d.getTimezoneOffset() * 60000;
+   236→  const ist = new Date(utc + 5.5 * 60 * 60 * 1000);
+   237→  return ist.toISOString().split('T')[0];
+   238→}
+   239→
+   240→function loadFromLS(): Record<string, SymbolDayHighest> | null {
+   241→  try {
+   242→    const raw = localStorage.getItem(LS_KEY);
+   243→    if (!raw) return null;
+   244→    const parsed = JSON.parse(raw);
+   245→    if (parsed.date === getTodayKey()) return parsed.data;
+   246→    return null;
+   247→  } catch { return null; }
+   248→}
+   249→
+   250→function saveToLS(data: Record<string, SymbolDayHighest>) {
+   251→  try {
+   252→    localStorage.setItem(LS_KEY, JSON.stringify({ date: getTodayKey(), data }));
+   253→  } catch { /* ignore */ }
+   254→}
+   255→
+   256→// ═══════════════════════════════════════════
+   257→// SORT COLUMNS
+   258→// ═══════════════════════════════════════════
+   259→
+   260→type SortKey = 'symbol' | 'cash' | 'future' | 'ceBuy' | 'ceWrite' | 'peBuy' | 'peWrite' | 'netFlow';
+   261→const SORT_LABELS: Record<string, string> = {
+   262→  symbol: 'Symbol', cash: 'Cash', future: 'Future',
+   263→  ceBuy: 'CE Buy', ceWrite: 'CE Write', peBuy: 'PE Buy',
+   264→  peWrite: 'PE Write', netFlow: 'Net',
+   265→};
+   266→
+   267→// ═══════════════════════════════════════════
+   268→// MAIN COMPONENT
+   269→// ═══════════════════════════════════════════
+   270→
+   271→export default function HighestBetTracker() {
+   272→  const [mode, setMode] = useState<string>('demo');
+   273→  const [loading, setLoading] = useState(true);
+   274→  const [error, setError] = useState('');
+   275→  const [lastUpdate, setLastUpdate] = useState('');
+   276→  const [intervalCount, setIntervalCount] = useState(0);
+   277→
+   278→  // Snapshots for diffing
+   279→  const prevSnapRef = useRef<BatchSnapshot | null>(null);
+   280→  const currSnapRef = useRef<BatchSnapshot | null>(null);
+   281→
+   282→  // Day's highest per symbol
+   283→  const [dayHighest, setDayHighest] = useState<Record<string, SymbolDayHighest>>(() => {
+   284→    return loadFromLS() || {};
+   285→  });
+   286→
+   287→  // Current interval flows (for display)
+   288→  const [currentFlows, setCurrentFlows] = useState<IntervalFlow[]>([]);
+   289→
+   290→  // Current spot prices (for display in table)
+   291→  const [spotPrices, setSpotPrices] = useState<Record<string, { price: number; change: number }>>({});
+   292→
+   293→  // Sort state
+   294→  const [sortKey, setSortKey] = useState<SortKey>('netFlow');
+   295→  const [sortAsc, setSortAsc] = useState(false);
+   296→
+   297→  // Auto-refresh
+   298→  const timerRef = useRef<NodeJS.Timeout | null>(null);
+   299→  const mountedRef = useRef(true);
+   300→
+   301→  const fetchData = useCallback(async () => {
+   302→    try {
+   303→      const res = await fetch(withCreds('/api/kite/highest-bet'));
+   304→      const data = await res.json();
+   305→
+   306→      if (!mountedRef.current) return;
+   307→
+   308→      if (data.mode === 'error') {
+   309→        setError(data.error || 'Unknown error');
+   310→        return;
+   311→      }
+   312→
+   313→      setMode(data.mode);
+   314→      setError('');
+   315→      setLastUpdate(toIST(data.timestamp));
+   316→
+   317→      const snapshot: BatchSnapshot = {
+   318→        timestamp: data.timestamp,
+   319→        mode: data.mode,
+   320→        symbols: data.symbols,
+   321→      };
+   322→
+   323→      // Update spot prices
+   324→      const sp: Record<string, { price: number; change: number }> = {};
+   325→      for (const s of data.symbols) {
+   326→        sp[s.symbol] = { price: s.spotPrice, change: s.spotChange };
+   327→      }
+   328→      setSpotPrices(sp);
+   329→
+   330→      // Seed dayHighest with all symbols on first load (so table always renders)
+   331→      if (Object.keys(dayHighest).length === 0 && data.symbols.length > 0) {
+   332→        const seed: Record<string, SymbolDayHighest> = {};
+   333→        for (const s of data.symbols) {
+   334→          seed[s.symbol] = emptyDayHighest();
+   335→        }
+   336→        setDayHighest(seed);
+   337→      }
+   338→
+   339→      // Compute flows if we have a previous snapshot
+   340→      if (prevSnapRef.current && prevSnapRef.current.symbols.length > 0) {
+   341→        const flows = computeIntervalFlows(prevSnapRef.current, snapshot);
+   342→        setCurrentFlows(flows);
+   343→        setIntervalCount(c => c + 1);
+   344→
+   345→        // Update day's highest
+   346→        const istTime = toIST(data.timestamp);
+   347→        setDayHighest(prev => {
+   348→          const next = { ...prev };
+   349→          let changed = false;
+   350→
+   351→          for (const flow of flows) {
+   352→            const existing = next[flow.symbol] || emptyDayHighest();
+   353→            const updated = { ...existing };
+   354→
+   355→            // Check each category
+   356→            if (flow.cash > existing.cash.value) {
+   357→              updated.cash = { value: flow.cash, time: istTime };
+   358→              changed = true;
+   359→            }
+   360→            if (Math.abs(flow.future) > Math.abs(existing.future.value)) {
+   361→              updated.future = { value: flow.future, time: istTime };
+   362→              changed = true;
+   363→            }
+   364→            if (flow.ceBuy > existing.ceBuy.value) {
+   365→              updated.ceBuy = { value: flow.ceBuy, time: istTime, strike: 0 };
+   366→              changed = true;
+   367→            }
+   368→            if (flow.ceWrite > existing.ceWrite.value) {
+   369→              updated.ceWrite = { value: flow.ceWrite, time: istTime, strike: 0 };
+   370→              changed = true;
+   371→            }
+   372→            if (flow.peBuy > existing.peBuy.value) {
+   373→              updated.peBuy = { value: flow.peBuy, time: istTime, strike: 0 };
+   374→              changed = true;
+   375→            }
+   376→            if (flow.peWrite > existing.peWrite.value) {
+   377→              updated.peWrite = { value: flow.peWrite, time: istTime, strike: 0 };
+   378→              changed = true;
+   379→            }
+   380→
+   381→            // Net flow = cumulative max absolute
+   382→            if (Math.abs(flow.netFlow) > Math.abs(existing.netFlow)) {
+   383→              updated.netFlow = flow.netFlow;
+   384→            }
+   385→
+   386→            // Peak info: which type had the absolute highest
+   387→            const cats = [
+   388→              { type: 'CE Buy', val: updated.ceBuy.value, strike: updated.ceBuy.strike },
+   389→              { type: 'CE Write', val: updated.ceWrite.value, strike: updated.ceWrite.strike },
+   390→              { type: 'PE Buy', val: updated.peBuy.value, strike: updated.peBuy.strike },
+   391→              { type: 'PE Write', val: updated.peWrite.value, strike: updated.peWrite.strike },
+   392→              { type: 'Cash', val: updated.cash.value },
+   393→              { type: 'Future', val: Math.abs(updated.future.value) },
+   394→            ];
+   395→            const peakCat = cats.reduce((a, b) => a.val > b.val ? a : b, cats[0]);
+   396→            updated.peakType = peakCat.type;
+   397→            updated.peakTime = peakCat.strike !== undefined ? (cats.find(c => c.type === peakCat.type)?.time || istTime) : istTime;
+   398→
+   399→            next[flow.symbol] = updated;
+   400→          }
+   401→
+   402→          if (changed) saveToLS(next);
+   403→          return next;
+   404→        });
+   405→      }
+   406→
+   407→      // Shift snapshots
+   408→      prevSnapRef.current = currSnapRef.current;
+   409→      currSnapRef.current = snapshot;
+   410→
+   411→      setLoading(false);
+   412→    } catch (err) {
+   413→      if (!mountedRef.current) return;
+   414→      setError(err instanceof Error ? err.message : 'Fetch failed');
+   415→      setLoading(false);
+   416→    }
+   417→  }, []);
+   418→
+   419→  useEffect(() => {
+   420→    mountedRef.current = true;
+   421→    fetchData();
+   422→    timerRef.current = setInterval(fetchData, 30000);
+   423→    return () => {
+   424→      mountedRef.current = false;
+   425→      if (timerRef.current) clearInterval(timerRef.current);
+   426→    };
+   427→  }, [fetchData]);
+   428→
+   429→  // Manual refresh
+   430→  const handleRefresh = () => {
+   431→    setLoading(true);
+   432→    prevSnapRef.current = null; // Reset to get fresh diff
+   433→    fetchData();
+   434→  };
+   435→
+   436→  // Sort logic
+   437→  const toggleSort = (key: SortKey) => {
+   438→    if (sortKey === key) setSortAsc(!sortAsc);
+   439→    else { setSortKey(key); setSortAsc(false); }
+   440→  };
+   441→
+   442→  const sortedSymbols = Object.entries(dayHighest)
+   443→    .map(([symbol, h]) => {
+   444→      const sp = spotPrices[symbol];
+   445→      const currentFlow = currentFlows.find(f => f.symbol === symbol);
+   446→      return { symbol, h, spotPrice: sp?.price || 0, spotChange: sp?.change || 0, currentFlow };
+   447→    })
+   448→    .sort((a, b) => {
+   449→      let va = 0, vb = 0;
+   450→      switch (sortKey) {
+   451→        case 'symbol': return sortAsc ? a.symbol.localeCompare(b.symbol) : b.symbol.localeCompare(a.symbol);
+   452→        case 'cash': va = a.h.cash.value; vb = b.h.cash.value; break;
+   453→        case 'future': va = Math.abs(a.h.future.value); vb = Math.abs(b.h.future.value); break;
+   454→        case 'ceBuy': va = a.h.ceBuy.value; vb = b.h.ceBuy.value; break;
+   455→        case 'ceWrite': va = a.h.ceWrite.value; vb = b.h.ceWrite.value; break;
+   456→        case 'peBuy': va = a.h.peBuy.value; vb = b.h.peBuy.value; break;
+   457→        case 'peWrite': va = a.h.peWrite.value; vb = b.h.peWrite.value; break;
+   458→        case 'netFlow': va = Math.abs(a.h.netFlow); vb = Math.abs(b.h.netFlow); break;
+   459→      }
+   460→      return sortAsc ? va - vb : vb - va;
+   461→    });
+   462→
+   463→  // Find overall biggest bet of the day
+   464→  const biggestBet = sortedSymbols.reduce((best, row) => {
+   465→    const cats = [
+   466→      { val: row.h.ceBuy.value, type: 'CE Buy', time: row.h.ceBuy.time, sym: row.symbol },
+   467→      { val: row.h.ceWrite.value, type: 'CE Write', time: row.h.ceWrite.time, sym: row.symbol },
+   468→      { val: row.h.peBuy.value, type: 'PE Buy', time: row.h.peBuy.time, sym: row.symbol },
+   469→      { val: row.h.peWrite.value, type: 'PE Write', time: row.h.peWrite.time, sym: row.symbol },
+   470→      { val: row.h.cash.value, type: 'Cash', time: row.h.cash.time, sym: row.symbol },
+   471→      { val: Math.abs(row.h.future.value), type: 'Future', time: row.h.future.time, sym: row.symbol },
+   472→    ];
+   473→    const peak = cats.reduce((a, b) => a.val > b.val ? a : b, cats[0]);
+   474→    if (peak.val > (best?.val || 0)) return { val: peak.val, type: peak.type, time: peak.time, sym: peak.sym };
+   475→    return best;
+   476→  }, null as { val: number; type: string; time: string; sym: string } | null);
+   477→
+   478→  // ═══ SECTOR FLOW ROTATION ═══
+   479→  const SECTORS: Record<string, string[]> = {
+   480→    'Banking': ['HDFCBANK', 'ICICIBANK', 'SBIN', 'KOTAKBANK', 'AXISBANK'],
+   481→    'IT': ['TCS', 'INFY'],
+   482→    'FMCG': ['HINDUNILVR', 'ITC'],
+   483→    'Energy': ['RELIANCE'],
+   484→    'Auto': ['MARUTI', 'TATAMOTORS'],
+   485→    'Finance': ['BAJFINANCE'],
+   486→    'Infra': ['LT'],
+   487→    'Telecom': ['BHARTIARTL'],
+   488→  };
+   489→
+   490→  const sectorFlow = Object.entries(SECTORS).map(([sector, stocks]) => {
+   491→    const stocksData = currentFlows.filter(f => stocks.includes(f.symbol));
+   492→    const netSum = stocksData.reduce((s, f) => s + f.netFlow, 0);
+   493→    const dayHighSum = stocks.reduce((s, sym) => {
+   494→      const h = dayHighest[sym];
+   495→      if (!h) return s;
+   496→      return s + Math.abs(h.ceBuy.value) + Math.abs(h.peBuy.value) + Math.abs(h.ceWrite.value) + Math.abs(h.peWrite.value);
+   497→    }, 0);
+   498→    return { sector, netFlow: netSum, activity: dayHighSum, stockCount: stocks.length };
+   499→  }).sort((a, b) => Math.abs(b.netFlow) - Math.abs(a.netFlow));
+   500→
+   501→  const maxSectorActivity = Math.max(...sectorFlow.map(s => s.activity), 1);
+   502→
+   503→  // ═══ RENDER ═══
+   504→
+   505→  const fmtCr = (v: number) => {
+   506→    const abs = Math.abs(v);
+   507→    if (abs >= 1000) return `${(abs / 1000).toFixed(1)}K Cr`;
+   508→    if (abs >= 1) return `${abs.toFixed(1)} Cr`;
+   509→    if (abs >= 0.01) return `${(abs * 100).toFixed(0)}L`;
+   510→    return `${(abs * 10000).toFixed(0)}K`;
+   511→  };
+   512→
+   513→  const cellColor = (value: number, isBullish?: boolean) => {
+   514→    if (value <= 0) return 'text-muted-foreground/50';
+   515→    if (isBullish === true) return 'text-emerald-400';
+   516→    if (isBullish === false) return 'text-red-400';
+   517→    return 'text-amber-400';
+   518→  };
+   519→
+   520→  return (
+   521→    <div className="space-y-3">
+   522→      {/* Header Bar */}
+   523→      <div className="flex items-center justify-between flex-wrap gap-2">
+   524→        <div className="flex items-center gap-2">
+   525→          <Badge variant="outline" className={
+   526→            mode === 'live' ? 'border-emerald-500/40 text-emerald-300' : 'border-amber-500/40 text-amber-300'
+   527→          }>
+   528→            {mode === 'live' ? <Wifi className="mr-1 h-3 w-3" /> : <WifiOff className="mr-1 h-3 w-3" />}
+   529→            {mode === 'live' ? 'LIVE' : 'DEMO'}
+   530→          </Badge>
+   531→          <span className="text-[10px] text-muted-foreground">
+   532→            {intervalCount > 0 ? `${intervalCount} intervals tracked` : 'Waiting for 2nd snapshot...'}
+   533→          </span>
+   534→          {lastUpdate && (
+   535→            <span className="text-[10px] text-muted-foreground font-mono">Last: {lastUpdate}</span>
+   536→          )}
+   537→        </div>
+   538→        <button
+   539→          onClick={handleRefresh}
+   540→          className="text-xs px-2 py-1 rounded border border-border/50 hover:bg-muted/50 transition-colors flex items-center gap-1"
+   541→        >
+   542→          <RefreshCw className={`h-3 w-3 ${loading ? 'animate-spin' : ''}`} /> Reset
+   543→        </button>
+   544→      </div>
+   545→
+   546→      {/* Biggest Bet of the Day - Summary Card */}
+   547→      {biggestBet && biggestBet.val > 0 && (
+   548→        <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-3">
+   549→          <div className="flex items-center gap-2 mb-1">
+   550→            <Trophy className="h-4 w-4 text-amber-400" />
+   551→            <span className="text-xs font-bold text-amber-300">BIGGEST BET OF THE DAY</span>
+   552→          </div>
+   553→          <div className="flex items-center gap-4 flex-wrap">
+   554→            <div>
+   555→              <span className="text-lg font-bold text-foreground">{biggestBet.sym}</span>
+   556→              <span className="text-xs text-muted-foreground ml-2">{biggestBet.type}</span>
+   557→            </div>
+   558→            <div className="text-xl font-bold text-amber-400">{fmtCr(biggestBet.val)}</div>
+   559→            <div className="flex items-center gap-1 text-xs text-muted-foreground">
+   560→              <Clock className="h-3 w-3" />
+   561→              {biggestBet.time}
+   562→            </div>
+   563→          </div>
+   564→        </div>
+   565→      )}
+   566→
+   567→      {/* Sector Flow Rotation */}
+   568→      {currentFlows.length > 0 && (
+   569→        <div className="rounded-lg border border-border/30 bg-card p-3">
+   570→          <div className="flex items-center gap-2 mb-2">
+   571→            <Layers className="h-3.5 w-3.5 text-purple-400" />
+   572→            <span className="text-xs font-bold text-purple-300">SECTOR FLOW ROTATION</span>
+   573→            <span className="text-[9px] text-muted-foreground">current interval net flow by sector</span>
+   574→          </div>
+   575→          <div className="space-y-1.5">
+   576→            {sectorFlow.map(s => (
+   577→              <div key={s.sector} className="flex items-center gap-2 text-[11px]">
+   578→                <span className="w-16 text-right text-muted-foreground font-medium">{s.sector}</span>
+   579→                <div className="flex-1 h-4 bg-muted/20 rounded overflow-hidden relative">
+   580→                  {s.netFlow !== 0 && (
+   581→                    <div
+   582→                      className={`h-full rounded ${s.netFlow > 0 ? 'bg-emerald-500/40' : 'bg-red-500/40'}`}
+   583→                      style={{ width: `${Math.min(100, (Math.abs(s.netFlow) / (maxSectorActivity || 1)) * 100)}%` }}
+   584→                    />
+   585→                  )}
+   586→                  <span className="absolute inset-0 flex items-center px-1.5 font-mono text-[10px]">
+   587→                    {s.netFlow !== 0 ? `${s.netFlow > 0 ? '+' : ''}${fmtCr(s.netFlow)}` : '--'}
+   588→                  </span>
+   589→                </div>
+   590→                <span className="w-6 text-right text-muted-foreground">{s.stockCount}</span>
+   591→              </div>
+   592→            ))}
+   593→          </div>
+   594→        </div>
+   595→      )}
+   596→
+   597→      {/* Error state */}
+   598→      {error && (
+   599→        <div className="rounded-lg border border-red-500/30 bg-red-500/5 p-3 text-sm text-red-400">
+   600→          {error}
+   601→        </div>
+   602→      )}
+   603→
+   604→      {/* Loading state */}
+   605→      {loading && sortedSymbols.length === 0 && (
+   606→        <div className="rounded-lg border border-border/30 bg-card p-6 text-center text-muted-foreground text-sm">
+   607→          <RefreshCw className="h-5 w-5 animate-spin mx-auto mb-2" />
+   608→          Loading 19 symbols... (need 2 snapshots for flow data)
+   609→        </div>
+   610→      )}
+   611→
+   612→      {/* No data yet state */}
+   613→      {!loading && sortedSymbols.length === 0 && (
+   614→        <div className="rounded-lg border border-border/30 bg-card p-6 text-center text-muted-foreground text-sm">
+   615→          <Zap className="h-5 w-5 mx-auto mb-2 opacity-40" />
+   616→          Waiting for first data snapshot...<br />
+   617→          <span className="text-xs">Flow data appears after 2 consecutive polls (~30s)</span>
+   618→        </div>
+   619→      )}
+   620→
+   621→
+   622→      {/* Main Table */}
+   623→      {sortedSymbols.length > 0 && (
+   624→        <div className="rounded-lg border border-border/30 overflow-hidden">
+   625→          <div className="overflow-x-auto">
+   626→            <table className="w-full text-xs">
+   627→              <thead>
+   628→                <tr className="bg-muted/30 border-b border-border/30">
+   629→                  <th className="px-2 py-2 text-left font-medium text-muted-foreground w-8">#</th>
+   630→                  <th
+   631→                    className="px-2 py-2 text-left font-medium cursor-pointer hover:text-foreground transition-colors"
+   632→                    onClick={() => toggleSort('symbol')}
+   633→                  >
+   634→                    <div className="flex items-center gap-1">Symbol <ArrowUpDown className="h-3 w-3" /></div>
+   635→                  </th>
+   636→                  <th className="px-2 py-2 text-right font-medium text-muted-foreground">Spot</th>
+   637→                  <th
+   638→                    className="px-2 py-2 text-right font-medium cursor-pointer hover:text-foreground transition-colors"
+   639→                    onClick={() => toggleSort('cash')}
+   640→                  >
+   641→                    <div className="flex items-center justify-end gap-1">Cash <ArrowUpDown className="h-3 w-3" /></div>
+   642→                  </th>
+   643→                  <th
+   644→                    className="px-2 py-2 text-right font-medium cursor-pointer hover:text-foreground transition-colors"
+   645→                    onClick={() => toggleSort('future')}
+   646→                  >
+   647→                    <div className="flex items-center justify-end gap-1">Future <ArrowUpDown className="h-3 w-3" /></div>
+   648→                  </th>
+   649→                  <th
+   650→                    className="px-2 py-2 text-right font-medium cursor-pointer hover:text-emerald-400/80 transition-colors"
+   651→                    onClick={() => toggleSort('ceBuy')}
+   652→                  >
+   653→                    <div className="flex items-center justify-end gap-1">
+   654→                      <span className="text-emerald-500">CE Buy</span> <ArrowUpDown className="h-3 w-3" />
+   655→                    </div>
+   656→                  </th>
+   657→                  <th
+   658→                    className="px-2 py-2 text-right font-medium cursor-pointer hover:text-red-400/80 transition-colors"
+   659→                    onClick={() => toggleSort('ceWrite')}
+   660→                  >
+   661→                    <div className="flex items-center justify-end gap-1">
+   662→                      <span className="text-red-400">CE Write</span> <ArrowUpDown className="h-3 w-3" />
+   663→                    </div>
+   664→                  </th>
+   665→                  <th
+   666→                    className="px-2 py-2 text-right font-medium cursor-pointer hover:text-red-400/80 transition-colors"
+   667→                    onClick={() => toggleSort('peBuy')}
+   668→                  >
+   669→                    <div className="flex items-center justify-end gap-1">
+   670→                      <span className="text-red-500">PE Buy</span> <ArrowUpDown className="h-3 w-3" />
+   671→                    </div>
+   672→                  </th>
+   673→                  <th
+   674→                    className="px-2 py-2 text-right font-medium cursor-pointer hover:text-emerald-400/80 transition-colors"
+   675→                    onClick={() => toggleSort('peWrite')}
+   676→                  >
+   677→                    <div className="flex items-center justify-end gap-1">
+   678→                      <span className="text-emerald-400">PE Write</span> <ArrowUpDown className="h-3 w-3" />
+   679→                    </div>
+   680→                  </th>
+   681→                  <th
+   682→                    className="px-2 py-2 text-right font-medium cursor-pointer hover:text-foreground transition-colors"
+   683→                    onClick={() => toggleSort('netFlow')}
+   684→                  >
+   685→                    <div className="flex items-center justify-end gap-1">Net <ArrowUpDown className="h-3 w-3" /></div>
+   686→                  </th>
+   687→                  <th className="px-2 py-2 text-right font-medium text-muted-foreground">Peak</th>
+   688→                </tr>
+   689→              </thead>
+   690→              <tbody>
+   691→                {sortedSymbols.map((row, idx) => {
+   692→                  const { h, symbol, spotPrice, spotChange, currentFlow } = row;
+   693→                  const isBiggest = biggestBet?.sym === symbol;
+   694→
+   695→                  return (
+   696→                    <tr
+   697→                      key={symbol}
+   698→                      className={`border-b border-border/20 hover:bg-muted/20 transition-colors ${
+   699→                        isBiggest ? 'bg-amber-500/5 border-amber-500/20' : ''
+   700→                      }`}
+   701→                    >
+   702→                      {/* Rank */}
+   703→                      <td className="px-2 py-1.5 text-muted-foreground font-mono">{idx + 1}</td>
+   704→
+   705→                      {/* Symbol + Change */}
+   706→                      <td className="px-2 py-1.5">
+   707→                        <div className="flex items-center gap-1.5">
+   708→                          {isBiggest && <Trophy className="h-3 w-3 text-amber-400 flex-shrink-0" />}
+   709→                          <span className="font-bold text-foreground">{symbol}</span>
+   710→                          {spotPrice > 0 && (
+   711→                            <span className={`text-[10px] font-mono ${spotChange >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+   712→                              {spotPrice.toLocaleString('en-IN', { maximumFractionDigits: 1 })}
+   713→                              <span className="ml-0.5">{spotChange >= 0 ? '+' : ''}{spotChange.toFixed(1)}%</span>
+   714→                            </span>
+   715→                          )}
+   716→                        </div>
+   717→                      </td>
+   718→
+   719→                      {/* Cash - Highest turnover delta */}
+   720→                      <td className="px-2 py-1.5 text-right">
+   721→                        <div className={cellColor(h.cash.value)}>
+   722→                          <div className="font-mono font-bold">{fmtCr(h.cash.value)}</div>
+   723→                          {h.cash.value > 0 && <div className="text-[9px] text-muted-foreground/70 font-mono">{h.cash.time}</div>}
+   724→                        </div>
+   725→                        {/* Current interval indicator */}
+   726→                        {currentFlow && currentFlow.cash > 0 && (
+   727→                          <div className="text-[9px] text-amber-400/60 font-mono">now: {fmtCr(currentFlow.cash)}</div>
+   728→                        )}
+   729→                      </td>
+   730→
+   731→                      {/* Future - Highest OI change */}
+   732→                      <td className="px-2 py-1.5 text-right">
+   733→                        <div className={h.future.value > 0 ? 'text-emerald-400' : h.future.value < 0 ? 'text-red-400' : 'text-muted-foreground/50'}>
+   734→                          <div className="font-mono font-bold">
+   735→                            {h.future.value !== 0 ? `${h.future.value > 0 ? '+' : ''}${fmtCr(h.future.value)}` : '--'}
+   736→                          </div>
+   737→                          {h.future.value !== 0 && <div className="text-[9px] text-muted-foreground/70 font-mono">{h.future.time}</div>}
+   738→                        </div>
+   739→                        {currentFlow && currentFlow.future !== 0 && (
+   740→                          <div className={`text-[9px] font-mono ${currentFlow.future > 0 ? 'text-emerald-400/60' : 'text-red-400/60'}`}>
+   741→                            now: {currentFlow.future > 0 ? '+' : ''}{fmtCr(currentFlow.future)}
+   742→                          </div>
+   743→                        )}
+   744→                      </td>
+   745→
+   746→                      {/* CE Buy - bright green */}
+   747→                      <td className="px-2 py-1.5 text-right">
+   748→                        <div className={cellColor(h.ceBuy.value, true)}>
+   749→                          <div className="font-mono font-bold">{h.ceBuy.value > 0 ? fmtCr(h.ceBuy.value) : '--'}</div>
+   750→                          {h.ceBuy.value > 0 && <div className="text-[9px] text-muted-foreground/70 font-mono">{h.ceBuy.time}</div>}
+   751→                        </div>
+   752→                        {currentFlow && currentFlow.ceBuy > 0 && (
+   753→                          <div className="text-[9px] text-emerald-400/60 font-mono">now: {fmtCr(currentFlow.ceBuy)}</div>
+   754→                        )}
+   755→                      </td>
+   756→
+   757→                      {/* CE Write - light red */}
+   758→                      <td className="px-2 py-1.5 text-right">
+   759→                        <div className={cellColor(h.ceWrite.value, false)}>
+   760→                          <div className="font-mono font-bold">{h.ceWrite.value > 0 ? fmtCr(h.ceWrite.value) : '--'}</div>
+   761→                          {h.ceWrite.value > 0 && <div className="text-[9px] text-muted-foreground/70 font-mono">{h.ceWrite.time}</div>}
+   762→                        </div>
+   763→                        {currentFlow && currentFlow.ceWrite > 0 && (
+   764→                          <div className="text-[9px] text-red-400/60 font-mono">now: {fmtCr(currentFlow.ceWrite)}</div>
+   765→                        )}
+   766→                      </td>
+   767→
+   768→                      {/* PE Buy - bright red */}
+   769→                      <td className="px-2 py-1.5 text-right">
+   770→                        <div className={cellColor(h.peBuy.value, false)}>
+   771→                          <div className="font-mono font-bold">{h.peBuy.value > 0 ? fmtCr(h.peBuy.value) : '--'}</div>
+   772→                          {h.peBuy.value > 0 && <div className="text-[9px] text-muted-foreground/70 font-mono">{h.peBuy.time}</div>}
+   773→                        </div>
+   774→                        {currentFlow && currentFlow.peBuy > 0 && (
+   775→                          <div className="text-[9px] text-red-400/60 font-mono">now: {fmtCr(currentFlow.peBuy)}</div>
+   776→                        )}
+   777→                      </td>
+   778→
+   779→                      {/* PE Write - light green */}
+   780→                      <td className="px-2 py-1.5 text-right">
+   781→                        <div className={cellColor(h.peWrite.value, true)}>
+   782→                          <div className="font-mono font-bold">{h.peWrite.value > 0 ? fmtCr(h.peWrite.value) : '--'}</div>
+   783→                          {h.peWrite.value > 0 && <div className="text-[9px] text-muted-foreground/70 font-mono">{h.peWrite.time}</div>}
+   784→                        </div>
+   785→                        {currentFlow && currentFlow.peWrite > 0 && (
+   786→                          <div className="text-[9px] text-emerald-400/60 font-mono">now: {fmtCr(currentFlow.peWrite)}</div>
+   787→                        )}
+   788→                      </td>
+   789→
+   790→                      {/* Net Flow */}
+   791→                      <td className="px-2 py-1.5 text-right">
+   792→                        <div className={`font-mono font-bold ${h.netFlow > 0 ? 'text-emerald-400' : h.netFlow < 0 ? 'text-red-400' : 'text-muted-foreground/50'}`}>
+   793→                          {h.netFlow !== 0 ? `${h.netFlow > 0 ? '+' : ''}${fmtCr(h.netFlow)}` : '--'}
+   794→                        </div>
+   795→                      </td>
+   796→
+   797→                      {/* Peak Time + Type */}
+   798→                      <td className="px-2 py-1.5 text-right">
+   799→                        <div className="text-[10px] font-mono text-muted-foreground">{h.peakTime}</div>
+   800→                        {h.peakType !== '-' && (
+   801→                          <Badge variant="outline" className={`text-[8px] px-1 py-0 border-amber-500/20 text-amber-300 ${
+   802→                            h.peakType.includes('Buy') && h.peakType.includes('CE') ? 'border-emerald-500/30 text-emerald-300' :
+   803→                            h.peakType.includes('Buy') && h.peakType.includes('PE') ? 'border-red-500/30 text-red-300' :
+   804→                            h.peakType.includes('Write') && h.peakType.includes('CE') ? 'border-red-400/30 text-red-300' :
+   805→                            h.peakType.includes('Write') && h.peakType.includes('PE') ? 'border-emerald-400/30 text-emerald-300' :
+   806→                            'border-amber-500/20 text-amber-300'
+   807→                          }`}>
+   808→                            {h.peakType}
+   809→                          </Badge>
+   810→                        )}
+   811→                      </td>
+   812→                    </tr>
+   813→                  );
+   814→                })}
+   815→              </tbody>
+   816→            </table>
+   817→          </div>
+   818→        </div>
+   819→      )}
+   820→
+   821→      {/* Legend / Footer */}
+   822→      <div className="flex items-center gap-3 flex-wrap text-[10px] text-muted-foreground">
+   823→        <span className="flex items-center gap-1"><Zap className="h-3 w-3 text-amber-400" /> Big = Day&apos;s highest single-strike bet</span>
+   824→        <span className="flex items-center gap-1"><TrendingUp className="h-3 w-3 text-emerald-400" /> Green = Bullish (CE Buy / PE Write)</span>
+   825→        <span className="flex items-center gap-1"><TrendingDown className="h-3 w-3 text-red-400" /> Red = Bearish (PE Buy / CE Write)</span>
+   826→        <span>now: = current interval | 30s refresh | persisted in browser</span>
+   827→      </div>
+   828→    </div>
+   829→  );
+   830→}
+   831→

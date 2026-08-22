@@ -419,6 +419,11 @@ export async function GET(request: NextRequest) {
       return NextResponse.json(generateDemoData());
     }
     const data = await fetchLiveData();
+    // Fallback to demo when live returns error (e.g. market closed, no tokens)
+    if (data.mode === 'error' || data.symbols.length === 0) {
+      console.warn('[HighestBet] Live mode returned empty/error, falling back to demo:', data.error);
+      return NextResponse.json(generateDemoData());
+    }
     return NextResponse.json(data);
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
