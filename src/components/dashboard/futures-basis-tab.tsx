@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { Badge } from '@/components/ui/badge';
-import { Activity, TrendingUp, TrendingDown, ArrowUpRight, ArrowDownRight, Minus, RefreshCw, Wifi, WifiOff } from 'lucide-react';
+import { Activity, TrendingUp, TrendingDown, ArrowUpRight, ArrowDownRight, ArrowUpDown, Minus, RefreshCw, Wifi, WifiOff } from 'lucide-react';
 import { withCreds } from '@/lib/kite-creds';
 import type { StrikeFlowData } from '@/lib/kite-api';
 
