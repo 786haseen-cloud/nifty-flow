@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useMemo, useCallback } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { withCreds } from '@/lib/kite-creds';
 import { Badge } from '@/components/ui/badge';
 import {
   BarChart3, Activity, Layers, Zap, Crosshair,
@@ -76,7 +77,7 @@ export default function OptionsFlowTab() {
 
   // Check Kite API status on mount
   useEffect(() => {
-    fetch('/api/kite/status')
+    fetch(withCreds('/api/kite/status'))
       .then(r => r.json())
       .then(data => {
         setKiteStatus(data.configured ? 'connected' : 'demo');

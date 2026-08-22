@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { Badge } from '@/components/ui/badge';
+import { withCreds } from '@/lib/kite-creds';
 import { Wifi, WifiOff, RefreshCw, Trophy, ArrowUpDown, TrendingUp, TrendingDown, Clock, Zap, Layers } from 'lucide-react';
 import type { StrikeFlowData } from '@/lib/kite-api';
 
@@ -299,7 +300,7 @@ export default function HighestBetTracker() {
 
   const fetchData = useCallback(async () => {
     try {
-      const res = await fetch('/api/kite/highest-bet');
+      const res = await fetch(withCreds('/api/kite/highest-bet'));
       const data = await res.json();
 
       if (!mountedRef.current) return;

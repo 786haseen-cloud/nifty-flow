@@ -1,24 +1,34 @@
 /**
  * Kite Status — Check if API is configured AND working
- * GET /api/kite/status
+ * GET /api/kite/status?api_key=xxx&access_token=xxx
  *
  * Tests multiple Kite endpoints to pinpoint the exact issue.
  */
-import { NextResponse } from 'next/server';
-import { isKiteConfigured } from '@/lib/kite-api';
+import { NextRequest, NextResponse } from 'next/server';
+import { isKiteConfigured, setKiteOverride } from '@/lib/kite-api';
 
 const KITE_BASE = 'https://api.kite.trade';
 const NIFTY_TOKEN = 256265;
 
-export async function GET() {
+export async function GET(request: NextRequest) {
+  // Extract creds from query params
+  let apiKey = '';
+  let accessToken = '';
+  try {
+    const u = new URL(request.url);
+    apiKey = u.searchParams.get('api_key') || '';
+    accessToken = u.searchParams.get('access_token') || '';
+    if (apiKey && accessToken) setKiteOverride(apiKey, accessToken);
+  } catch {}
+
   const configured = isKiteConfigured();
 
   const result: Record<string, any> = {
     configured,
     provider: 'Zerodha Kite',
-    apiKeySet: !!process.env.KITE_API_KEY,
-    accessTokenSet: !!process.env.KITE_ACCESS_TOKEN,
-    accessTokenLength: process.env.KITE_ACCESS_TOKEN?.length || 0,
+    apiKeySet: !!process.env.KITE_API_KEY || !!apiKey,
+    accessTokenSet: !!process.env.KITE_ACCESS_TOKEN || !!accessToken,
+    accessTokenLength: (accessToken || process.env.KITE_ACCESS_TOKEN || '').length,
   };
 
   if (!configured) {
@@ -26,10 +36,10 @@ export async function GET() {
     return NextResponse.json(result);
   }
 
-  const token = process.env.KITE_ACCESS_TOKEN!.trim();
-  const apiKey = process.env.KITE_API_KEY || '';
+  const token = accessToken || process.env.KITE_ACCESS_TOKEN || '';
+  const key = apiKey || process.env.KITE_API_KEY || '';
   const headers = {
-    'Authorization': `token ${apiKey}:${token}`,
+    'Authorization': `token ${key}:${token}`,
     'X-Kite-Version': '3',
     'Content-Type': 'application/x-www-form-urlencoded',
   };
@@ -49,7 +59,7 @@ export async function GET() {
     result.mode = 'error';
     result.connectionTest = 'FAIL';
     result.message = 'Token is invalid or expired. /user/margins rejected it.';
-    result.fix = 'Get a fresh access token from kite.zerodha.com/connect/login and update KITE_ACCESS_TOKEN in Vercel env vars. Tokens expire daily at midnight IST.';
+    result.fix = 'Get a fresh access token from kite.zerodha.com/connect/login and update the token in Settings tab.';
     return NextResponse.json(result);
   }
 
@@ -64,30 +74,17 @@ export async function GET() {
     result.tokenQuoteTest = { error: e.message };
   }
 
-  // Test 3: /quote with trading symbol NSE:NIFTY 50
-  let symbolQuoteOk = false;
-  try {
-    const sRes = await fetch(`${KITE_BASE}/quote?i=NSE:NIFTY%2050`, { headers });
-    const sText = await sRes.text();
-    result.symbolQuoteTest = { status: sRes.status, preview: sText.substring(0, 500) };
-    symbolQuoteOk = sRes.ok;
-  } catch (e: any) {
-    result.symbolQuoteTest = { error: e.message };
-  }
-
-  if (tokenQuoteOk || symbolQuoteOk) {
+  if (tokenQuoteOk) {
     let lastPrice = null;
-    if (tokenQuoteOk) {
-      try {
-        const data = JSON.parse(result.tokenQuoteTest.preview);
-        lastPrice = data?.data?.[String(NIFTY_TOKEN)]?.last_price;
-      } catch {}
-    }
+    try {
+      const data = JSON.parse(result.tokenQuoteTest.preview);
+      lastPrice = data?.data?.[String(NIFTY_TOKEN)]?.last_price;
+    } catch {}
     result.mode = 'live';
     result.connectionTest = 'PASS';
     result.niftyLastPrice = lastPrice;
     result.message = 'Kite API connected successfully!';
-    result.tokenFormat = tokenQuoteOk ? 'instrument_token' : 'trading_symbol';
+    result.tokenFormat = 'instrument_token';
   } else {
     result.mode = 'error';
     result.connectionTest = 'FAIL';

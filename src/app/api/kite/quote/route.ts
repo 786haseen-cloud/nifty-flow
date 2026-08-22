@@ -5,10 +5,12 @@
  * Returns live prices for the dashboard price line chart
  */
 import { NextRequest, NextResponse } from 'next/server';
-import { isKiteConfigured, getQuotes, KITE_INDEX_INSTRUMENTS } from '@/lib/kite-api';
+import { getQuotes, KITE_INDEX_INSTRUMENTS } from '@/lib/kite-api';
+import { applyKiteCredsFromRequest } from '@/lib/kite-route-helper';
 
 export async function GET(req: NextRequest) {
-  if (!isKiteConfigured()) {
+  const configured = applyKiteCredsFromRequest(req.url);
+  if (!configured) {
     return NextResponse.json({
       mode: 'demo',
       message: 'Kite API not configured. Set KITE_API_KEY + KITE_ACCESS_TOKEN in Vercel env vars.',

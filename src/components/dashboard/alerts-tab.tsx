@@ -7,6 +7,7 @@ import {
   Bell, BellRing, Plus, Trash2, Volume2, VolumeX, Chrome,
 } from 'lucide-react';
 import type { StrikeFlowData } from '@/lib/kite-api';
+import { withCreds } from '@/lib/kite-creds';
 
 // ═══════════════════════════════════════════
 // TYPES
@@ -379,7 +380,7 @@ export default function AlertsTab() {
       if (cancelled) return;
 
       try {
-        const res = await fetch('/api/kite/highest-bet');
+        const res = await fetch(withCreds('/api/kite/highest-bet'));
         const data: BatchResponse = await res.json();
         if (cancelled) return;
 
@@ -409,7 +410,7 @@ export default function AlertsTab() {
     // Initial fetch
     (async () => {
       try {
-        const res = await fetch('/api/kite/highest-bet');
+        const res = await fetch(withCreds('/api/kite/highest-bet'));
         const data: BatchResponse = await res.json();
         if (cancelled) return;
         setMode(data.mode);

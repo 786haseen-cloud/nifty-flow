@@ -5,10 +5,12 @@
  * Returns options flow data per strike (CB/PW/PB/CW + OI)
  */
 import { NextRequest, NextResponse } from 'next/server';
-import { isKiteConfigured, getOptionsFlow, getInstrumentMeta } from '@/lib/kite-api';
+import { getOptionsFlow, getInstrumentMeta } from '@/lib/kite-api';
+import { applyKiteCredsFromRequest } from '@/lib/kite-route-helper';
 
 export async function GET(req: NextRequest) {
-  if (!isKiteConfigured()) {
+  const configured = applyKiteCredsFromRequest(req.url);
+  if (!configured) {
     return NextResponse.json({
       mode: 'demo',
       message: 'Kite API not configured',

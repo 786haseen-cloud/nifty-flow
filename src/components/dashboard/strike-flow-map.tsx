@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { Badge } from '@/components/ui/badge';
+import { withCreds } from '@/lib/kite-creds';
 import { Wifi, WifiOff, RefreshCw, Crosshair } from 'lucide-react';
 import { INDEX_SPECS, STOCK_SPECS } from '@/lib/kite-api';
 import type { StrikeFlowSnapshot, StrikeFlowData } from '@/lib/kite-api';
@@ -151,7 +152,7 @@ export default function StrikeFlowMap() {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(`/api/kite/strike-flow?symbol=${symbol}`);
+      const res = await fetch(withCreds(`/api/kite/strike-flow?symbol=${symbol}`));
       const data = await res.json();
 
       if (data.mode === 'demo') {

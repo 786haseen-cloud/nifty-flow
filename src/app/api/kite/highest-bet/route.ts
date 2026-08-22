@@ -10,9 +10,8 @@
  * 1. All spot/cash prices
  * 2. All option + future quotes
  */
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import {
-  isKiteConfigured,
   getInstruments,
   getQuotes,
   INDEX_SPECS,
@@ -20,6 +19,7 @@ import {
   type KiteQuote,
   type StrikeFlowData,
 } from '@/lib/kite-api';
+import { applyKiteCredsFromRequest } from '@/lib/kite-route-helper';
 
 // ─── Types ───
 
@@ -412,9 +412,10 @@ function generateDemoData(): HighestBetResponse {
 
 // ─── GET Handler ───
 
-export async function GET() {
+export async function GET(request: NextRequest) {
   try {
-    if (!isKiteConfigured()) {
+    const configured = applyKiteCredsFromRequest(request.url);
+    if (!configured) {
       return NextResponse.json(generateDemoData());
     }
     const data = await fetchLiveData();

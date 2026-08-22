@@ -21,16 +21,28 @@ const KITE_BASE = 'https://api.kite.trade';
 
 // ─── Config ───
 
+// Module-level credential override (set by API routes from query params)
+let _overrideApiKey = '';
+let _overrideAccessToken = '';
+
+/**
+ * Set credential override (called by API routes when frontend passes creds via query params)
+ */
+export function setKiteOverride(apiKey?: string, accessToken?: string): void {
+  _overrideApiKey = apiKey || '';
+  _overrideAccessToken = accessToken || '';
+}
+
 export function isKiteConfigured(): boolean {
   return !!(
-    process.env.KITE_API_KEY &&
-    process.env.KITE_ACCESS_TOKEN
+    (process.env.KITE_API_KEY && process.env.KITE_ACCESS_TOKEN) ||
+    (_overrideApiKey && _overrideAccessToken)
   );
 }
 
 function kiteHeaders() {
-  const apiKey = process.env.KITE_API_KEY || '';
-  const accessToken = process.env.KITE_ACCESS_TOKEN || '';
+  const apiKey = _overrideApiKey || process.env.KITE_API_KEY || '';
+  const accessToken = _overrideAccessToken || process.env.KITE_ACCESS_TOKEN || '';
   return {
     'Authorization': `token ${apiKey}:${accessToken}`,
     'X-Kite-Version': '3',

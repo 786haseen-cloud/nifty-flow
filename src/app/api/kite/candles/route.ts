@@ -5,10 +5,12 @@
  * Returns OHLCV candles for the Nifty50 price line chart
  */
 import { NextRequest, NextResponse } from 'next/server';
-import { isKiteConfigured, getCandles, NIFTY50_TOKEN } from '@/lib/kite-api';
+import { getCandles, NIFTY50_TOKEN } from '@/lib/kite-api';
+import { applyKiteCredsFromRequest } from '@/lib/kite-route-helper';
 
 export async function GET(req: NextRequest) {
-  if (!isKiteConfigured()) {
+  const configured = applyKiteCredsFromRequest(req.url);
+  if (!configured) {
     return NextResponse.json({
       mode: 'demo',
       message: 'Kite API not configured',

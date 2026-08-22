@@ -23,6 +23,7 @@ import SettingsConfig from '@/components/dashboard/settings-config';
 import { generateDemoVIX, getMarketStatus } from '@/lib/demo-data';
 import type { VIXData, NSESessionInfo } from '@/lib/types';
 import { getNSESession } from '@/lib/nse-sessions';
+import { hasKiteCreds } from '@/lib/kite-creds';
 
 export default function DashboardPage() {
   const [activeTab, setActiveTab] = useState('live'); // LIVE is the HERO — options + cash movement drives decisions
@@ -152,8 +153,11 @@ export default function DashboardPage() {
               )}
 
               {/* Connection Status */}
-              <Badge variant="outline" className="text-[10px] border-emerald-500/40 text-emerald-300">
-                <Wifi className="mr-1 h-3 w-3" />Demo
+              <Badge
+                variant="outline"
+                className={`text-[10px] ${hasKiteCreds() ? 'border-emerald-500/40 text-emerald-300' : 'border-orange-500/40 text-orange-300'}`}
+              >
+                {hasKiteCreds() ? <><Wifi className="mr-1 h-3 w-3" />LIVE</> : <><WifiOff className="mr-1 h-3 w-3" />Demo</>}
               </Badge>
             </div>
           </div>

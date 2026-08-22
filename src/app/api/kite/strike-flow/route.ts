@@ -10,10 +10,12 @@
  * This avoids Vercel serverless state-loss between cold starts.
  */
 import { NextRequest, NextResponse } from 'next/server';
-import { isKiteConfigured, getStrikeFlowSnapshot, getQuotes, getInstrumentSpec } from '@/lib/kite-api';
+import { getStrikeFlowSnapshot, getQuotes, getInstrumentSpec } from '@/lib/kite-api';
+import { applyKiteCredsFromRequest } from '@/lib/kite-route-helper';
 
 export async function GET(req: NextRequest) {
-  if (!isKiteConfigured()) {
+  const configured = applyKiteCredsFromRequest(req.url);
+  if (!configured) {
     return NextResponse.json({
       mode: 'demo',
       message: 'Kite API not configured',

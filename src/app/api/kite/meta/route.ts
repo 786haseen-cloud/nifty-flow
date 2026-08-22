@@ -6,10 +6,12 @@
  * Use this to verify lot sizes match what NSE currently has.
  */
 import { NextRequest, NextResponse } from 'next/server';
-import { isKiteConfigured, getInstrumentMeta, INDEX_SPECS, STOCK_SPECS } from '@/lib/kite-api';
+import { getInstrumentMeta, INDEX_SPECS, STOCK_SPECS } from '@/lib/kite-api';
+import { applyKiteCredsFromRequest } from '@/lib/kite-route-helper';
 
 export async function GET(req: NextRequest) {
-  if (!isKiteConfigured()) {
+  const configured = applyKiteCredsFromRequest(req.url);
+  if (!configured) {
     return NextResponse.json({
       mode: 'demo',
       message: 'Kite API not configured. Showing spec definitions only.',
