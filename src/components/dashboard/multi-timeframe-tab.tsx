@@ -99,9 +99,9 @@ const SYMBOLS = [
 ];
 
 const TIMEFRAMES = [
-  { label: '5 Min', minutes: 5, bars: 78 },    // 9:15 to 15:30 = 78 x 5min bars
-  { label: '15 Min', minutes: 15, bars: 26 },   // 9:15 to 15:30 = 26 x 15min bars
-  { label: '30 Min', minutes: 30, bars: 13 },
+  { label: '5 Min', minutes: 5, bars: 85 },    // 9:15 to 15:40 = 85 x 5min bars
+  { label: '15 Min', minutes: 15, bars: 29 },   // 9:15 to 15:40 = 29 x 15min bars
+  { label: '30 Min', minutes: 30, bars: 15 },
 ] as const;
 
 type TFIndex = 0 | 1 | 2;

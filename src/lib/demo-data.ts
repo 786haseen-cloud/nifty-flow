@@ -1131,8 +1131,8 @@ export function getMarketStatus(): 'pre-open' | 'open' | 'closing' | 'closed' {
 
   if (day === 0 || day === 6) return 'closed';
   if (totalMin >= 570 && totalMin < 585) return 'pre-open';
-  if (totalMin >= 585 && totalMin < 930) return 'open';
-  if (totalMin >= 930 && totalMin < 935) return 'closing';
+  if (totalMin >= 585 && totalMin < 940) return 'open';
+  if (totalMin >= 940 && totalMin < 945) return 'closing';
   return 'closed';
 }
 
