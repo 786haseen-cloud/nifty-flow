@@ -83,3 +83,35 @@ Stage Summary:
 - Signal markers (green/red triangles) on price chart
 - Futures breakdown with basis + OI change
 - Practical trading tips framework
+
+---
+Task ID: 4
+Agent: Main
+Task: Add "Big Bets" tab — Highest Bet Tracker across all 19 symbols
+
+Work Log:
+- Created /api/kite/highest-bet batch API endpoint (2 Kite API calls: spot prices, then options+futures)
+- API fetches all 19 symbols (4 indices + 15 stocks) in one request
+- Finds cash (EQ/INDEX), futures (FUTIDX/FUTSTK), and options (OPTIDX/OPTSTK) instruments from Kite CSV
+- Batch quotes all ~450 option/future tokens in a single Kite API call
+- Includes Black-Scholes delta calculation for each strike
+- Demo mode with realistic 19-symbol data when Kite not configured
+- Created highest-bet-tracker.tsx component with:
+  - 19-row table: Symbol, Cash, Future, CE Buy, CE Write, PE Buy, PE Write, Net, Peak
+  - 4-color flow engine (same logic as strike-flow-map)
+  - Tracks day's highest single-strike bet per type per symbol with timestamps
+  - localStorage persistence (survives page refresh within the day)
+  - Sortable by any column (default: Net Flow descending)
+  - "BIGGEST BET OF THE DAY" summary card with trophy highlight
+  - Current interval flow shown as "now:" sub-row
+  - 30-second polling
+- Added Big Bets tab (Trophy icon) to page.tsx between Strike Flow and Context
+- Build verified: zero errors
+
+Stage Summary:
+- New tab: "Big Bets" tracks highest bet across all 19 symbols throughout the trading day
+- 6 categories: Cash turnover delta, Future OI change, CE Buy, CE Write, PE Buy, PE Write
+- Delta-weighted: uses Black-Scholes delta for fair comparison across strikes
+- Biggest Bet = max single-strike flow (concentrated bet = institutional activity)
+- Net Flow = (CE Buy + PE Write) - (PE Buy + CE Write) for overall direction
+- Persisted in browser localStorage (date-keyed, auto-clears next day)
