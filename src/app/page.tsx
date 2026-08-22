@@ -22,48 +22,48 @@ import GreeksDecay from '@/components/dashboard/greeks-decay';
 import SettingsConfig from '@/components/dashboard/settings-config';
 import FuturesBasisTab from '@/components/dashboard/futures-basis-tab';
 import MultiTimeframeTab from '@/components/dashboard/multi-timeframe-tab';
-import { generateDemoVIX, getMarketStatus } from '@/lib/demo-data';
-import type { VIXData, NSESessionInfo } from '@/lib/types';
+import { getMarketStatus } from '@/lib/demo-data';
+import type { NSESessionInfo } from '@/lib/types';
 import { getNSESession } from '@/lib/nse-sessions';
 import { hasKiteCreds } from '@/lib/kite-creds';
+import { useKiteSnapshot } from '@/hooks/use-kite-snapshot';
 
 export default function DashboardPage() {
   const [activeTab, setActiveTab] = useState('live'); // LIVE is the HERO — options + cash movement drives decisions
   const [istTime, setIstTime] = useState('');
   const [jeddahTime, setJeddahTime] = useState('');
-  const [vix, setVix] = useState<VIXData | null>(null);
   const [marketStatus, setMarketStatus] = useState<string>('closed');
   const [nseSession, setNseSession] = useState<NSESessionInfo | null>(null);
+  const { curr: snapshot } = useKiteSnapshot(15000);
 
   useEffect(() => {
     function updateTime() {
       const now = new Date();
-      // IST = UTC + 5:30
       const ist = new Date(now.getTime() + 5.5 * 60 * 60 * 1000);
       setIstTime(ist.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit', timeZone: 'UTC', hour12: false }));
-
-      // Jeddah = UTC + 3:00
       const jeddah = new Date(now.getTime() + 3 * 60 * 60 * 1000);
       setJeddahTime(jeddah.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit', timeZone: 'UTC', hour12: false }));
-
       setMarketStatus(getMarketStatus());
       setNseSession(getNSESession());
     }
 
-    function refreshVix() {
-      setVix(generateDemoVIX());
-    }
-
     updateTime();
-    refreshVix();
     const timeInterval = setInterval(updateTime, 1000);
-    const vixInterval = setInterval(refreshVix, 15000);
-
-    return () => {
-      clearInterval(timeInterval);
-      clearInterval(vixInterval);
-    };
+    return () => { clearInterval(timeInterval); };
   }, []);
+
+  // Derive VIX from shared snapshot
+  const vix = snapshot?.vix ? {
+    value: snapshot.vix.value,
+    change: snapshot.vix.change,
+    changePercent: snapshot.vix.changePercent,
+    dayHigh: snapshot.vix.dayHigh,
+    dayLow: snapshot.vix.dayLow,
+    dayOpen: snapshot.vix.dayOpen,
+    trend: snapshot.vix.change > 0.5 ? 'rising' as const : snapshot.vix.change < -0.5 ? 'falling' as const : 'stable' as const,
+    percentile: Math.min(100, Math.max(0, (snapshot.vix.value / 30) * 100)),
+    panicLevel: snapshot.vix.value > 22 ? 'panic' as const : snapshot.vix.value > 18 ? 'elevated' as const : snapshot.vix.value > 13 ? 'normal' as const : 'calm' as const,
+  } : null;
 
   const statusColor = () => {
     // During CAS: show orange (cash paused, F&O active)
@@ -141,13 +141,10 @@ export default function DashboardPage() {
               {vix && (
                 <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-md border border-amber-500/20 bg-amber-500/5">
                   <Activity className="h-3 w-3 text-amber-400" />
-                  <span className="text-xs font-mono font-medium">VIX {vix.value.toFixed(1)}</span>
-                  <span className={`text-[10px] font-mono ${vix.change >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                    {vix.change >= 0 ? '+' : ''}{vix.change.toFixed(1)}
+                  <span className="text-xs font-mono font-medium">VIX {vix.value.toFixed(2)}</span>
+                  <span className={`text-[10px] font-mono ${vix.changePercent >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                    {vix.changePercent >= 0 ? '+' : ''}{vix.changePercent.toFixed(2)}%
                   </span>
-                  <Badge variant="outline" className="text-[8px] border-amber-500/30 text-amber-300 px-1 py-0">
-                    <Info className="mr-0.5 h-2 w-2" />Info
-                  </Badge>
                   <span className={`text-[10px] font-medium ${panicColor(vix.panicLevel)}`}>
                     {vix.panicLevel.toUpperCase()}
                   </span>

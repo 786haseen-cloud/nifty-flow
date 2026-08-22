@@ -38,10 +38,20 @@ export interface SymbolBetData {
   strikes: StrikeFlowData[];
 }
 
+export interface VIXQuote {
+  value: number;
+  change: number;
+  changePercent: number;
+  dayHigh: number;
+  dayLow: number;
+  dayOpen: number;
+}
+
 export interface HighestBetResponse {
   mode: 'live' | 'demo' | 'error';
   timestamp: string;
   symbols: SymbolBetData[];
+  vix?: VIXQuote;
   error?: string;
 }
 
@@ -142,6 +152,35 @@ async function fetchLiveData(): Promise<HighestBetResponse> {
 
   if (prepared.length === 0) {
     return { mode: 'error', timestamp: new Date().toISOString(), symbols: [], error: 'No instruments found' };
+  }
+
+  // Step 2.5: Find and quote VIX
+  let vixQuote: VIXQuote | undefined;
+  try {
+    const vixInst = allInstruments.find(i =>
+      i.exchange === 'NSE' &&
+      i.instrumentType === 'INDEX' &&
+      i.tradingSymbol.toUpperCase() === 'INDIA VIX'
+    );
+    if (vixInst) {
+      const vixQ = await getQuotes([String(vixInst.instrumentToken)]);
+      if (!('_error' in vixQ)) {
+        const vq = Object.values(vixQ)[0] as KiteQuote;
+        if (vq?.lastPrice) {
+          const vixClose = vq.close || vq.lastPrice;
+          vixQuote = {
+            value: vq.lastPrice,
+            change: Math.round((vq.lastPrice - vixClose) * 100) / 100,
+            changePercent: vixClose > 0 ? Math.round(((vq.lastPrice - vixClose) / vixClose) * 10000) / 100 : 0,
+            dayHigh: vq.dayHigh || vq.lastPrice,
+            dayLow: vq.dayLow || vq.lastPrice,
+            dayOpen: vq.open || vq.lastPrice,
+          };
+        }
+      }
+    }
+  } catch (e) {
+    console.warn('[HighestBet] VIX fetch failed:', e);
   }
 
   // Step 3: Batch quote cash instruments → spot prices
@@ -330,6 +369,7 @@ async function fetchLiveData(): Promise<HighestBetResponse> {
     mode: 'live',
     timestamp: new Date().toISOString(),
     symbols,
+    vix: vixQuote,
   };
 }
 

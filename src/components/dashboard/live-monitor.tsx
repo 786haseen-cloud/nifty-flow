@@ -1,59 +1,144 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useMemo } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import {
   Activity, TrendingUp, TrendingDown, Info, Zap,
-  ShieldAlert, Thermometer,
+  ShieldAlert, Thermometer, Wifi, WifiOff,
 } from 'lucide-react';
 import type { InstrumentData, VIXData, OptionStrike } from '@/lib/types';
-import {
-  generateDemoInstrument,
-  generateDemoVIX,
-  generateDemoStocks,
-  generateDemoDualExchangeStocks,
-  formatNum,
-  getMarketStatus,
-} from '@/lib/demo-data';
-import type { StockQuickView } from '@/lib/demo-data';
-import type { DualExchangeStock, NetMoneyFlow } from '@/lib/types';
-import MoneyFlowBars from './money-flow-bars';
+import { formatNum } from '@/lib/demo-data';
+import { useKiteSnapshot } from '@/hooks/use-kite-snapshot';
 import LiveAlignmentIndicator from './live-alignment';
 
-export default function LiveMonitor() {
-  const [vix, setVix] = useState<VIXData | null>(null);
-  const [nifty, setNifty] = useState<InstrumentData | null>(null);
-  const [sensex, setSensex] = useState<InstrumentData | null>(null);
-  const [bankNifty, setBankNifty] = useState<InstrumentData | null>(null);
-  const [finNifty, setFinNifty] = useState<InstrumentData | null>(null);
-  const [stocks, setStocks] = useState<StockQuickView[]>([]);
-  const [dualExchangeStocks, setDualExchangeStocks] = useState<DualExchangeStock[]>([]);
-  const [selectedIdx, setSelectedIdx] = useState<string>('NIFTY');
-  const [callMelting, setCallMelting] = useState(17.3);
-  const [putMelting, setPutMelting] = useState(6.1);
+const INDEX_NAMES: Record<string, string> = {
+  NIFTY: 'Nifty 50', SENSEX: 'Sensex', BANKNIFTY: 'Bank Nifty', FINNIFTY: 'Fin Nifty',
+};
 
-  useEffect(() => {
-    function refresh() {
-      setVix(generateDemoVIX());
-      setNifty(generateDemoInstrument('NIFTY', 'Nifty 50', 'index', 24350));
-      setSensex(generateDemoInstrument('SENSEX', 'Sensex', 'index', 80100));
-      setBankNifty(generateDemoInstrument('BANKNIFTY', 'Bank Nifty', 'index', 51800));
-      setFinNifty(generateDemoInstrument('FINNIFTY', 'Fin Nifty', 'index', 23200));
-      setStocks(generateDemoStocks());
-      setDualExchangeStocks(generateDemoDualExchangeStocks());
-      setCallMelting(parseFloat((Math.random() * 20 + 5).toFixed(1)));
-      setPutMelting(parseFloat((Math.random() * 15 + 3).toFixed(1)));
+// Compute max pain from OI data
+function computeMaxPain(strikes: { strike: number; ceOI: number; peOI: number }[]): number {
+  if (strikes.length === 0) return 0;
+  let minPain = Infinity;
+  let maxPainStrike = strikes[0].strike;
+  for (const s of strikes) {
+    let pain = 0;
+    for (const t of strikes) {
+      if (t.ceOI > 0 && s.strike > t.strike) pain += t.ceOI * (s.strike - t.strike);
+      if (t.peOI > 0 && s.strike < t.strike) pain += t.peOI * (t.strike - s.strike);
     }
-    refresh();
-    const interval = setInterval(refresh, 15000);
-    return () => clearInterval(interval);
-  }, []);
+    if (pain < minPain) { minPain = pain; maxPainStrike = s.strike; }
+  }
+  return maxPainStrike;
+}
 
-  const instruments = [nifty, sensex, bankNifty, finNifty].filter(Boolean) as InstrumentData[];
-  const selected = instruments.find(i => i.symbol === selectedIdx) || nifty;
+// Transform Kite snapshot into InstrumentData for the LIVE tab
+function transformToInstrument(sym: ReturnType<typeof useKiteSnapshot>['curr'] extends null ? never : NonNullable<ReturnType<typeof useKiteSnapshot>['curr']>['symbols'][0]): InstrumentData | null {
+  if (!sym || sym.strikes.length === 0) return null;
+  const spotPrice = sym.spotPrice;
+  const atmStrike = sym.strikes.find(s => s.isATM)?.strike || Math.round(spotPrice / sym.strikeStep) * sym.strikeStep;
+  const totalCallOI = sym.strikes.reduce((s, t) => s + t.ceOI, 0);
+  const totalPutOI = sym.strikes.reduce((s, t) => s + t.peOI, 0);
+  const pcr = totalCallOI > 0 ? totalPutOI / totalCallOI : 0;
+  const maxPain = computeMaxPain(sym.strikes);
+
+  const optionStrikes: OptionStrike[] = sym.strikes.map(s => ({
+    strike: s.strike,
+    callLTP: s.ceLTP,
+    callOI: s.ceOI,
+    callOIChg: 0, // Need prev snapshot for this
+    callVolume: s.ceVol,
+    callIV: 0, // Not directly available from Kite quote
+    callDelta: s.ceDelta,
+    callGamma: 0,
+    callTheta: 0,
+    callVega: 0,
+    callChg: 0,
+    putLTP: s.peLTP,
+    putOI: s.peOI,
+    putOIChg: 0,
+    putVolume: s.peVol,
+    putIV: 0,
+    putDelta: s.peDelta,
+    putGamma: 0,
+    putTheta: 0,
+    putVega: 0,
+    putChg: 0,
+    isATM: s.isATM,
+    builtUp: 'none' as const,
+    callITM: s.strike < spotPrice,
+    putITM: s.strike > spotPrice,
+  }));
+
+  return {
+    symbol: sym.symbol,
+    name: sym.name || INDEX_NAMES[sym.symbol] || sym.symbol,
+    type: sym.type === 'index' ? 'index' : 'stock',
+    cashLTP: spotPrice,
+    cashChange: sym.spotChange,
+    cashChangePercent: sym.spotChange,
+    futureLTP: sym.futPrice,
+    futureBasis: sym.futPrice > 0 ? Math.round((sym.futPrice - spotPrice) * 100) / 100 : 0,
+    atmStrike,
+    strikes: optionStrikes,
+    totalCallOI,
+    totalPutOI,
+    pcr: Math.round(pcr * 100) / 100,
+    chgOiPCR: 0,
+    volumePCR: 0,
+    maxPainStrike: maxPain,
+  };
+}
+
+export default function LiveMonitor() {
+  const { curr, prev } = useKiteSnapshot(15000);
+
+  // Build instrument data from real Kite snapshot
+  const indices = useMemo(() => {
+    if (!curr || curr.mode === 'demo') return [];
+    return ['NIFTY', 'BANKNIFTY', 'SENSEX', 'FINNIFTY']
+      .map(sym => curr.symbols.find(s => s.symbol === sym))
+      .filter(Boolean)
+      .map(s => transformToInstrument(s!))
+      .filter(Boolean) as InstrumentData[];
+  }, [curr]);
+
+  // VIX from shared snapshot
+  const vix: VIXData | null = useMemo(() => {
+    if (!curr?.vix) return null;
+    const v = curr.vix;
+    return {
+      value: v.value,
+      change: v.change,
+      changePercent: v.changePercent,
+      dayHigh: v.dayHigh,
+      dayLow: v.dayLow,
+      dayOpen: v.dayOpen,
+      trend: v.change > 0.5 ? 'rising' : v.change < -0.5 ? 'falling' : 'stable',
+      percentile: Math.min(100, Math.max(0, (v.value / 30) * 100)),
+      panicLevel: v.value > 22 ? 'panic' : v.value > 18 ? 'elevated' : v.value > 13 ? 'normal' : 'calm',
+    };
+  }, [curr?.vix]);
+
+  const [selectedIdx, setSelectedIdx] = useState<string>('NIFTY');
+  const selected = indices.find(i => i.symbol === selectedIdx) || indices[0];
+
+  // Compute OI changes from prev snapshot for selected index
+  const selectedSym = curr?.symbols.find(s => s.symbol === selectedIdx);
+  const prevSym = prev?.symbols.find(s => s.symbol === selectedIdx);
+  useEffect(() => {
+    if (!selected || !selectedSym || !prevSym) return;
+    // Update OI changes on the instrument
+    const prevMap = new Map(prevSym.strikes.map(s => [s.strike, s]));
+    for (const strike of selected.strikes) {
+      const ps = prevMap.get(strike.strike);
+      if (ps) {
+        strike.callOIChg = strike.callOI - ps.ceOI;
+        strike.putOIChg = strike.putOI - ps.peOI;
+      }
+    }
+  }, [curr, prev, selectedIdx]);
 
   const panicLevelColor = (level: string) => {
     switch (level) {
@@ -64,7 +149,6 @@ export default function LiveMonitor() {
       default: return 'text-muted-foreground';
     }
   };
-
   const panicBarColor = (level: string) => {
     switch (level) {
       case 'calm': return 'bg-emerald-500';
@@ -74,34 +158,48 @@ export default function LiveMonitor() {
       default: return 'bg-gray-500';
     }
   };
-
   const panicPercent = vix ? (vix.value / 30) * 100 : 50;
+
+  // No live data yet
+  if (!curr || curr.symbols.length === 0) {
+    return (
+      <div className="space-y-4">
+        <LiveAlignmentIndicator />
+        <div className="flex items-center justify-center py-20 text-muted-foreground">
+        <WifiOff className="mr-2 h-5 w-5" />
+          Waiting for live data... {curr?.mode === 'demo' ? 'Showing demo' : 'Connect API key in Settings'}
+        </div>
+      </div>
+    );
+  }
+
+  // Compute ATM theta (approximate) from option prices
+  const callMelting = selected ? Math.max(1, Math.abs(selected.strikes.find(s => s.isATM)?.callLTP || 5) / 5).toFixed(0) : '0';
+  const putMelting = selected ? Math.max(1, Math.abs(selected.strikes.find(s => s.isATM)?.putLTP || 5) / 5).toFixed(0) : '0';
 
   return (
     <div className="space-y-4">
-      {/* ═══ LIVE = PRIMARY ═══ Options + Cash = Index Direction ═══ */}
       <LiveAlignmentIndicator />
 
-      {/* VIX + Panic Meter + Theta Melting */}
+      {/* VIX + Panic Meter + Theta */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        {/* VIX Card */}
         <Card className="border-border/50 bg-card/80 backdrop-blur-sm">
           <CardHeader className="pb-2">
             <CardTitle className="flex items-center gap-2 text-sm">
               <Activity className="h-4 w-4 text-red-400" />
               India VIX
-              <Badge variant="outline" className="ml-auto text-[10px] border-amber-500/40 text-amber-300">
-                <Info className="mr-1 h-3 w-3" />Indicator Only
+              <Badge variant="outline" className={`ml-auto text-[10px] ${curr.mode === 'live' ? 'border-emerald-500/40 text-emerald-300' : 'border-orange-500/40 text-orange-300'}`}>
+                {curr.mode === 'live' ? <><Wifi className="mr-1 h-3 w-3" />LIVE</> : <><WifiOff className="mr-1 h-3 w-3" />DEMO</>}
               </Badge>
             </CardTitle>
           </CardHeader>
           <CardContent>
-            {vix && (
+            {vix ? (
               <div className="space-y-2">
                 <div className="flex items-baseline gap-2">
                   <span className="text-3xl font-mono font-bold">{vix.value.toFixed(2)}</span>
-                  <span className={`text-sm font-mono ${vix.change >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                    {vix.change >= 0 ? '+' : ''}{vix.change.toFixed(2)} ({vix.changePercent >= 0 ? '+' : ''}{vix.changePercent.toFixed(2)}%)
+                  <span className={`text-sm font-mono ${vix.changePercent >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                    {vix.changePercent >= 0 ? '+' : ''}{vix.changePercent.toFixed(2)}%
                   </span>
                 </div>
                 <div className="grid grid-cols-3 gap-2 text-xs text-muted-foreground">
@@ -113,22 +211,19 @@ export default function LiveMonitor() {
                   Trend: <span className={`font-medium ${vix.trend === 'rising' ? 'text-red-400' : vix.trend === 'falling' ? 'text-emerald-400' : 'text-yellow-400'}`}>
                     {vix.trend.toUpperCase()}
                   </span>
-                  {' '}| Percentile: <span className="font-mono">{vix.percentile.toFixed(0)}th</span>
                 </div>
               </div>
+            ) : (
+              <div className="text-sm text-muted-foreground py-4">VIX data not available</div>
             )}
           </CardContent>
         </Card>
 
-        {/* Panic Meter */}
         <Card className="border-border/50 bg-card/80 backdrop-blur-sm">
           <CardHeader className="pb-2">
             <CardTitle className="flex items-center gap-2 text-sm">
               <ShieldAlert className="h-4 w-4 text-orange-400" />
               Panic Meter
-              <Badge variant="outline" className="ml-auto text-[10px] border-amber-500/40 text-amber-300">
-                <Info className="mr-1 h-3 w-3" />Info Only
-              </Badge>
             </CardTitle>
           </CardHeader>
           <CardContent>
@@ -142,10 +237,8 @@ export default function LiveMonitor() {
                   <div className="absolute inset-y-0 left-1/4 w-1/6 bg-yellow-500/30" />
                   <div className="absolute inset-y-0 left-[41%] w-1/6 bg-orange-500/30" />
                   <div className="absolute inset-y-0 left-[58%] w-[42%] bg-red-500/30 rounded-r-full" />
-                  <div
-                    className={`absolute inset-y-0 ${panicBarColor(vix.panicLevel)} rounded-full transition-all duration-500`}
-                    style={{ width: `${Math.min(100, panicPercent)}%` }}
-                  />
+                  <div className={`absolute inset-y-0 ${panicBarColor(vix.panicLevel)} rounded-full transition-all duration-500`}
+                    style={{ width: `${Math.min(100, panicPercent)}%` }} />
                 </div>
                 <div className="flex justify-between text-[10px] text-muted-foreground">
                   <span>Calm</span><span>Normal</span><span>Elevated</span><span>Panic</span>
@@ -155,40 +248,32 @@ export default function LiveMonitor() {
           </CardContent>
         </Card>
 
-        {/* Theta Melting */}
         <Card className="border-border/50 bg-card/80 backdrop-blur-sm">
           <CardHeader className="pb-2">
             <CardTitle className="flex items-center gap-2 text-sm">
               <Thermometer className="h-4 w-4 text-cyan-400" />
-              Theta Melting Speed
-              <Badge variant="outline" className="ml-auto text-[10px] border-amber-500/40 text-amber-300">
-                <Info className="mr-1 h-3 w-3" />Info Only
-              </Badge>
+              ATM Option Premiums
             </CardTitle>
           </CardHeader>
           <CardContent>
             <div className="space-y-3">
               <div className="flex items-center justify-between">
                 <div>
-                  <span className="text-xs text-muted-foreground">Call Side</span>
+                  <span className="text-xs text-muted-foreground">CE ATM</span>
                   <div className="text-lg font-mono font-bold text-emerald-400">
-                    ₹{callMelting}/day
-                    {callMelting > putMelting * 1.5 && <span className="text-orange-400 ml-1 text-xs">(FAST)</span>}
+                    {selected?.strikes.find(s => s.isATM)?.callLTP.toFixed(1) || '—'}
                   </div>
                 </div>
-                <div className="text-muted-foreground">← →</div>
+                <div className="text-muted-foreground">vs</div>
                 <div className="text-right">
-                  <span className="text-xs text-muted-foreground">Put Side</span>
+                  <span className="text-xs text-muted-foreground">PE ATM</span>
                   <div className="text-lg font-mono font-bold text-red-400">
-                    ₹{putMelting}/day
-                    {putMelting > callMelting * 1.5 && <span className="text-orange-400 ml-1 text-xs">(FAST)</span>}
+                    {selected?.strikes.find(s => s.isATM)?.putLTP.toFixed(1) || '—'}
                   </div>
                 </div>
               </div>
               <div className="text-xs text-muted-foreground">
-                {callMelting > putMelting ? 'Call side melting faster → Put writers more confident' :
-                 putMelting > callMelting ? 'Put side melting faster → Call writers more confident' :
-                 'Both sides melting equally'}
+                ATM option prices from {selected?.symbol || '—'} at strike {selected?.atmStrike || '—'}
               </div>
             </div>
           </CardContent>
@@ -197,14 +282,12 @@ export default function LiveMonitor() {
 
       {/* 4 Index Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-        {instruments.map((inst) => (
-          <Card
-            key={inst.symbol}
+        {indices.map((inst) => (
+          <Card key={inst.symbol}
             className={`cursor-pointer transition-all border-border/50 bg-card/80 backdrop-blur-sm hover:border-primary/40 ${
               selectedIdx === inst.symbol ? 'border-primary/60 ring-1 ring-primary/20' : ''
             }`}
-            onClick={() => setSelectedIdx(inst.symbol)}
-          >
+            onClick={() => setSelectedIdx(inst.symbol)}>
             <CardContent className="p-3">
               <div className="flex items-center justify-between mb-1">
                 <span className="font-medium text-sm">{inst.name}</span>
@@ -212,13 +295,13 @@ export default function LiveMonitor() {
                   {inst.cashChange >= 0 ? <TrendingUp className="inline h-3 w-3" /> : <TrendingDown className="inline h-3 w-3" />}
                 </span>
               </div>
-              <div className="text-xl font-mono font-bold">{inst.cashLTP.toLocaleString()}</div>
-              <div className={`text-xs font-mono ${inst.cashChange >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                {inst.cashChange >= 0 ? '+' : ''}{inst.cashChange.toFixed(2)} ({inst.cashChangePercent >= 0 ? '+' : ''}{inst.cashChangePercent.toFixed(2)}%)
+              <div className="text-xl font-mono font-bold">{inst.cashLTP.toLocaleString('en-IN', { maximumFractionDigits: 2 })}</div>
+              <div className={`text-xs font-mono ${inst.cashChangePercent >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                {inst.cashChangePercent >= 0 ? '+' : ''}{inst.cashChangePercent.toFixed(2)}%
               </div>
               <div className="grid grid-cols-2 gap-1 mt-2 text-[10px] text-muted-foreground">
-                <div>Fut: <span className="font-mono text-foreground">{inst.futureLTP.toLocaleString()}</span></div>
-                <div>Basis: <span className={`font-mono ${inst.futureBasis >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>{inst.futureBasis >= 0 ? '+' : ''}{inst.futureBasis.toFixed(0)}</span></div>
+                <div>Fut: <span className="font-mono text-foreground">{inst.futureLTP > 0 ? inst.futureLTP.toLocaleString('en-IN', { maximumFractionDigits: 1 }) : '—'}</span></div>
+                <div>Basis: <span className={`font-mono ${inst.futureBasis >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>{inst.futureBasis >= 0 ? '+' : ''}{inst.futureBasis.toFixed(1)}</span></div>
                 <div>PCR: <span className="font-mono text-foreground">{inst.pcr.toFixed(2)}</span></div>
                 <div>MaxPain: <span className="font-mono text-foreground">{inst.maxPainStrike.toLocaleString()}</span></div>
               </div>
@@ -235,6 +318,9 @@ export default function LiveMonitor() {
               <Zap className="h-4 w-4 text-yellow-400" />
               {selected.name} Option Chain
               <Badge variant="outline" className="ml-2 text-xs">ATM: {selected.atmStrike.toLocaleString()}</Badge>
+              <Badge variant="outline" className={`ml-auto text-[10px] ${curr.mode === 'live' ? 'border-emerald-500/40 text-emerald-300' : 'border-orange-500/40 text-orange-300'}`}>
+                {curr.mode === 'live' ? <><Wifi className="mr-1 h-3 w-3" />LIVE</> : <><WifiOff className="mr-1 h-3 w-3" />DEMO</>}
+              </Badge>
             </CardTitle>
           </CardHeader>
           <CardContent>
@@ -242,21 +328,19 @@ export default function LiveMonitor() {
               <table className="w-full text-[11px]">
                 <thead>
                   <tr className="border-b border-border/40 text-muted-foreground">
-                    <th colSpan={6} className="py-1.5 text-center text-emerald-400/70 font-medium bg-emerald-500/5">CALLS</th>
+                    <th colSpan={5} className="py-1.5 text-center text-emerald-400/70 font-medium bg-emerald-500/5">CALLS</th>
                     <th className="py-1.5 text-center font-medium bg-primary/10">Strike</th>
-                    <th colSpan={6} className="py-1.5 text-center text-red-400/70 font-medium bg-red-500/5">PUTS</th>
+                    <th colSpan={5} className="py-1.5 text-center text-red-400/70 font-medium bg-red-500/5">PUTS</th>
                   </tr>
                   <tr className="border-b border-border/30 text-muted-foreground">
                     <th className="py-1 pr-1 text-right bg-emerald-500/5">OI</th>
                     <th className="py-1 pr-1 text-right bg-emerald-500/5">Chg</th>
                     <th className="py-1 pr-1 text-right bg-emerald-500/5">Vol</th>
-                    <th className="py-1 pr-1 text-right bg-emerald-500/5">IV</th>
                     <th className="py-1 pr-1 text-right bg-emerald-500/5">LTP</th>
-                    <th className="py-1 pr-1 text-right bg-emerald-500/5">Δ</th>
-                    <th className="py-1 text-center bg-primary/10">₹</th>
-                    <th className="py-1 pl-1 text-left bg-red-500/5">Δ</th>
+                    <th className="py-1 pr-1 text-right bg-emerald-500/5">Delta</th>
+                    <th className="py-1 text-center bg-primary/10">Price</th>
+                    <th className="py-1 pl-1 text-left bg-red-500/5">Delta</th>
                     <th className="py-1 pl-1 text-left bg-red-500/5">LTP</th>
-                    <th className="py-1 pl-1 text-left bg-red-500/5">IV</th>
                     <th className="py-1 pl-1 text-left bg-red-500/5">Vol</th>
                     <th className="py-1 pl-1 text-left bg-red-500/5">Chg</th>
                     <th className="py-1 pl-1 text-left bg-red-500/5">OI</th>
@@ -264,20 +348,12 @@ export default function LiveMonitor() {
                 </thead>
                 <tbody>
                   {selected.strikes.map((s: OptionStrike) => (
-                    <tr
-                      key={s.strike}
-                      className={`border-b border-border/15 ${
-                        s.isATM ? 'bg-primary/10 font-medium' : 'hover:bg-muted/20'
-                      }`}
-                    >
-                      <td className={`py-1 pr-1 text-right font-mono ${s.callOIChg > 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                        {formatNum(s.callOI)}
-                      </td>
-                      <td className={`py-1 pr-1 text-right font-mono ${s.callOIChg > 0 ? 'text-emerald-400/70' : 'text-red-400/70'}`}>
-                        {s.callOIChg > 0 ? '+' : ''}{formatNum(s.callOIChg)}
+                    <tr key={s.strike} className={`border-b border-border/15 ${s.isATM ? 'bg-primary/10 font-medium' : 'hover:bg-muted/20'}`}>
+                      <td className={`py-1 pr-1 text-right font-mono text-muted-foreground`}>{formatNum(s.callOI)}</td>
+                      <td className={`py-1 pr-1 text-right font-mono ${s.callOIChg > 0 ? 'text-emerald-400' : s.callOIChg < 0 ? 'text-red-400' : 'text-muted-foreground'}`}>
+                        {s.callOIChg !== 0 ? <>{s.callOIChg > 0 ? '+' : ''}{formatNum(s.callOIChg)}</> : '—'}
                       </td>
                       <td className="py-1 pr-1 text-right font-mono text-muted-foreground">{formatNum(s.callVolume)}</td>
-                      <td className="py-1 pr-1 text-right font-mono">{s.callIV.toFixed(1)}</td>
                       <td className="py-1 pr-1 text-right font-mono font-medium">{s.callLTP.toFixed(1)}</td>
                       <td className="py-1 pr-1 text-right font-mono text-muted-foreground">{s.callDelta.toFixed(2)}</td>
                       <td className={`py-1 text-center font-mono font-bold ${s.isATM ? 'text-yellow-400' : s.callITM ? 'text-emerald-400' : s.putITM ? 'text-red-400' : 'text-foreground'}`}>
@@ -285,14 +361,11 @@ export default function LiveMonitor() {
                       </td>
                       <td className="py-1 pl-1 text-left font-mono text-muted-foreground">{s.putDelta.toFixed(2)}</td>
                       <td className="py-1 pl-1 text-left font-mono font-medium">{s.putLTP.toFixed(1)}</td>
-                      <td className="py-1 pl-1 text-left font-mono">{s.putIV.toFixed(1)}</td>
                       <td className="py-1 pl-1 text-left font-mono text-muted-foreground">{formatNum(s.putVolume)}</td>
-                      <td className={`py-1 pl-1 text-left font-mono ${s.putOIChg > 0 ? 'text-emerald-400/70' : 'text-red-400/70'}`}>
-                        {s.putOIChg > 0 ? '+' : ''}{formatNum(s.putOIChg)}
+                      <td className={`py-1 pl-1 text-left font-mono ${s.putOIChg > 0 ? 'text-emerald-400' : s.putOIChg < 0 ? 'text-red-400' : 'text-muted-foreground'}`}>
+                        {s.putOIChg !== 0 ? <>{s.putOIChg > 0 ? '+' : ''}{formatNum(s.putOIChg)}</> : '—'}
                       </td>
-                      <td className={`py-1 pl-1 text-left font-mono ${s.putOIChg > 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                        {formatNum(s.putOI)}
-                      </td>
+                      <td className={`py-1 pl-1 text-left font-mono ${s.putOIChg > 0 ? 'text-emerald-400' : s.putOIChg < 0 ? 'text-red-400' : 'text-muted-foreground'}`}>{formatNum(s.putOI)}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -302,77 +375,46 @@ export default function LiveMonitor() {
         </Card>
       )}
 
-      {/* Weighted Money Flow Bar Visualization — Below Nifty50 Price Line */}
-      <MoneyFlowBars />
-
-      {/* Top 15 Stocks with Net Money Flow + Dual Exchange */}
+      {/* Real-time Stocks Table (from Kite) */}
       <Card className="border-border/50 bg-card/80 backdrop-blur-sm">
         <CardHeader className="pb-3">
           <CardTitle className="flex items-center gap-2 text-base">
             <TrendingUp className="h-4 w-4 text-emerald-400" />
-            Top 15 F&amp;O Stocks — Net Money Flow
+            F&O Stocks — Real-time Prices
             <Badge variant="outline" className="ml-auto text-[10px] border-blue-500/40 text-blue-300">
-              NSE + BSE
+              {curr.mode === 'live' ? 'LIVE' : 'DEMO'}
             </Badge>
           </CardTitle>
         </CardHeader>
         <CardContent>
-          <ScrollArea className="h-96">
-            <table className="w-full text-[11px]">
-              <thead>
-                <tr className="border-b border-border/40 text-muted-foreground">
-                  <th className="py-1.5 pr-2 text-left font-medium">Stock</th>
-                  <th className="py-1.5 pr-2 text-right font-medium">NSE</th>
-                  <th className="py-1.5 pr-2 text-right font-medium">BSE</th>
-                  <th className="py-1.5 pr-2 text-right font-medium">Diff</th>
-                  <th className="py-1.5 pr-2 text-right font-medium">Money In</th>
-                  <th className="py-1.5 pr-2 text-right font-medium">Money Out</th>
-                  <th className="py-1.5 pr-2 text-right font-medium">Net Flow</th>
-                  <th className="py-1.5 text-center font-medium">Intensity</th>
+          <table className="w-full text-[11px]">
+            <thead>
+              <tr className="border-b border-border/40 text-muted-foreground">
+                <th className="py-1.5 pr-2 text-left font-medium">Stock</th>
+                <th className="py-1.5 pr-2 text-right font-medium">Spot Price</th>
+                <th className="py-1.5 pr-2 text-right font-medium">Change %</th>
+                <th className="py-1.5 pr-2 text-right font-medium">Fut Price</th>
+                <th className="py-1.5 pr-2 text-right font-medium">Basis</th>
+                <th className="py-1.5 pr-2 text-right font-medium">Fut OI</th>
+              </tr>
+            </thead>
+            <tbody>
+              {curr.symbols.filter(s => s.type === 'stock').map(s => (
+                <tr key={s.symbol} className="border-b border-border/15 hover:bg-muted/20">
+                  <td className="py-1.5 pr-2 font-medium">{s.name || s.symbol}</td>
+                  <td className="py-1.5 pr-2 text-right font-mono">{s.spotPrice.toFixed(1)}</td>
+                  <td className={`py-1.5 pr-2 text-right font-mono ${s.spotChange >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                    {s.spotChange >= 0 ? '+' : ''}{s.spotChange.toFixed(2)}%
+                  </td>
+                  <td className="py-1.5 pr-2 text-right font-mono">{s.futPrice > 0 ? s.futPrice.toFixed(1) : '—'}</td>
+                  <td className={`py-1.5 pr-2 text-right font-mono ${(s.futPrice - s.spotPrice) >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                    {s.futPrice > 0 ? <>{(s.futPrice - s.spotPrice) >= 0 ? '+' : ''}{(s.futPrice - s.spotPrice).toFixed(1)}</> : '—'}
+                  </td>
+                  <td className="py-1.5 pr-2 text-right font-mono text-muted-foreground">{s.futOI > 0 ? ((s.futOI / 1000000).toFixed(2) + 'M') : '—'}</td>
                 </tr>
-              </thead>
-              <tbody>
-                {dualExchangeStocks.map((s) => {
-                  const flowColor = s.combinedNetFlow >= 0 ? 'text-emerald-400' : 'text-red-400';
-                  const intensityColor = s.combinedNetFlow > 0
-                    ? (s.combinedNetFlowCr > 100 ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30' : 'bg-emerald-500/10 text-emerald-400/70 border-emerald-500/20')
-                    : (s.combinedNetFlowCr < -100 ? 'bg-red-500/20 text-red-300 border-red-500/30' : 'bg-red-500/10 text-red-400/70 border-red-500/20');
-                  const intensityLabel = s.combinedNetFlowCr > 100 ? 'Heavy In' : s.combinedNetFlowCr > 20 ? 'In' : s.combinedNetFlowCr > -20 ? 'Neutral' : s.combinedNetFlowCr > -100 ? 'Out' : 'Heavy Out';
-
-                  return (
-                    <tr key={s.symbol} className="border-b border-border/15 hover:bg-muted/20 transition-colors">
-                      <td className="py-1.5 pr-2 font-medium">{s.symbol}</td>
-                      <td className="py-1.5 pr-2 text-right font-mono">{s.nse.ltp.toLocaleString()}</td>
-                      <td className="py-1.5 pr-2 text-right font-mono">{s.bse.ltp.toLocaleString()}</td>
-                      <td className={`py-1.5 pr-2 text-right font-mono ${Math.abs(s.nseBseDiff) > 2 ? 'text-amber-400' : 'text-muted-foreground'}`}>
-                        {s.nseBseDiff > 0 ? '+' : ''}{s.nseBseDiff.toFixed(1)}
-                        {Math.abs(s.nseBseDiff) > 3 && <span className="text-amber-400 ml-0.5">!</span>}
-                      </td>
-                      <td className="py-1.5 pr-2 text-right font-mono text-emerald-400/70">
-                        {(s.totalMoneyIn / 10000000).toFixed(1)} Cr
-                      </td>
-                      <td className="py-1.5 pr-2 text-right font-mono text-red-400/70">
-                        {(s.totalMoneyOut / 10000000).toFixed(1)} Cr
-                      </td>
-                      <td className={`py-1.5 pr-2 text-right font-mono font-bold ${flowColor}`}>
-                        {s.combinedNetFlowCr >= 0 ? '+' : ''}{s.combinedNetFlowCr.toFixed(1)} Cr
-                      </td>
-                      <td className="py-1.5 text-center">
-                        <Badge variant="outline" className={`text-[9px] ${intensityColor}`}>
-                          {intensityLabel}
-                        </Badge>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </ScrollArea>
-          <div className="mt-2 text-xs text-muted-foreground">
-            <strong>Net Money Flow</strong> = Total Money In − Total Money Out across NSE + BSE.
-            {' '}<span className="text-amber-400">!</span> = NSE-BSE price difference &gt; ₹3 (potential arbitrage).
-            {' '}Same stock has different buyers/sellers on each exchange.
-          </div>
+              ))}
+            </tbody>
+          </table>
         </CardContent>
       </Card>
     </div>
