@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { Badge } from '@/components/ui/badge';
-import { Wifi, WifiOff, RefreshCw, Trophy, ArrowUpDown, TrendingUp, TrendingDown, Clock, Zap } from 'lucide-react';
+import { Wifi, WifiOff, RefreshCw, Trophy, ArrowUpDown, TrendingUp, TrendingDown, Clock, Zap, Layers } from 'lucide-react';
 import type { StrikeFlowData } from '@/lib/kite-api';
 
 // ═══════════════════════════════════════════
@@ -465,6 +465,31 @@ export default function HighestBetTracker() {
     return best;
   }, null as { val: number; type: string; time: string; sym: string } | null);
 
+  // ═══ SECTOR FLOW ROTATION ═══
+  const SECTORS: Record<string, string[]> = {
+    'Banking': ['HDFCBANK', 'ICICIBANK', 'SBIN', 'KOTAKBANK', 'AXISBANK'],
+    'IT': ['TCS', 'INFY'],
+    'FMCG': ['HINDUNILVR', 'ITC'],
+    'Energy': ['RELIANCE'],
+    'Auto': ['MARUTI', 'TATAMOTORS'],
+    'Finance': ['BAJFINANCE'],
+    'Infra': ['LT'],
+    'Telecom': ['BHARTIARTL'],
+  };
+
+  const sectorFlow = Object.entries(SECTORS).map(([sector, stocks]) => {
+    const stocksData = currentFlows.filter(f => stocks.includes(f.symbol));
+    const netSum = stocksData.reduce((s, f) => s + f.netFlow, 0);
+    const dayHighSum = stocks.reduce((s, sym) => {
+      const h = dayHighest[sym];
+      if (!h) return s;
+      return s + Math.abs(h.ceBuy.value) + Math.abs(h.peBuy.value) + Math.abs(h.ceWrite.value) + Math.abs(h.peWrite.value);
+    }, 0);
+    return { sector, netFlow: netSum, activity: dayHighSum, stockCount: stocks.length };
+  }).sort((a, b) => Math.abs(b.netFlow) - Math.abs(a.netFlow));
+
+  const maxSectorActivity = Math.max(...sectorFlow.map(s => s.activity), 1);
+
   // ═══ RENDER ═══
 
   const fmtCr = (v: number) => {
@@ -525,6 +550,36 @@ export default function HighestBetTracker() {
               <Clock className="h-3 w-3" />
               {biggestBet.time}
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Sector Flow Rotation */}
+      {currentFlows.length > 0 && (
+        <div className="rounded-lg border border-border/30 bg-card p-3">
+          <div className="flex items-center gap-2 mb-2">
+            <Layers className="h-3.5 w-3.5 text-purple-400" />
+            <span className="text-xs font-bold text-purple-300">SECTOR FLOW ROTATION</span>
+            <span className="text-[9px] text-muted-foreground">current interval net flow by sector</span>
+          </div>
+          <div className="space-y-1.5">
+            {sectorFlow.map(s => (
+              <div key={s.sector} className="flex items-center gap-2 text-[11px]">
+                <span className="w-16 text-right text-muted-foreground font-medium">{s.sector}</span>
+                <div className="flex-1 h-4 bg-muted/20 rounded overflow-hidden relative">
+                  {s.netFlow !== 0 && (
+                    <div
+                      className={`h-full rounded ${s.netFlow > 0 ? 'bg-emerald-500/40' : 'bg-red-500/40'}`}
+                      style={{ width: `${Math.min(100, (Math.abs(s.netFlow) / (maxSectorActivity || 1)) * 100)}%` }}
+                    />
+                  )}
+                  <span className="absolute inset-0 flex items-center px-1.5 font-mono text-[10px]">
+                    {s.netFlow !== 0 ? `${s.netFlow > 0 ? '+' : ''}${fmtCr(s.netFlow)}` : '--'}
+                  </span>
+                </div>
+                <span className="w-6 text-right text-muted-foreground">{s.stockCount}</span>
+              </div>
+            ))}
           </div>
         </div>
       )}

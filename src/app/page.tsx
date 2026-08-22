@@ -6,6 +6,7 @@ import { Badge } from '@/components/ui/badge';
 import {
   Globe, Activity, Target, Landmark, Thermometer, Settings,
   Wifi, WifiOff, Clock, TrendingUp, TrendingDown, Info, Layers, Crosshair, Trophy,
+  Shield, Bell, BookOpen,
 } from 'lucide-react';
 import BirdsEye from '@/components/dashboard/birds-eye';
 import LiveMonitor from '@/components/dashboard/live-monitor';
@@ -14,6 +15,9 @@ import BigMoneyTab from '@/components/dashboard/big-money-tab';
 import OptionsFlowTab from '@/components/dashboard/options-flow-tab';
 import StrikeFlowMap from '@/components/dashboard/strike-flow-map';
 import HighestBetTracker from '@/components/dashboard/highest-bet-tracker';
+import OIWallsTab from '@/components/dashboard/oi-walls-tab';
+import AlertsTab from '@/components/dashboard/alerts-tab';
+import JournalTab from '@/components/dashboard/journal-tab';
 import GreeksDecay from '@/components/dashboard/greeks-decay';
 import SettingsConfig from '@/components/dashboard/settings-config';
 import { generateDemoVIX, getMarketStatus } from '@/lib/demo-data';
@@ -193,6 +197,21 @@ export default function DashboardPage() {
               <span className="hidden sm:inline">⚡ Big Bets</span>
               <span className="sm:hidden">🏆</span>
             </TabsTrigger>
+            <TabsTrigger value="oi-walls" className="flex-1 text-xs gap-1.5 data-[state=active]:bg-blue-500/20 data-[state=active]:text-blue-300">
+              <Shield className="h-3.5 w-3.5" />
+              <span className="hidden sm:inline">OI Walls</span>
+              <span className="sm:hidden">🛡</span>
+            </TabsTrigger>
+            <TabsTrigger value="alerts" className="flex-1 text-xs gap-1.5 data-[state=active]:bg-orange-500/20 data-[state=active]:text-orange-300">
+              <Bell className="h-3.5 w-3.5" />
+              <span className="hidden sm:inline">Alerts</span>
+              <span className="sm:hidden">🔔</span>
+            </TabsTrigger>
+            <TabsTrigger value="journal" className="flex-1 text-xs gap-1.5 data-[state=active]:bg-violet-500/20 data-[state=active]:text-violet-300">
+              <BookOpen className="h-3.5 w-3.5" />
+              <span className="hidden sm:inline">Journal</span>
+              <span className="sm:hidden">📓</span>
+            </TabsTrigger>
             <TabsTrigger value="birds-eye" className="flex-1 text-xs gap-1.5 data-[state=active]:bg-orange-500/20 data-[state=active]:text-orange-300">
               <Globe className="h-3.5 w-3.5" />
               <span className="hidden sm:inline">Context</span>
@@ -235,6 +254,18 @@ export default function DashboardPage() {
 
           <TabsContent value="highest-bet" className="mt-0">
             <HighestBetTracker />
+          </TabsContent>
+
+          <TabsContent value="oi-walls" className="mt-0">
+            <OIWallsTab />
+          </TabsContent>
+
+          <TabsContent value="alerts" className="mt-0">
+            <AlertsTab />
+          </TabsContent>
+
+          <TabsContent value="journal" className="mt-0">
+            <JournalTab />
           </TabsContent>
 
           <TabsContent value="birds-eye" className="mt-0">
