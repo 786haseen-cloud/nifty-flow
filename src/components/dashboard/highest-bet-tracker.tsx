@@ -327,6 +327,15 @@ export default function HighestBetTracker() {
       }
       setSpotPrices(sp);
 
+      // Seed dayHighest with all symbols on first load (so table always renders)
+      if (Object.keys(dayHighest).length === 0 && data.symbols.length > 0) {
+        const seed: Record<string, SymbolDayHighest> = {};
+        for (const s of data.symbols) {
+          seed[s.symbol] = emptyDayHighest();
+        }
+        setDayHighest(seed);
+      }
+
       // Compute flows if we have a previous snapshot
       if (prevSnapRef.current && prevSnapRef.current.symbols.length > 0) {
         const flows = computeIntervalFlows(prevSnapRef.current, snapshot);
@@ -593,12 +602,22 @@ export default function HighestBetTracker() {
       )}
 
       {/* Loading state */}
-      {loading && intervalCount === 0 && (
+      {loading && sortedSymbols.length === 0 && (
         <div className="rounded-lg border border-border/30 bg-card p-6 text-center text-muted-foreground text-sm">
           <RefreshCw className="h-5 w-5 animate-spin mx-auto mb-2" />
           Loading 19 symbols... (need 2 snapshots for flow data)
         </div>
       )}
+
+      {/* No data yet state */}
+      {!loading && sortedSymbols.length === 0 && (
+        <div className="rounded-lg border border-border/30 bg-card p-6 text-center text-muted-foreground text-sm">
+          <Zap className="h-5 w-5 mx-auto mb-2 opacity-40" />
+          Waiting for first data snapshot...<br />
+          <span className="text-xs">Flow data appears after 2 consecutive polls (~30s)</span>
+        </div>
+      )}
+
 
       {/* Main Table */}
       {sortedSymbols.length > 0 && (
