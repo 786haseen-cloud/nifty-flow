@@ -21,6 +21,7 @@ import JournalTab from '@/components/dashboard/journal-tab';
 import GreeksDecay from '@/components/dashboard/greeks-decay';
 import SettingsConfig from '@/components/dashboard/settings-config';
 import FuturesBasisTab from '@/components/dashboard/futures-basis-tab';
+import MultiTimeframeTab from '@/components/dashboard/multi-timeframe-tab';
 import { generateDemoVIX, getMarketStatus } from '@/lib/demo-data';
 import type { VIXData, NSESessionInfo } from '@/lib/types';
 import { getNSESession } from '@/lib/nse-sessions';
@@ -212,6 +213,11 @@ export default function DashboardPage() {
               <span className="hidden sm:inline">Basis</span>
               <span className="sm:hidden">📊</span>
             </TabsTrigger>
+            <TabsTrigger value="multi-tf" className="flex-1 text-xs gap-1.5 data-[state=active]:bg-violet-500/20 data-[state=active]:text-violet-300">
+              <Clock4 className="h-3.5 w-3.5" />
+              <span className="hidden sm:inline">Multi-TF</span>
+              <span className="sm:hidden">⏱</span>
+            </TabsTrigger>
             <TabsTrigger value="alerts" className="flex-1 text-xs gap-1.5 data-[state=active]:bg-orange-500/20 data-[state=active]:text-orange-300">
               <Bell className="h-3.5 w-3.5" />
               <span className="hidden sm:inline">Alerts</span>
@@ -272,6 +278,10 @@ export default function DashboardPage() {
 
           <TabsContent value="futures-basis" className="mt-0">
             <FuturesBasisTab />
+          </TabsContent>
+
+          <TabsContent value="multi-tf" className="mt-0">
+            <MultiTimeframeTab />
           </TabsContent>
 
           <TabsContent value="alerts" className="mt-0">
