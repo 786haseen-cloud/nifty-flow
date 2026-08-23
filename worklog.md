@@ -115,3 +115,29 @@ Stage Summary:
 - Biggest Bet = max single-strike flow (concentrated bet = institutional activity)
 - Net Flow = (CE Buy + PE Write) - (PE Buy + CE Write) for overall direction
 - Persisted in browser localStorage (date-keyed, auto-clears next day)
+
+---
+Task ID: 1
+Agent: main
+Task: Add Trend Analysis tab to Options Trading Dashboard
+
+Work Log:
+- Explored full codebase structure (14 tabs, 8 Kite API routes, types, kite-api.ts)
+- Designed Trend Analysis tab architecture with 4 chart sections
+- Created /api/kite/trends route (Nifty 50 5-min candles + dual-exchange NSE/BSE cash flow for 15 F&O stocks)
+- Created trend-analysis-tab.tsx component with:
+  - Section 1: Nifty 50 Intraday Price Trend (Recharts AreaChart with gradient fill)
+  - Section 2: Index Options Money Flow Trend (4 lines: NIFTY, BANKNIFTY, FINNIFTY, SENSEX, cumulative delta-weighted flow from 4-color engine)
+  - Section 3: Stock Options Money Flow Trend (aggregate of 15 F&O stocks, cumulative)
+  - Section 4: Dual Exchange Cash Flow (horizontal bar chart NSE green + BSE sky, with summary table)
+- Options flow computed client-side from consecutive /api/kite/highest-bet snapshots using delta-weighted 4-color formula
+- Wired tab into page.tsx between Basis and Multi-TF tabs
+- Build verified: compiled successfully, all routes listed
+- API endpoints tested: /api/kite/trends returns demo candles + stock cash flow, /api/kite/highest-bet returns demo snapshots
+
+Stage Summary:
+- New files: /src/app/api/kite/trends/route.ts, /src/components/dashboard/trend-analysis-tab.tsx
+- Modified: /src/app/page.tsx (added Trends tab import + TabsTrigger + TabsContent)
+- Tab position: 9th tab (between Basis and Multi-TF), teal color theme
+- LIVE mode: Fetches real Kite candles + real NSE/BSE stock quotes + real options chain data
+- Demo mode: Falls back to generated demo data when no Kite credentials
