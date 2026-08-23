@@ -8,7 +8,7 @@ import {
   XAxis, YAxis, CartesianGrid, Tooltip, Legend, ReferenceLine,
   ResponsiveContainer, ComposedChart,
 } from 'recharts';
-import { TrendingUp, TrendingDown, ArrowUpRight, ArrowDownRight, Activity } from 'lucide-react';
+import { TrendingUp, TrendingDown, ArrowUpRight, ArrowDownRight, Activity, Wallet } from 'lucide-react';
 
 // ─── Types ───
 
@@ -57,6 +57,15 @@ interface SymbolSnapshot {
   spotPrice: number;
   lotSize: number;
   strikes: StrikeData[];
+}
+
+interface CashFlowTrendPoint {
+  time: string;
+  nse: number;          // cumulative NSE cash flow (Cr)
+  bse: number;          // cumulative BSE cash flow (Cr)
+  net: number;          // cumulative combined net (Cr)
+  weighted: number;     // cumulative Nifty-weighted net (Cr)
+  interval: number;     // this interval's net flow (Cr)
 }
 
 interface FlowTrendPoint {
@@ -168,6 +177,24 @@ function NiftyTooltip({ active, payload, label }: any) {
   );
 }
 
+function CashFlowTrendTooltip({ active, payload, label }: any) {
+  if (!active || !payload?.length) return null;
+  const d = payload[0]?.payload;
+  return (
+    <div className="bg-card border border-border rounded-lg p-2 shadow-xl text-xs">
+      <div className="font-mono text-muted-foreground mb-1">{label}</div>
+      <div className="text-emerald-400">NSE Cum: {d?.nse?.toFixed(1)} Cr</div>
+      <div className="text-sky-400">BSE Cum: {d?.bse?.toFixed(1)} Cr</div>
+      <div className={d?.net >= 0 ? 'text-amber-400 font-semibold' : 'text-red-400 font-semibold'}>
+        Net Cum: {d?.net?.toFixed(1)} Cr
+      </div>
+      <div className="text-muted-foreground mt-1">
+        This 15s: <span className={d?.interval >= 0 ? 'text-emerald-300' : 'text-red-300'}>{d?.interval >= 0 ? '+' : ''}{d?.interval?.toFixed(1)} Cr</span>
+      </div>
+    </div>
+  );
+}
+
 function FlowTooltip({ active, payload, label }: any) {
   if (!active || !payload?.length) return null;
   return (
@@ -218,11 +245,17 @@ export default function TrendAnalysisTab() {
     NIFTY: 0, BANKNIFTY: 0, FINNIFTY: 0, SENSEX: 0, stockAggregate: 0,
   });
 
+  // Cash flow trend accumulation
+  const [cashFlowTrend, setCashFlowTrend] = useState<CashFlowTrendPoint[]>([]);
+  const cumulativeCash = useRef({ nse: 0, bse: 0, net: 0, weighted: 0 });
+  const prevStockCashFlow = useRef<StockCashFlow[]>([]);
+
   // Current flow values (for header cards)
   const [currentIdxFlows, setCurrentIdxFlows] = useState<Record<string, number>>({
     NIFTY: 0, BANKNIFTY: 0, FINNIFTY: 0, SENSEX: 0,
   });
   const [currentStockFlow, setCurrentStockFlow] = useState(0);
+  const [currentIntervalCashFlow, setCurrentIntervalCashFlow] = useState(0);
 
   // ─── Fetch trends data (candles + cash) ───
 
@@ -235,7 +268,51 @@ export default function TrendAnalysisTab() {
 
       setTrendMode(data.mode || 'demo');
       if (data.niftyCandles) setNiftyCandles(data.niftyCandles);
-      if (data.stockCashFlow) setStockCashFlow(data.stockCashFlow);
+
+      // Build cash flow trend from consecutive snapshots
+      if (data.stockCashFlow && data.stockCashFlow.length > 0) {
+        setStockCashFlow(data.stockCashFlow);
+
+        const time = new Date().toLocaleTimeString('en-IN', {
+          hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+        });
+
+        const nseTotal = data.stockCashFlow.reduce((s, v) => s + v.nseCashFlow, 0);
+        const bseTotal = data.stockCashFlow.reduce((s, v) => s + v.bseCashFlow, 0);
+        const netTotal = nseTotal + bseTotal;
+        const weightedTotal = data.stockCashFlow.reduce((s, v) => s + v.weightedFlow, 0);
+
+        // Compute interval delta (this poll minus previous poll)
+        let intervalDelta = netTotal;
+        if (prevStockCashFlow.current.length > 0) {
+          const prevNse = prevStockCashFlow.current.reduce((s, v) => s + v.nseCashFlow, 0);
+          const prevBse = prevStockCashFlow.current.reduce((s, v) => s + v.bseCashFlow, 0);
+          intervalDelta = netTotal - (prevNse + prevBse);
+        }
+        prevStockCashFlow.current = data.stockCashFlow;
+        setCurrentIntervalCashFlow(intervalDelta);
+
+        // Accumulate
+        cumulativeCash.current.nse += nseTotal;
+        cumulativeCash.current.bse += bseTotal;
+        cumulativeCash.current.net += netTotal;
+        cumulativeCash.current.weighted += weightedTotal;
+
+        const CR = 10000000;
+        const point: CashFlowTrendPoint = {
+          time,
+          nse: Math.round((cumulativeCash.current.nse / CR) * 10) / 10,
+          bse: Math.round((cumulativeCash.current.bse / CR) * 10) / 10,
+          net: Math.round((cumulativeCash.current.net / CR) * 10) / 10,
+          weighted: Math.round((cumulativeCash.current.weighted / CR) * 10) / 10,
+          interval: Math.round((intervalDelta / CR) * 10) / 10,
+        };
+
+        setCashFlowTrend((prev) => {
+          const next = [...prev, point];
+          return next.length > 200 ? next.slice(-200) : next;
+        });
+      }
     } catch (err) {
       console.error('[TrendsTab] fetchTrends error:', err);
     }
@@ -369,7 +446,7 @@ export default function TrendAnalysisTab() {
         </div>
       </div>
 
-      {/* Section 1: Nifty 50 Spot Price Trend */}
+      {/* Section 1: Nifty 50 Spot Price + Cash Flow Trend (stacked) */}
       <div className="rounded-xl border border-border/50 bg-card/50 p-4">
         <div className="flex items-center justify-between mb-3">
           <div className="flex items-center gap-2">
@@ -390,7 +467,7 @@ export default function TrendAnalysisTab() {
             )}
           </div>
         </div>
-        <div className="h-[220px]">
+        <div className="h-[200px]">
           {niftyCandles.length > 0 ? (
             <ResponsiveContainer width="100%" height="100%">
               <ComposedChart data={niftyCandles} margin={{ top: 5, right: 10, left: 10, bottom: 0 }}>
@@ -432,6 +509,77 @@ export default function TrendAnalysisTab() {
               Waiting for candle data...
             </div>
           )}
+        </div>
+
+        {/* Net Cash Flow Trend — directly below Nifty price */}
+        <div className="mt-1 pt-3 border-t border-border/30">
+          <div className="flex items-center justify-between mb-2">
+            <div className="flex items-center gap-2">
+              <Wallet className="h-3.5 w-3.5 text-sky-400" />
+              <h4 className="text-xs font-semibold">Net Cash Flow — 15 Stocks (NSE + BSE, Cumulative)</h4>
+            </div>
+            <div className="flex items-center gap-3 text-[10px]">
+              <div className="flex items-center gap-1">
+                <span className="inline-block w-2 h-2 rounded-full bg-emerald-500" />
+                <span className="text-muted-foreground">NSE: {fmtCr(cumulativeCash.current.nse)} Cr</span>
+              </div>
+              <div className="flex items-center gap-1">
+                <span className="inline-block w-2 h-2 rounded-full bg-sky-500" />
+                <span className="text-muted-foreground">BSE: {fmtCr(cumulativeCash.current.bse)} Cr</span>
+              </div>
+              <div className={`font-mono font-semibold ${cumulativeCash.current.net >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                Net: {fmtCr(cumulativeCash.current.net)} Cr
+              </div>
+              <span className={`font-mono ${currentIntervalCashFlow >= 0 ? 'text-emerald-300' : 'text-red-300'}`}>
+                15s: {currentIntervalCashFlow >= 0 ? '+' : ''}{fmtCr(currentIntervalCashFlow * 10000000)} Cr
+              </span>
+            </div>
+          </div>
+          <div className="h-[130px]">
+            {cashFlowTrend.length > 1 ? (
+              <ResponsiveContainer width="100%" height="100%">
+                <ComposedChart data={cashFlowTrend} margin={{ top: 5, right: 10, left: 10, bottom: 0 }}>
+                  <defs>
+                    <linearGradient id="cashNetGrad" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stopColor={cumulativeCash.current.net >= 0 ? '#10b981' : '#ef4444'} stopOpacity={0.35} />
+                      <stop offset="100%" stopColor={cumulativeCash.current.net >= 0 ? '#10b981' : '#ef4444'} stopOpacity={0.02} />
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#ffffff08" />
+                  <XAxis
+                    dataKey="time"
+                    tick={{ fill: '#a1a1aa', fontSize: 9 }}
+                    interval={Math.max(0, Math.floor(cashFlowTrend.length / 8) - 1)}
+                  />
+                  <YAxis
+                    tick={{ fill: '#a1a1aa', fontSize: 9 }}
+                    tickFormatter={(v: number) => v.toFixed(0)}
+                    width={40}
+                  />
+                  <Tooltip content={<CashFlowTrendTooltip />} />
+                  <ReferenceLine y={0} stroke="#ffffff30" />
+                  {/* NSE cumulative line */}
+                  <Line type="monotone" dataKey="nse" stroke="#22c55e" strokeWidth={1.2} dot={false} strokeOpacity={0.7} />
+                  {/* BSE cumulative line */}
+                  <Line type="monotone" dataKey="bse" stroke="#0ea5e9" strokeWidth={1.2} dot={false} strokeOpacity={0.7} />
+                  {/* Net combined area */}
+                  <Area
+                    type="monotone"
+                    dataKey="net"
+                    stroke="#f59e0b"
+                    strokeWidth={2}
+                    fill="url(#cashNetGrad)"
+                    dot={false}
+                    activeDot={{ r: 3, fill: '#f59e0b', stroke: '#fff', strokeWidth: 1.5 }}
+                  />
+                </ComposedChart>
+              </ResponsiveContainer>
+            ) : (
+              <div className="h-full flex items-center justify-center text-muted-foreground text-xs">
+                Accumulating cash flow trend... (need 2+ polls)
+              </div>
+            )}
+          </div>
         </div>
       </div>
 
