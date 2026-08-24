@@ -212,3 +212,59 @@ Stage Summary:
 - Critical cash flow trend bug fixed - was showing inflated cumulative values
 - Root cause: accumulating absolute cash flow instead of per-interval delta
 - All 4 fixes pushed: timezone, 15s display, LIVE badge, delta accumulation
+
+---
+Task ID: 4
+Agent: main
+Task: Fix data disappearing on tab switch + implement persistent TradingView-like state
+
+Work Log:
+- Identified root cause: shadcn Tabs (Radix) unmounts inactive tab content, destroying all React state
+- Identified secondary bug: cash flow chart was accumulating 15s deltas instead of using API's cumulative-since-market-open value
+- Created /src/lib/trend-types.ts — shared types + computeSymbolFlow() helper extracted from component
+- Created /src/lib/trend-store.ts — Zustand store with persist middleware
+  - Holds all trend state outside any component (survives tab switches)
+  - Persists to localStorage (survives page reloads + browser restarts)
+  - Singleton poller started at app boot, runs regardless of active tab
+  - Date boundary detection auto-clears stale data each new trading day
+  - 4h stale gap detection clears data after long absence
+- Refactored /src/components/dashboard/trend-analysis-tab.tsx to be a pure view (no local state, no polling)
+- Updated /src/app/page.tsx to call startPolling() once on mount
+- Fixed cash flow trend to use API's cumulative value directly (not deltas)
+- Build passed, pushed to main (2dfde8b)
+
+Stage Summary:
+- Tabs no longer destroy trend data on switch
+- Page reloads restore data from localStorage
+- Cash flow chart shows morning-to-now (not from-tab-open to now)
+- Options flow persists across tab switches and reloads
+
+---
+Task ID: 5
+Agent: main
+Task: Implement historical OI backfill for options flow (Option 1)
+
+Work Log:
+- Added 'oi' field to KiteHistoricalCandle interface and getCandles() — Kite returns OI at c[6] for F&O
+- Created /api/kite/historical-flow/route.ts — server-side backfill endpoint
+  - Finds ATM±5 strikes for all 19 symbols (4 indices + 15 stocks)
+  - Fetches today's 5-min historical candles for each CE/PE contract (~358 API calls)
+  - Applies same 4-color delta-weighted flow engine between consecutive candles
+  - Rate limited: 350ms every 3 calls (under Kite's 3/s limit) → ~2 min total
+  - In-memory cache: 60s TTL, so repeat calls are instant
+  - Returns: flowTrend[], prevSnapshots{}, cumulativeFlow{}
+- Updated /src/lib/trend-store.ts (v2) — added backfillHistoricalFlow() action
+  - Triggered 3s after first poll if flowTrend is empty and mode is live
+  - Runs in background while live polls continue
+  - On completion: replaces flowTrend with historical data, adjusts cumulative totals
+  - If live points arrived during backfill, they're offset-adjusted and appended
+  - prevSnapshots from backfill ensure no double-counting on next live poll
+  - Only runs ONCE per trading day (flag + date boundary check)
+- Build passed, pushed to main (75c474f)
+
+Stage Summary:
+- Options flow now shows morning-to-now data even if app opened at 1pm
+- Historical data reconstructed from Kite's 5-min OI candles
+- ~2 min backfill time on first open; instant on subsequent opens (persisted + cache)
+- Trade-off: Strikes picked from CURRENT spot price — misses morning strikes that moved far OTM
+- If this limitation is problematic, user wants to proceed to Option 2 (Upstash Redis + cron)
