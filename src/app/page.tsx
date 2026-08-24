@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Badge } from '@/components/ui/badge';
+import { useTrendStore } from '@/lib/trend-store';
 import {
   Globe, Activity, Target, Landmark, Thermometer, Settings,
   Wifi, WifiOff, Clock, TrendingUp, TrendingDown, Info, Layers, Crosshair, Trophy,
@@ -36,6 +37,18 @@ export default function DashboardPage() {
   const [marketStatus, setMarketStatus] = useState<string>('closed');
   const [nseSession, setNseSession] = useState<NSESessionInfo | null>(null);
   const { curr: snapshot } = useKiteSnapshot(15000);
+
+  // Start the global trend poller ONCE at app boot — it runs as a singleton
+  // regardless of which tab is active, so trend data keeps accumulating even
+  // when the user is on other tabs. This is the key fix for "data disappears
+  // when I switch tabs".
+  const startTrendPolling = useTrendStore((s) => s.startPolling);
+  useEffect(() => {
+    startTrendPolling();
+    // We intentionally do NOT call stopPolling on unmount — for a single-page
+    // app the polling should continue for the lifetime of the page. The store
+    // handles its own cleanup if a new trading day starts.
+  }, [startTrendPolling]);
 
   useEffect(() => {
     function updateTime() {
