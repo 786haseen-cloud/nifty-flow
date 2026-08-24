@@ -298,8 +298,13 @@ export async function getCandles(
 ): Promise<KiteHistoricalCandle[]> {
   if (!isKiteConfigured()) return [];
 
-  const toDate = new Date();
-  const fromDate = new Date();
+  // Kite historical API expects IST dates.
+  // On Vercel (UTC), we must convert to IST before formatting.
+  const IST_OFFSET = 5.5 * 60 * 60 * 1000;
+  const toIST = (d: Date) => new Date(d.getTime() + IST_OFFSET);
+
+  const toDate = toIST(new Date());
+  const fromDate = toIST(new Date());
   fromDate.setDate(fromDate.getDate() - days);
 
   const fmt = (d: Date) =>

@@ -434,8 +434,8 @@ export default function TrendAnalysisTab() {
       {/* Header with mode badge + summary cards */}
       <div className="flex items-center justify-between flex-wrap gap-2">
         <div className="flex items-center gap-2">
-          <Badge variant="outline" className={isLive ? 'border-emerald-500/40 text-emerald-300' : 'border-orange-500/40 text-orange-300'}>
-            {isLive ? 'LIVE' : 'Demo'}
+          <Badge variant="outline" className={trendMode === 'live' ? 'border-emerald-500/40 text-emerald-300' : 'border-orange-500/40 text-orange-300'}>
+            {trendMode === 'live' ? 'LIVE' : 'Demo'}
           </Badge>
           <span className="text-xs text-muted-foreground">Trend Analysis — Price + Cash + Options Flow</span>
         </div>
@@ -531,7 +531,7 @@ export default function TrendAnalysisTab() {
                 Net: {fmtCr(cumulativeCash.current.net)} Cr
               </div>
               <span className={`font-mono ${currentIntervalCashFlow >= 0 ? 'text-emerald-300' : 'text-red-300'}`}>
-                15s: {currentIntervalCashFlow >= 0 ? '+' : ''}{fmtCr(currentIntervalCashFlow * 10000000)} Cr
+                15s: {currentIntervalCashFlow >= 0 ? '+' : ''}{fmtCr(currentIntervalCashFlow)} Cr
               </span>
             </div>
           </div>
