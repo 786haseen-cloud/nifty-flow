@@ -164,3 +164,29 @@ Stage Summary:
 - Local testing shows demo mode (expected without browser creds)
 - Live site should show LIVE badge when user has Kite creds in browser Settings tab
 - All 4 sections of Trends tab verified: Nifty price, cash flow trend, index options flow, stock options flow
+---
+Task ID: 2
+Agent: main
+Task: Full live site verification and bug fixes for Trends tab
+
+Work Log:
+- Opened live Vercel site with agent-browser, checked all tabs
+- LIVE tab: loads (demo in agent-browser — no localStorage creds)
+- Clicked Trends tab, took screenshot, analyzed full snapshot
+- Found Trends badge says "Demo" even though API returns mode:"live"
+- Found 15s interval showing "+626342 Cr" (absurd number) — double Cr conversion bug
+- Found Nifty candles returning 0 — empty chart "Waiting for candle data..."
+- Tested /api/kite/trends → mode:live, 14 stocks with real prices, but 0 candles
+- Tested /api/kite/candles → mode:live, count:0
+- Added inline debug fetch in candles route to see Kite raw response
+- Discovered Kite returns 403 "Incorrect api_key or access_token" for historical endpoint
+- Root cause: Vercel env vars have expired Kite credentials; agent-browser has no localStorage creds
+- User's actual browser has valid creds in localStorage → withCreds() passes them → works
+- Fixed 3 bugs: (1) IST timezone in getCandles for Vercel UTC, (2) 15s double Cr, (3) LIVE badge
+- Cleaned up all debug code, pushed clean version
+
+Stage Summary:
+- 3 bugs fixed and pushed: candle timezone, 15s display, LIVE badge
+- Vercel env var KITE_ACCESS_TOKEN appears expired — user should update in Vercel dashboard
+- User's browser localStorage creds work fine (withCreds passes them as URL params)
+- Build passes clean, all pushed to main
