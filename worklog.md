@@ -190,3 +190,25 @@ Stage Summary:
 - Vercel env var KITE_ACCESS_TOKEN appears expired — user should update in Vercel dashboard
 - User's browser localStorage creds work fine (withCreds passes them as URL params)
 - Build passes clean, all pushed to main
+---
+Task ID: 3
+Agent: main
+Task: Fix cash flow trend line accumulation bug
+
+Work Log:
+- User reported Trends tab not working properly
+- Opened live site with agent-browser, verified badge shows LIVE
+- Found 0 candles (expected - agent-browser has no creds)
+- Found cash flow trend showing -72.2 Cr with only 2 data points
+- Investigated accumulation logic in fetchTrends()
+- **Found critical bug**: cumulativeCash was adding nseTotal/bseTotal/netTotal (absolute since market open) every 15s poll instead of the delta
+- cashFlow = (ltp - open) * volume is CUMULATIVE daily value, not per-interval
+- Every poll re-added the entire day's flow, causing ~10x inflation after a few minutes
+- Fixed: compute nseDelta/bseDelta/weightedDelta as diff from previous poll, accumulate only deltas
+- First poll now correctly shows 0 delta (no previous to diff against)
+- Build passes, pushed to main
+
+Stage Summary:
+- Critical cash flow trend bug fixed - was showing inflated cumulative values
+- Root cause: accumulating absolute cash flow instead of per-interval delta
+- All 4 fixes pushed: timezone, 15s display, LIVE badge, delta accumulation
