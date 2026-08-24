@@ -65,6 +65,8 @@ export interface KiteQuote {
   oi: number;
   oiDayHigh: number;
   oiDayLow: number;
+  dayHigh: number;
+  dayLow: number;
 }
 
 export interface KiteInstrument {
