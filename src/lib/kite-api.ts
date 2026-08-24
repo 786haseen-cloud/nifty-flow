@@ -40,7 +40,7 @@ export function isKiteConfigured(): boolean {
   );
 }
 
-export function kiteHeaders() {
+function kiteHeaders() {
   const apiKey = _overrideApiKey || process.env.KITE_API_KEY || '';
   const accessToken = _overrideAccessToken || process.env.KITE_ACCESS_TOKEN || '';
   return {
@@ -318,15 +318,9 @@ export async function getCandles(
     const res = await fetch(url, { headers: kiteHeaders() });
 
     const data = await res.json();
-    if (data.status !== 'success') {
-      const errMsg = `Kite status: ${data.status}, message: ${data.message || data.error_type || 'unknown'}, from: ${fromStr}, to: ${toStr}`;
-      console.error('[Kite] candles API error:', errMsg);
-      throw new Error(errMsg);
-    }
-    if (!data.data?.candles) {
-      const errMsg = `No candles in response. Status: ${data.status}, from: ${fromStr}, to: ${toStr}`;
-      console.error('[Kite] candles empty:', errMsg);
-      throw new Error(errMsg);
+    if (data.status !== 'success' || !data.data?.candles) {
+      console.error('[Kite] candles: status=%s, from=%s, to=%s', data.status, fromStr, toStr);
+      return [];
     }
 
     return (data.data.candles as any[][]).map(c => ({
