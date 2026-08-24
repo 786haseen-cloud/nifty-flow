@@ -40,7 +40,7 @@ export function isKiteConfigured(): boolean {
   );
 }
 
-function kiteHeaders() {
+export function kiteHeaders() {
   const apiKey = _overrideApiKey || process.env.KITE_API_KEY || '';
   const accessToken = _overrideAccessToken || process.env.KITE_ACCESS_TOKEN || '';
   return {
