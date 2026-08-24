@@ -86,12 +86,14 @@ interface TrendState {
   // ─── Polling control (NOT persisted — runtime only) ───
   _pollingStarted: boolean;
   _pollTimer: ReturnType<typeof setInterval> | null;
+  _historicalBackfillDone: boolean;  // true after first successful backfill today
 
   // ─── Actions ───
   startPolling: () => void;
   stopPolling: () => void;
   pollOnce: () => Promise<void>;
   clearTrendData: () => void;
+  backfillHistoricalFlow: () => Promise<void>;
 }
 
 // ─── Constants ───
@@ -128,6 +130,7 @@ export const useTrendStore = create<TrendState>()(
 
       _pollingStarted: false,
       _pollTimer: null,
+      _historicalBackfillDone: false,
 
       // ─── Actions ───
 
@@ -161,6 +164,22 @@ export const useTrendStore = create<TrendState>()(
 
         // Immediate first poll
         get().pollOnce().catch((e) => console.error('[TrendStore] initial poll error:', e));
+
+        // Trigger historical backfill in background (only once per day)
+        // This fetches today's OI history from Kite and reconstructs the
+        // morning-to-now options flow trend.
+        if (!get()._historicalBackfillDone && get().flowTrend.length === 0) {
+          // Wait a few seconds for the first poll to complete and set trendMode
+          setTimeout(() => {
+            const state = get();
+            if (state.trendMode === 'live' && !state._historicalBackfillDone) {
+              console.log('[TrendStore] Triggering historical flow backfill...');
+              get().backfillHistoricalFlow().catch((e) =>
+                console.error('[TrendStore] backfill error:', e)
+              );
+            }
+          }, 3000);
+        }
 
         // Start interval
         const timer = setInterval(() => {
@@ -197,7 +216,128 @@ export const useTrendStore = create<TrendState>()(
           currentIdxFlows: { NIFTY: 0, BANKNIFTY: 0, FINNIFTY: 0, SENSEX: 0 },
           currentStockFlow: 0,
           currentIntervalCashFlow: 0,
+          _historicalBackfillDone: false,
         });
+      },
+
+      /**
+       * Historical Flow Backfill
+       * --------------------------
+       * Called once per day (on first poll when flowTrend is empty and mode is live).
+       * Fetches /api/kite/historical-flow which reconstructs morning-to-now
+       * options flow from Kite's historical 5-min OI candles.
+       *
+       * When the backfill returns:
+       * 1. Replaces flowTrend with the historical data
+       * 2. Sets cumulativeFlow to the server-computed totals
+       * 3. Stores prevSnapshots so the next live poll computes correct deltas
+       *    from the last historical candle (no double-counting)
+       *
+       * The backfill takes ~2 minutes (rate-limited API calls), so it runs in
+       * the background. Live polls continue appending 15s points. When the
+       * backfill completes, it merges — keeping any live points that arrived
+       * during the backfill, but replacing the cumulative totals to match.
+       */
+      backfillHistoricalFlow: async () => {
+        try {
+          const res = await fetch(withCreds('/api/kite/historical-flow'));
+          const data = await res.json();
+
+          if (data.mode !== 'live' || !data.flowTrend || data.flowTrend.length === 0) {
+            console.log('[TrendStore] Backfill returned no data, skipping');
+            set({ _historicalBackfillDone: true });
+            return;
+          }
+
+          const state = get();
+          const histFlow = data.flowTrend as FlowTrendPoint[];
+          const histCumulative = data.cumulativeFlow as Record<string, number>;
+          const histPrevSnapshots = data.prevSnapshots as Record<string, StrikeData[]>;
+
+          // If live polls arrived during the backfill, we need to offset them.
+          // The live polls accumulated from zero (or from a previous session).
+          // We keep any live points that arrived AFTER the last historical point,
+          // but adjust their cumulative values to continue from the historical totals.
+          const liveFlowTrend = state.flowTrend;
+          const liveCumulative = { ...state.cumulativeFlow };
+
+          let mergedFlow: FlowTrendPoint[];
+          let mergedCumulative: Record<string, number>;
+          let mergedPrevSnapshots: Record<string, StrikeData[]>;
+
+          if (liveFlowTrend.length === 0) {
+            // Simple case: no live data arrived during backfill
+            mergedFlow = histFlow;
+            mergedCumulative = { ...INITIAL_FLOW, ...histCumulative };
+            mergedPrevSnapshots = { ...histPrevSnapshots };
+          } else {
+            // Live data arrived during the ~2min backfill.
+            // Keep historical data + append live data with adjusted cumulative values.
+            // The offset = historical total - live total at the overlap point.
+            mergedFlow = [...histFlow];
+            mergedCumulative = { ...INITIAL_FLOW, ...histCumulative };
+
+            // Compute offsets for each symbol
+            const offsets: Record<string, number> = {};
+            for (const sym of Object.keys(mergedCumulative)) {
+              const histVal = mergedCumulative[sym] || 0;
+              const liveVal = liveCumulative[sym] || 0;
+              offsets[sym] = histVal - liveVal;
+            }
+
+            // Re-compute live points with offset applied
+            // Only append live points that are newer than the last historical point
+            const lastHistTime = histFlow[histFlow.length - 1]?.time || '';
+            for (const pt of liveFlowTrend) {
+              if (pt.time > lastHistTime) {
+                mergedFlow.push({
+                  time: pt.time,
+                  NIFTY: Math.round(((pt.NIFTY || 0) + (offsets.NIFTY || 0)) * 10) / 10,
+                  BANKNIFTY: Math.round(((pt.BANKNIFTY || 0) + (offsets.BANKNIFTY || 0)) * 10) / 10,
+                  FINNIFTY: Math.round(((pt.FINNIFTY || 0) + (offsets.FINNIFTY || 0)) * 10) / 10,
+                  SENSEX: Math.round(((pt.SENSEX || 0) + (offsets.SENSEX || 0)) * 10) / 10,
+                  stockAggregate: Math.round(((pt.stockAggregate || 0) + (offsets.stockAggregate || 0)) * 10) / 10,
+                });
+              }
+            }
+
+            // Update cumulative to be the latest merged value
+            if (mergedFlow.length > 0) {
+              const last = mergedFlow[mergedFlow.length - 1];
+              mergedCumulative.NIFTY = last.NIFTY;
+              mergedCumulative.BANKNIFTY = last.BANKNIFTY;
+              mergedCumulative.FINNIFTY = last.FINNIFTY;
+              mergedCumulative.SENSEX = last.SENSEX;
+              mergedCumulative.stockAggregate = last.stockAggregate;
+            }
+
+            // Keep the more recent prevSnapshots (live > historical)
+            mergedPrevSnapshots = {
+              ...histPrevSnapshots,
+              ...state.prevSnapshots,
+            };
+          }
+
+          // Trim to max points
+          const trimmed = mergedFlow.length > MAX_TREND_POINTS
+            ? mergedFlow.slice(mergedFlow.length - MAX_TREND_POINTS)
+            : mergedFlow;
+
+          set({
+            flowTrend: trimmed,
+            cumulativeFlow: mergedCumulative,
+            prevSnapshots: mergedPrevSnapshots,
+            _historicalBackfillDone: true,
+          });
+
+          console.log(
+            `[TrendStore] Backfill complete: ${histFlow.length} historical + ${liveFlowTrend.length} live points, ` +
+            `${Object.keys(mergedPrevSnapshots).length} symbols with snapshots`
+          );
+        } catch (err) {
+          console.error('[TrendStore] backfillHistoricalFlow error:', err);
+          set({ _historicalBackfillDone: true }); // don't retry
+        }
       },
 
       /**
@@ -338,7 +478,7 @@ export const useTrendStore = create<TrendState>()(
       },
     }),
     {
-      name: 'trend-store-v1',  // localStorage key — bump version to invalidate
+      name: 'trend-store-v2',  // v2: added historical OI backfill
       storage: createJSONStorage(() => {
         // Guard for SSR — localStorage is only available in the browser
         if (typeof window === 'undefined') {

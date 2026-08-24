@@ -89,6 +89,7 @@ export interface KiteHistoricalCandle {
   low: number;
   close: number;
   volume: number;
+  oi: number;  // Open Interest — only present for F&O instruments
 }
 
 // ─── Auth ───
@@ -330,6 +331,7 @@ export async function getCandles(
       low: c[3],
       close: c[4],
       volume: c[5],
+      oi: c[6] || 0,  // c[6] = OI (F&O only), undefined for cash
     }));
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
