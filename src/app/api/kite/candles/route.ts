@@ -21,7 +21,13 @@ export async function GET(req: NextRequest) {
   const interval = req.nextUrl.searchParams.get('interval') || '15minute';
   const days = parseInt(req.nextUrl.searchParams.get('days') || '1');
 
-  const candles = await getCandles(token, interval, days);
+  let candles: Awaited<ReturnType<typeof getCandles>> = [];
+  let candleError: string | undefined;
+  try {
+    candles = await getCandles(token, interval, days);
+  } catch (err) {
+    candleError = err instanceof Error ? err.message : String(err);
+  }
 
   return NextResponse.json({
     mode: 'live',
@@ -30,6 +36,8 @@ export async function GET(req: NextRequest) {
     days,
     count: candles.length,
     timestamp: new Date().toISOString(),
+    serverTZ: Intl.DateTimeFormat().resolvedOptions().timeZone,
+    ...(candleError ? { error: candleError } : {}),
     candles,
   });
 }

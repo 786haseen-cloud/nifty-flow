@@ -311,13 +311,23 @@ export async function getCandles(
     `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
 
   try {
-    const res = await fetch(
-      `${KITE_BASE}/instruments/historical/${instrumentToken}/${interval}?from=${fmt(fromDate)}&to=${fmt(toDate)}&continuous=0`,
-      { headers: kiteHeaders() }
-    );
+    const fromStr = fmt(fromDate);
+    const toStr = fmt(toDate);
+    const url = `${KITE_BASE}/instruments/historical/${instrumentToken}/${interval}?from=${fromStr}&to=${toStr}&continuous=0`;
+
+    const res = await fetch(url, { headers: kiteHeaders() });
 
     const data = await res.json();
-    if (data.status !== 'success' || !data.data?.candles) return [];
+    if (data.status !== 'success') {
+      const errMsg = `Kite status: ${data.status}, message: ${data.message || data.error_type || 'unknown'}, from: ${fromStr}, to: ${toStr}`;
+      console.error('[Kite] candles API error:', errMsg);
+      throw new Error(errMsg);
+    }
+    if (!data.data?.candles) {
+      const errMsg = `No candles in response. Status: ${data.status}, from: ${fromStr}, to: ${toStr}`;
+      console.error('[Kite] candles empty:', errMsg);
+      throw new Error(errMsg);
+    }
 
     return (data.data.candles as any[][]).map(c => ({
       timestamp: c[0],
