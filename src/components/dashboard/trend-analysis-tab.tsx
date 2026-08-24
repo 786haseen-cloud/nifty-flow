@@ -282,21 +282,30 @@ export default function TrendAnalysisTab() {
         const netTotal = nseTotal + bseTotal;
         const weightedTotal = data.stockCashFlow.reduce((s, v) => s + v.weightedFlow, 0);
 
-        // Compute interval delta (this poll minus previous poll)
-        let intervalDelta = netTotal;
+        // Compute interval deltas (this poll minus previous poll)
+        // cashFlow = (ltp - open) * volume is CUMULATIVE since market open,
+        // so we must diff consecutive polls to get the 15s delta.
+        let nseDelta = 0;
+        let bseDelta = 0;
+        let weightedDelta = 0;
         if (prevStockCashFlow.current.length > 0) {
           const prevNse = prevStockCashFlow.current.reduce((s, v) => s + v.nseCashFlow, 0);
           const prevBse = prevStockCashFlow.current.reduce((s, v) => s + v.bseCashFlow, 0);
-          intervalDelta = netTotal - (prevNse + prevBse);
+          const prevWeighted = prevStockCashFlow.current.reduce((s, v) => s + v.weightedFlow, 0);
+          nseDelta = nseTotal - prevNse;
+          bseDelta = bseTotal - prevBse;
+          weightedDelta = weightedTotal - prevWeighted;
         }
+        const intervalDelta = nseDelta + bseDelta;
+
         prevStockCashFlow.current = data.stockCashFlow;
         setCurrentIntervalCashFlow(intervalDelta);
 
-        // Accumulate
-        cumulativeCash.current.nse += nseTotal;
-        cumulativeCash.current.bse += bseTotal;
-        cumulativeCash.current.net += netTotal;
-        cumulativeCash.current.weighted += weightedTotal;
+        // Accumulate only the deltas
+        cumulativeCash.current.nse += nseDelta;
+        cumulativeCash.current.bse += bseDelta;
+        cumulativeCash.current.net += intervalDelta;
+        cumulativeCash.current.weighted += weightedDelta;
 
         const CR = 10000000;
         const point: CashFlowTrendPoint = {
