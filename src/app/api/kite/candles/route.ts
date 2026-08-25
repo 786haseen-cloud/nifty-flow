@@ -38,7 +38,7 @@ export async function GET(req: NextRequest) {
       const fromDate = toIST(new Date());
       fromDate.setDate(fromDate.getDate() - days);
       const fmt = (d: Date) =>
-        `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
+        `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}:00`;
       const url = `${KITE_BASE}/instruments/historical/${token}/${interval}?from=${encodeURIComponent(fmt(fromDate))}&to=${encodeURIComponent(fmt(toDate))}&continuous=0`;
       const res = await fetch(url, { headers: kiteHeaders() });
       const body = await res.text();

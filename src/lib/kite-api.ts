@@ -311,8 +311,10 @@ export async function getCandles(
   const fromDate = toIST(new Date());
   fromDate.setDate(fromDate.getDate() - days);
 
+  // Kite historical API requires format "YYYY-MM-DD HH:MM:SS" (WITH seconds).
+  // Sending "YYYY-MM-DD HH:MM" (no seconds) returns HTTP 400 "invalid from date".
   const fmt = (d: Date) =>
-    `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
+    `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}:00`;
 
   try {
     const fromStr = fmt(fromDate);
