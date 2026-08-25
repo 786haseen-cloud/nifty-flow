@@ -212,11 +212,17 @@ export async function getInstruments(exchange?: string): Promise<KiteInstrument[
       if (cols.length < 12) continue;
       const rawType = cols[9] || '';
       const segment = cols[10] || '';
+      // Kite wraps the `name` field in double quotes (e.g. "NIFTY").
+      // Strip them so name-based filters (e.g. .includes('NIFTY')) work correctly.
+      const rawName = cols[3] || '';
+      const name = rawName.startsWith('"') && rawName.endsWith('"')
+        ? rawName.slice(1, -1)
+        : rawName;
       instruments.push({
         instrumentToken: parseInt(cols[0]) || 0,
         exchangeToken: parseInt(cols[1]) || 0,
         tradingSymbol: cols[2],
-        name: cols[3] || '',
+        name,
         exchange: cols[11] || '',
         segment,
         instrumentType: normalizeInstrumentType(rawType, segment),
