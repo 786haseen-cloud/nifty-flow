@@ -415,12 +415,20 @@ export async function getOptionInstruments(
   // Fetch instruments from the correct exchange (NSE or BSE)
   const instruments = await getInstruments(spec.exchange);
 
-  // Filter options using spec
+  // Filter options using spec.
+  //
+  // Kite changed their CSV format in 2025:
+  //   OLD: segment='NFO'/'BFO', instrument_type='OPTIDX'/'OPTSTK'
+  //   NEW: segment='NFO-OPT'/'BFO-OPT', instrument_type='CE'/'PE' (we normalize to OPTIDX)
+  //
+  // So we use a "starts with" match on segment (so 'NFO' matches both 'NFO' and 'NFO-OPT'),
+  // and an equality match on instrumentType (we've already normalized new → legacy).
+  const symUpper = symbol.toUpperCase();
   const indexOptions = instruments.filter(i =>
-    i.segment === spec.segment &&
+    i.segment.startsWith(spec.segment) &&
     i.instrumentType === spec.instrumentType &&
-    (i.name.toUpperCase().includes(symbol.toUpperCase()) ||
-     i.tradingSymbol.toUpperCase().includes(symbol.toUpperCase()))
+    (i.name.toUpperCase().includes(symUpper) ||
+     i.tradingSymbol.toUpperCase().includes(symUpper))
   );
 
   if (indexOptions.length === 0) return { instruments: [], meta: { lotSize: 1, strikeStep: 50 } };

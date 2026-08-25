@@ -216,12 +216,19 @@ async function fetchLiveData(): Promise<HighestBetResponse> {
 
     const spotPrice = spotQuote.lastPrice;
 
-    // Find option instruments from cached list
+    // Find option instruments from cached list.
+    //
+    // Kite CSV 2025+: segment is 'NFO-OPT'/'BFO-OPT' (not 'NFO'/'BFO'),
+    // but prep.optExchange is 'NFO'/'BFO'. So we match by exchange
+    // (which equals the last segment component) rather than exact segment equality.
+    // The instrumentType filter works because kite-api.ts normalizes new types
+    // ('CE'/'PE') back to legacy ('OPTIDX'/'OPTSTK') when parsing the CSV.
+    const symUpper = prep.symbol.toUpperCase();
     const opts = allInstruments.filter(i =>
       i.exchange === prep.optExchange &&
       i.instrumentType === prep.instrumentType &&
-      (i.name.toUpperCase().includes(prep.symbol.toUpperCase()) ||
-        i.tradingSymbol.toUpperCase().includes(prep.symbol.toUpperCase()))
+      (i.name.toUpperCase().includes(symUpper) ||
+        i.tradingSymbol.toUpperCase().includes(symUpper))
     );
 
     if (opts.length === 0) continue;
