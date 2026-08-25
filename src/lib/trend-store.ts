@@ -244,8 +244,21 @@ export const useTrendStore = create<TrendState>()(
           const data = await res.json();
 
           if (data.mode !== 'live' || !data.flowTrend || data.flowTrend.length === 0) {
-            console.log('[TrendStore] Backfill returned no data, skipping');
-            set({ _historicalBackfillDone: true });
+            console.log('[TrendStore] Backfill returned no data, will retry later if creds are refreshed');
+            // Do NOT set _historicalBackfillDone = true here. This allows retry
+            // when the user refreshes their Kite credentials in the Settings tab
+            // mid-session. The backfill is rate-limited by the in-memory 60s
+            // server-side cache anyway, so this won't hammer the API.
+            // Instead, schedule a single retry after 5 minutes.
+            setTimeout(() => {
+              const s = get();
+              if (!s._historicalBackfillDone && s.trendMode === 'live') {
+                console.log('[TrendStore] Retrying historical flow backfill...');
+                get().backfillHistoricalFlow().catch((e) =>
+                  console.error('[TrendStore] backfill retry error:', e)
+                );
+              }
+            }, 5 * 60 * 1000);
             return;
           }
 
@@ -336,7 +349,17 @@ export const useTrendStore = create<TrendState>()(
           );
         } catch (err) {
           console.error('[TrendStore] backfillHistoricalFlow error:', err);
-          set({ _historicalBackfillDone: true }); // don't retry
+          // Don't set _historicalBackfillDone on error — allow retry.
+          // Schedule a single retry in 5 minutes (same as empty-response case).
+          setTimeout(() => {
+            const s = get();
+            if (!s._historicalBackfillDone && s.trendMode === 'live') {
+              console.log('[TrendStore] Retrying historical flow backfill after error...');
+              get().backfillHistoricalFlow().catch((e) =>
+                console.error('[TrendStore] backfill retry error:', e)
+              );
+            }
+          }, 5 * 60 * 1000);
         }
       },
 
