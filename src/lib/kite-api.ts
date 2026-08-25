@@ -79,7 +79,7 @@ export interface KiteInstrument {
   name: string;
   exchange: string;
   segment: string;
-  instrumentType: string;
+  instrumentType: string;   // normalized: OPTIDX / OPTSTK / FUTIDX / FUTSTK / EQ / INDEX (legacy) or CE / PE / FUT (new Kite CSV)
   strike: number;
   lotSize: number;
   expiry: string;
@@ -173,17 +173,53 @@ export async function getInstruments(exchange?: string): Promise<KiteInstrument[
     // Kite CSV column order (2025+ format):
     // 0:instrument_token 1:exchange_token 2:tradingsymbol 3:name 4:last_price
     // 5:expiry 6:strike 7:tick_size 8:lot_size 9:instrument_type 10:segment 11:exchange
+    //
+    // Kite changed the CSV format in 2025:
+    //   OLD: instrument_type was 'OPTIDX'/'OPTSTK'/'FUTIDX'/'FUTSTK'/'EQ'/'INDEX'
+    //        segment was 'NFO'/'BFO'/'NSE'/'BSE'
+    //   NEW: instrument_type is 'CE'/'PE'/'FUT'/'EQ'
+    //        segment is 'NFO-OPT'/'NFO-FUT'/'NFO'/'BFO-OPT'/'BFO-FUT'/'NSE'/'BSE'
+    // To avoid breaking the rest of the code (which filters by OPTIDX/OPTSTK/FUTIDX/FUTSTK),
+    // we normalize the new format back to the legacy types using the segment column.
+    const normalizeInstrumentType = (rawType: string, segment: string): string => {
+      // Keep legacy values as-is (in case Kite reverts or some entries still use old format)
+      if (rawType === 'OPTIDX' || rawType === 'OPTSTK' || rawType === 'FUTIDX' || rawType === 'FUTSTK' ||
+          rawType === 'EQ' || rawType === 'INDEX') {
+        return rawType;
+      }
+      // Map new format using segment
+      if (rawType === 'CE' || rawType === 'PE') {
+        // Options — segment tells us if it's index or stock options
+        // NFO-OPT can be either OPTIDX or OPTSTK — disambiguate by underlying name later
+        // For now, return OPTIDX for index segments (BFO-OPT is always index options)
+        // and OPTSTK for stock segments. The actual disambiguation happens in caller code
+        // when filtering by name (index vs stock symbol).
+        if (segment.includes('BFO')) return 'OPTIDX';   // BSE F&O only has index options (SENSEX/BANKEX)
+        if (segment.includes('NFO')) return 'OPTIDX';    // default — caller filters by name to disambiguate
+        return 'OPTIDX';
+      }
+      if (rawType === 'FUT') {
+        if (segment.includes('BFO')) return 'FUTIDX';
+        if (segment.includes('NFO')) return 'FUTIDX';    // default — caller filters by name
+        if (segment.includes('MCX')) return 'FUTIDX';
+        return 'FUTIDX';
+      }
+      return rawType;
+    };
+
     for (let i = 1; i < lines.length; i++) { // skip header
       const cols = lines[i].split(',');
       if (cols.length < 12) continue;
+      const rawType = cols[9] || '';
+      const segment = cols[10] || '';
       instruments.push({
         instrumentToken: parseInt(cols[0]) || 0,
         exchangeToken: parseInt(cols[1]) || 0,
         tradingSymbol: cols[2],
         name: cols[3] || '',
         exchange: cols[11] || '',
-        segment: cols[10] || '',
-        instrumentType: cols[9] || '',
+        segment,
+        instrumentType: normalizeInstrumentType(rawType, segment),
         strike: parseFloat(cols[6]) || 0,
         lotSize: parseInt(cols[8]) || 1,
         expiry: cols[5] || '',
