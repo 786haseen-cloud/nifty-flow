@@ -309,3 +309,47 @@ Stage Summary:
   * Strike Flow / Big Bets / OI Walls tabs
 - After token refresh, retry logic will auto-trigger backfill within 5 minutes
 - Cash flow trend (NSE/BSE stocks) ALREADY works because /quote for EQ works
+
+---
+Task ID: 7
+Agent: main
+Task: Fix "trend shows 24336 instead of real 24140" bug
+
+Work Log:
+- User reported live Nifty near 24140 but trend line shows 24336
+- Inspected agent-browser localStorage: trendMode="demo" with 75 fake candles
+  - First candle: 09:15 close=24347 (demo base 24350 + noise)
+  - Last candle: 15:25 close=24363 (within demo range)
+- Confirmed: 24336 matches DEMO data (generator starts at 24350 with random walk)
+- Root cause: Vercel env var KITE_ACCESS_TOKEN is now FULLY EXPIRED
+  - At 9:30 AM IST today: /quote worked (returned real Nifty 24190)
+  - At 1:04 PM IST now: /quote also returns 403 (token revoked mid-day,
+    likely because user logged into kite.zerodha.com which invalidates old tokens)
+- Implemented 3 fixes:
+  1. clearTrendData bug fix: now also clears niftyCandles + stockCashFlow
+     - Previously date boundary check left stale demo data in these fields
+     - User could see yesterday's fake 24350 price instead of today's data
+  2. Trends API fallback: if historical candles fail but /quote works, build
+     2-point candle from quote (today's open + current LTP)
+     - User sees real current price (~24140) instead of fake 24350
+     - Only helps when /quote still works (didn't help today after full revocation)
+  3. Trend store demo→live transition: when mode changes from demo to live
+     (user refreshed token mid-session), automatically clears all accumulated
+     fake data so user doesn't see mix of fake + real points
+  4. Prominent DEMO warning banner at top of Trends tab
+     - Orange box tells user: "Demo Data Active — Showing simulated prices"
+     - Explains exact fix: Settings → request_token → Generate Access Token
+- Verified banner renders correctly via agent-browser eval
+- Pushed all fixes (commit f69a8fd)
+
+Stage Summary:
+- 24336 was DEMO data (base 24350 + random walk), not a real price
+- Code now handles partial failures better + warns user clearly
+- Vercel env var KITE_ACCESS_TOKEN is fully expired (was partially working this morning)
+- USER ACTION REQUIRED: refresh Kite access token
+  1. Visit https://kite.zerodha.com/connect/login?api_key=YOUR_API_KEY
+  2. After login, copy request_token from redirect URL
+  3. Open dashboard → Settings tab → paste → Generate Access Token
+  4. Or update VITE_ACCESS_TOKEN in Vercel dashboard for cross-device
+- After token refresh: next poll detects demo→live transition, clears demo data,
+  backfill auto-runs within 5 min, all 4 charts show real data
