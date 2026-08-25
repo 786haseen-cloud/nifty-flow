@@ -211,7 +211,7 @@ async function fetchTrendData(): Promise<TrendResponse> {
   stockCashFlow.sort((a, b) => Math.abs(b.weightedFlow) - Math.abs(a.weightedFlow));
 
   // Step 6: Process candles
-  const niftyCandles: NiftyCandle[] = candles.map((c) => {
+  let niftyCandles: NiftyCandle[] = candles.map((c) => {
     const d = new Date(c.timestamp);
     return {
       time: d.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: false }),
@@ -221,6 +221,32 @@ async function fetchTrendData(): Promise<TrendResponse> {
       volume: c.volume,
     };
   });
+
+  // FALLBACK: If historical candles failed (e.g. expired token gets 403 on
+  // /instruments/historical but still works on /quote), use the Nifty quote
+  // to synthesize a 2-point trend: today's open and current LTP. This gives
+  // the chart real current price instead of falling back to fake demo data.
+  if (niftyCandles.length === 0) {
+    try {
+      const niftyQ = await getQuotes([String(NIFTY50_TOKEN)]);
+      if (!('_error' in niftyQ)) {
+        const q = niftyQ[String(NIFTY50_TOKEN)] as KiteQuote | undefined;
+        if (q && q.lastPrice > 0) {
+          const open = q.open || q.lastPrice;
+          const now = new Date().toLocaleTimeString('en-IN', {
+            hour: '2-digit', minute: '2-digit', hour12: false,
+          });
+          niftyCandles = [
+            { time: '09:15', close: open, high: open, low: open, volume: 0 },
+            { time: now, close: q.lastPrice, high: q.high || q.lastPrice, low: q.low || q.lastPrice, volume: q.volume || 0 },
+          ];
+          console.log(`[Trends] Candles fallback: using quote LTP ${q.lastPrice} (open ${open})`);
+        }
+      }
+    } catch (e) {
+      console.warn('[Trends] Quote fallback failed:', e);
+    }
+  }
 
   return {
     mode: 'live',

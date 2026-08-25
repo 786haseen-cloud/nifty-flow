@@ -165,6 +165,15 @@ export default function TrendAnalysisTab() {
 
   return (
     <div className="space-y-4">
+      {/* Demo mode warning banner — shown prominently when user has no/expired creds */}
+      {trendMode === 'demo' && (
+        <div className="rounded-lg border border-orange-500/40 bg-orange-500/10 p-3 text-xs text-orange-300">
+          <strong className="font-semibold">⚠ Demo Data Active</strong> — Showing simulated prices (e.g. Nifty ~24,350).
+          Real market data requires a valid Kite access token. Open the <strong>Settings</strong> tab → paste your
+          <strong> request_token</strong> → click <strong>Generate Access Token</strong>. The token refreshes daily at midnight IST.
+        </div>
+      )}
+
       {/* Header with mode badge + summary cards */}
       <div className="flex items-center justify-between flex-wrap gap-2">
         <div className="flex items-center gap-2">

@@ -203,6 +203,11 @@ export const useTrendStore = create<TrendState>()(
       /**
        * Clear all accumulated trend data (called on date boundary or stale gap).
        * Keeps polling config but resets the trend arrays + cumulative counters.
+       *
+       * BUG FIX: Previously did not clear `niftyCandles` or `stockCashFlow`,
+       * so stale demo data from a previous session could persist into the new
+       * day and confuse the user (e.g. showing yesterday's fake 24350 price
+       * instead of today's real market data).
        */
       clearTrendData: () => {
         set({
@@ -213,6 +218,9 @@ export const useTrendStore = create<TrendState>()(
           prevSnapshots: {},
           cumulativeFlow: { ...INITIAL_FLOW },
           prevStockTotals: { nse: 0, bse: 0, weighted: 0 },
+          niftyCandles: [],
+          stockCashFlow: [],
+          trendMode: 'demo',
           currentIdxFlows: { NIFTY: 0, BANKNIFTY: 0, FINNIFTY: 0, SENSEX: 0 },
           currentStockFlow: 0,
           currentIntervalCashFlow: 0,
@@ -390,6 +398,30 @@ export const useTrendStore = create<TrendState>()(
 
           const niftyCandles: NiftyCandle[] = data.niftyCandles || [];
           const stockCashFlow: StockCashFlow[] = data.stockCashFlow || [];
+
+          // DEMO → LIVE TRANSITION: If we were in demo mode (e.g. user had no
+          // creds or expired creds) and now we're in live mode (user just
+          // refreshed their token in Settings), clear all accumulated demo
+          // data so the charts start fresh from real data. Otherwise the user
+          // would see a confusing mix of fake + real data points.
+          const prevMode = get().trendMode;
+          if (mode === 'live' && prevMode === 'demo' &&
+              (get().cashFlowTrend.length > 0 || get().niftyCandles.length > 0)) {
+            console.log('[TrendStore] Demo → Live transition detected, clearing stale demo data');
+            // Clear everything except istDate + _historicalBackfillDone
+            set({
+              lastPollAt: 0,
+              cashFlowTrend: [],
+              flowTrend: [],
+              prevSnapshots: {},
+              cumulativeFlow: { ...INITIAL_FLOW },
+              prevStockTotals: { nse: 0, bse: 0, weighted: 0 },
+              currentIdxFlows: { NIFTY: 0, BANKNIFTY: 0, FINNIFTY: 0, SENSEX: 0 },
+              currentStockFlow: 0,
+              currentIntervalCashFlow: 0,
+              _historicalBackfillDone: false,
+            });
+          }
 
           // Compute cumulative-since-market-open totals (these come directly
           // from the API — no client-side accumulation needed).
