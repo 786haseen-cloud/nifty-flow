@@ -50,6 +50,9 @@ function kiteHeaders() {
   };
 }
 
+// Exported so debug routes can replay raw Kite calls for diagnostics.
+export { kiteHeaders };
+
 // ─── Types ───
 
 export interface KiteQuote {
@@ -314,13 +317,22 @@ export async function getCandles(
   try {
     const fromStr = fmt(fromDate);
     const toStr = fmt(toDate);
-    const url = `${KITE_BASE}/instruments/historical/${instrumentToken}/${interval}?from=${fromStr}&to=${toStr}&continuous=0`;
+    // URL-encode the date strings (they contain a space: "2026-08-25 09:15")
+    const url = `${KITE_BASE}/instruments/historical/${instrumentToken}/${interval}?from=${encodeURIComponent(fromStr)}&to=${encodeURIComponent(toStr)}&continuous=0`;
 
     const res = await fetch(url, { headers: kiteHeaders() });
 
+    // Surface HTTP-level errors (403 expired token, 429 rate limit, etc.)
+    if (!res.ok) {
+      const errText = await res.text();
+      console.error(`[Kite] candles HTTP ${res.status} for token ${instrumentToken}: ${errText.substring(0, 300)}`);
+      return [];
+    }
+
     const data = await res.json();
     if (data.status !== 'success' || !data.data?.candles) {
-      console.error('[Kite] candles: status=%s, from=%s, to=%s', data.status, fromStr, toStr);
+      console.error('[Kite] candles non-success: status=%s, message=%s, from=%s, to=%s',
+        data.status, data.message || 'no message', fromStr, toStr);
       return [];
     }
 
