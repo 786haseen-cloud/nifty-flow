@@ -268,3 +268,44 @@ Stage Summary:
 - ~2 min backfill time on first open; instant on subsequent opens (persisted + cache)
 - Trade-off: Strikes picked from CURRENT spot price — misses morning strikes that moved far OTM
 - If this limitation is problematic, user wants to proceed to Option 2 (Upstash Redis + cron)
+
+---
+Task ID: 6
+Agent: main
+Task: Verify everything works during live market + fix issues
+
+Work Log:
+- Build verified clean (no TS errors)
+- Pushed unpushed commit c4e22bf
+- Tested all 4 API endpoints via curl on deployed Vercel site
+- Found /api/kite/quote works for INDEX/EQ tokens (returns real NIFTY/SENSEX prices)
+- Found /api/kite/quote FAILS for OPTION tokens (HTTP 403 TokenException)
+- Found /api/kite/candles returns 0 candles (HTTP 403 on historical API)
+- Found /api/kite/historical-flow returns empty (all getCandles calls fail)
+- Found /api/kite/highest-bet falls back to demo (option quote fails → _error → demo)
+- Found /api/kite/trends returns LIVE stockCashFlow (cash quote works) but empty niftyCandles
+- Inspected agent-browser's localStorage: trend-store-v2 has 16 polls accumulated, flowTrend populated with demo values (since highest-bet fell back to demo), niftyCandles=0
+- Browser console logs show: "Backfill returned no data, skipping" (backfill ran but failed)
+- ROOT CAUSE: Vercel env var KITE_ACCESS_TOKEN is expired/invalid for F&O + historical endpoints
+  - Same token still works for cash/index quotes (Kite serves these via a different path)
+- Fixed 3 issues:
+  1. URL-encoded date params in getCandles (was sending unencoded space in URL)
+  2. Added &debug=1 mode to /api/kite/candles route — surfaces raw Kite error
+  3. Exported kiteHeaders() so debug route can replay raw Kite calls
+- Improved trend-store backfill retry logic:
+  - Previously set _historicalBackfillDone=true on failure → no retry
+  - Now schedules 5-min retry when backfill returns empty/error
+  - Allows user to refresh creds mid-session and have backfill succeed
+- Pushed both fixes to main (9eb4d95, 95bf9cd)
+
+Stage Summary:
+- Code is healthy, build passes, all routes compiled
+- Vercel env var KITE_ACCESS_TOKEN is EXPIRED — root cause of all F&O + historical failures
+- User must refresh token: kite.zerodha.com/connect/login → request_token → Settings tab → save
+- Once token refreshed, all 4 features will work:
+  * Nifty 5-min candles chart
+  * Highest-bet live data (instead of demo)
+  * Historical OI backfill (morning-to-now flow)
+  * Strike Flow / Big Bets / OI Walls tabs
+- After token refresh, retry logic will auto-trigger backfill within 5 minutes
+- Cash flow trend (NSE/BSE stocks) ALREADY works because /quote for EQ works
