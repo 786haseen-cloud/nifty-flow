@@ -463,8 +463,16 @@ export async function GET(request: NextRequest) {
     // Fallback to demo when live returns error (e.g. market closed, no tokens)
     if (data.mode === 'error' || data.symbols.length === 0) {
       console.warn('[HighestBet] Live mode returned empty/error, falling back to demo:', data.error);
-      // In debug mode, return the actual error instead of silent demo fallback
+
+      // In debug mode, return the actual error + diagnostic info instead of silent demo fallback
       if (debug) {
+        // Pull diagnostics from the module-level cache
+        const allInstruments = await getInstruments();
+        const sampleNiftyOpts = allInstruments
+          .filter(i => i.exchange === 'NFO' && i.instrumentType === 'OPTIDX')
+          .slice(0, 3)
+          .map(i => ({ tradingSymbol: i.tradingSymbol, name: i.name, expiry: i.expiry, strike: i.strike, lotSize: i.lotSize }));
+
         return NextResponse.json({
           ...data,
           debug: {
@@ -472,6 +480,9 @@ export async function GET(request: NextRequest) {
             error: data.error,
             symbolsCount: data.symbols.length,
             timestamp: new Date().toISOString(),
+            instrumentsCacheSize: allInstruments.length,
+            sampleNFO_OPTIDX_instruments: sampleNiftyOpts,
+            cashQuoteStatus: 'untested',  // set elsewhere if needed
           }
         });
       }
