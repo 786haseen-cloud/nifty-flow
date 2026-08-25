@@ -147,13 +147,26 @@ let instrumentsCache: KiteInstrument[] | null = null;
 let instrumentsCacheTime = 0;
 
 /**
+ * Invalidate the in-memory instruments cache.
+ * Use after credential changes (e.g. user switched from expired → valid token)
+ * to force a fresh CSV download on the next getInstruments() call.
+ */
+export function invalidateInstrumentsCache(): void {
+  instrumentsCache = null;
+  instrumentsCacheTime = 0;
+}
+
+/**
  * Fetch all instruments from Kite (cached for 1 hour)
  * Kite returns a single CSV with all exchanges: NSE, BSE, NFO, BFO, CDS, MCX
  * We filter by exchange after caching
+ *
+ * @param exchange Optional exchange filter (e.g. 'NFO' returns only NFO F&O instruments)
+ * @param forceRefresh Bypass the 1-hour cache and re-download. Useful when creds change.
  */
-export async function getInstruments(exchange?: string): Promise<KiteInstrument[]> {
-  // Return from cache if fresh
-  if (instrumentsCache && Date.now() - instrumentsCacheTime < 3600000) {
+export async function getInstruments(exchange?: string, forceRefresh?: boolean): Promise<KiteInstrument[]> {
+  // Return from cache if fresh (and not forced to refresh)
+  if (!forceRefresh && instrumentsCache && Date.now() - instrumentsCacheTime < 3600000) {
     return exchange ? instrumentsCache.filter(i => i.exchange === exchange) : instrumentsCache;
   }
 
@@ -180,29 +193,32 @@ export async function getInstruments(exchange?: string): Promise<KiteInstrument[
     //   NEW: instrument_type is 'CE'/'PE'/'FUT'/'EQ'
     //        segment is 'NFO-OPT'/'NFO-FUT'/'NFO'/'BFO-OPT'/'BFO-FUT'/'NSE'/'BSE'
     // To avoid breaking the rest of the code (which filters by OPTIDX/OPTSTK/FUTIDX/FUTSTK),
-    // we normalize the new format back to the legacy types using the segment column.
-    const normalizeInstrumentType = (rawType: string, segment: string): string => {
+    // we normalize the new format back to the legacy types.
+    //
+    // Disambiguation: in the new CSV, ALL options (index + stock) are CE/PE — there is no
+    // index-vs-stock hint in the row itself. We use the `name` column to decide:
+    //   - If the underlying name matches a known F&O index (NIFTY, BANKNIFTY, FINNIFTY,
+    //     SENSEX, BANKEX, MIDCPNIFTY, etc.) → OPTIDX / FUTIDX
+    //   - Otherwise (RELIANCE, TCS, HDFCBANK, ...) → OPTSTK / FUTSTK
+    // The set below is checked at parse time (cheap Set.has lookup).
+    const KNOWN_FNO_INDICES = new Set([
+      'NIFTY', 'BANKNIFTY', 'FINNIFTY', 'SENSEX', 'BANKEX',
+      'MIDCPNIFTY', 'NIFTY MID SELECT', 'NIFTY PSE',
+    ]);
+    const normalizeInstrumentType = (rawType: string, segment: string, name: string): string => {
       // Keep legacy values as-is (in case Kite reverts or some entries still use old format)
       if (rawType === 'OPTIDX' || rawType === 'OPTSTK' || rawType === 'FUTIDX' || rawType === 'FUTSTK' ||
           rawType === 'EQ' || rawType === 'INDEX') {
         return rawType;
       }
-      // Map new format using segment
+      const nameUpper = name.toUpperCase();
+      const isIndex = KNOWN_FNO_INDICES.has(nameUpper);
       if (rawType === 'CE' || rawType === 'PE') {
-        // Options — segment tells us if it's index or stock options
-        // NFO-OPT can be either OPTIDX or OPTSTK — disambiguate by underlying name later
-        // For now, return OPTIDX for index segments (BFO-OPT is always index options)
-        // and OPTSTK for stock segments. The actual disambiguation happens in caller code
-        // when filtering by name (index vs stock symbol).
-        if (segment.includes('BFO')) return 'OPTIDX';   // BSE F&O only has index options (SENSEX/BANKEX)
-        if (segment.includes('NFO')) return 'OPTIDX';    // default — caller filters by name to disambiguate
-        return 'OPTIDX';
+        // BFO always has index options only (SENSEX/BANKEX). NFO has both index + stock.
+        return isIndex ? 'OPTIDX' : 'OPTSTK';
       }
       if (rawType === 'FUT') {
-        if (segment.includes('BFO')) return 'FUTIDX';
-        if (segment.includes('NFO')) return 'FUTIDX';    // default — caller filters by name
-        if (segment.includes('MCX')) return 'FUTIDX';
-        return 'FUTIDX';
+        return isIndex ? 'FUTIDX' : 'FUTSTK';
       }
       return rawType;
     };
@@ -225,7 +241,7 @@ export async function getInstruments(exchange?: string): Promise<KiteInstrument[
         name,
         exchange: cols[11] || '',
         segment,
-        instrumentType: normalizeInstrumentType(rawType, segment),
+        instrumentType: normalizeInstrumentType(rawType, segment, name),
         strike: parseFloat(cols[6]) || 0,
         lotSize: parseInt(cols[8]) || 1,
         expiry: cols[5] || '',
@@ -320,6 +336,8 @@ export async function getQuotes(instruments: string[]): Promise<Record<string, K
         oi: q.oi || 0,
         oiDayHigh: q.oi_day_high || 0,
         oiDayLow: q.oi_day_low || 0,
+        dayHigh: q.ohlc?.high || 0,
+        dayLow: q.ohlc?.low || 0,
       };
     }
     return quotes;
@@ -412,8 +430,15 @@ export async function getOptionInstruments(
   const spec = getInstrumentSpec(symbol);
   if (!spec) return { instruments: [], meta: { lotSize: 1, strikeStep: 50 } };
 
-  // Fetch instruments from the correct exchange (NSE or BSE)
-  const instruments = await getInstruments(spec.exchange);
+  // IMPORTANT: F&O options/futures are NOT on the cash exchange.
+  //   - NIFTY index spot is on exchange='NSE', but NIFTY OPTIONS are on exchange='NFO'
+  //   - SENSEX spot is on exchange='BSE', but SENSEX OPTIONS are on exchange='BFO'
+  //   - Stock (RELIANCE/TCS/...) spot is on exchange='NSE', but their OPTIONS are on exchange='NFO'
+  // So we use spec.segment ('NFO' or 'BFO') — which equals the F&O exchange column in
+  // Kite's CSV — NOT spec.exchange ('NSE'/'BSE', which is the cash exchange).
+  // If you call getInstruments(spec.exchange) you'll only get cash/index instruments,
+  // and the option filter below will return ZERO matches.
+  const instruments = await getInstruments(spec.segment);
 
   // Filter options using spec.
   //
@@ -628,12 +653,14 @@ export async function getInstrumentMeta(
   const spec = getInstrumentSpec(symbol);
   if (!spec) return { lotSize: 1, strikeStep: 50 }; // fallback
 
-  // Fetch all instruments for this symbol's exchange
-  const allInstruments = await getInstruments(spec.exchange);
+  // Fetch instruments from the F&O exchange (NFO/BFO), NOT the cash exchange (NSE/BSE).
+  // See getOptionInstruments() for the full explanation.
+  const allInstruments = await getInstruments(spec.segment);
 
-  // Filter to this symbol's options for current/near expiry
+  // Filter to this symbol's options for current/near expiry.
+  // Use startsWith on segment to match both legacy 'NFO' and new 'NFO-OPT' formats.
   const symbolOpts = allInstruments.filter(i =>
-    i.segment === spec.segment &&
+    i.segment.startsWith(spec.segment) &&
     i.instrumentType === spec.instrumentType &&
     (i.name.toUpperCase().includes(symbol.toUpperCase()) ||
      i.tradingSymbol.toUpperCase().includes(symbol.toUpperCase()))

@@ -393,3 +393,30 @@ Stage Summary:
   * OI Walls tab will show real OI walls
   * Trend Analysis: index options flow + stock options flow will populate
   * Historical backfill will run within 5 min and fill morning-to-now data
+
+---
+Task ID: options-flow-fix
+Agent: Main (continuation session)
+Task: Fix "No option instruments found for NIFTY at spot 24334.55" — Strike Flow + Options Flow tabs broken despite CSV normalization fix being deployed
+
+Work Log:
+- Downloaded live Kite instruments CSV via curl and inspected actual column values
+- Confirmed NFO options live on `exchange === 'NFO'` (column 12 in CSV), NOT `exchange === 'NSE'`
+- Identified root cause: `getOptionInstruments()` in kite-api.ts called `getInstruments(spec.exchange)` where `spec.exchange === 'NSE'` for NIFTY (the cash/index exchange) — this filter returned only NSE cash instruments, so the subsequent option filter found 0 NFO options
+- Fixed `getOptionInstruments()` to use `getInstruments(spec.segment)` where `spec.segment === 'NFO'` (the F&O exchange) — matches actual CSV exchange column for F&O options
+- Fixed the same bug in `getInstrumentMeta()` (was using `spec.exchange` and `i.segment === spec.segment` — latter wouldn't match new `NFO-OPT` segment format either; switched to `startsWith`)
+- Enhanced `normalizeInstrumentType()`: previously mapped ALL CE/PE → OPTIDX (which broke stock options like RELIANCE that should be OPTSTK). Now disambiguates by `name` column against a known F&O indices set: NIFTY/BANKNIFTY/FINNIFTY/SENSEX/BANKEX/MIDCPNIFTY → OPTIDX/FUTIDX, otherwise OPTSTK/FUTSTK
+- Added `forceRefresh` parameter to `getInstruments()` + `invalidateInstrumentsCache()` export
+- Updated `applyKiteCredsFromRequest()` in kite-route-helper.ts to detect credential changes between requests and bust the instruments cache. This fixes the Vercel serverless scenario where a cold-start instance may have cached an empty instruments list (from an earlier unauthenticated request) — without invalidation, the user's valid token request would keep getting the stale empty list
+- Created new debug route `/api/kite/instruments-debug` that surfaces: raw CSV HTTP status + first 5 rows, total parsed instrument count, per-exchange breakdown, per-segment breakdown, per-instrument-type breakdown, sample NIFTY options, a live quote test on the first NIFTY option token, and a NIFTY 50 spot sanity check. Includes a `?refresh=1` cache-bust parameter
+- Added `dayHigh` and `dayLow` fields to the `KiteQuote` object returned by `getQuotes()` (was a pre-existing TS error — `KiteQuote` interface declared them but the constructor didn't populate them)
+- Wrote `/home/z/my-project/scripts/test-option-lookup.js` standalone Node script that replicates the fixed lookup logic and runs end-to-end against the real Kite API to verify the fix
+- Verified with the test script: NIFTY 44 options found (was 0), BANKNIFTY 22, FINNIFTY 10, SENSEX 22, RELIANCE 22 — all 5 symbols now find their options correctly
+- Verified `next build` succeeds with no new errors
+
+Stage Summary:
+- Root cause was a fundamental misalignment between spec.exchange ('NSE'/'BSE' = cash exchange) and where F&O options actually live in Kite's CSV (exchange='NFO'/'BFO'). This affected ONLY `getOptionInstruments()` + `getInstrumentMeta()` — `highest-bet/route.ts` and `historical-flow/route.ts` were already correct because they fetch all instruments (no filter) and then filter by exchange=='NFO'/'BFO'
+- The CSV normalization fix from the prior session (CE/PE → OPTIDX, segment.startsWith) was correct in principle but never got a chance to run because the upstream `getInstruments(spec.exchange)` returned 0 NFO options before the filter could even execute
+- Cache invalidation on credential change is essential for Vercel serverless: a single cold-start instance serves many users, and stale (often empty) cached instruments from one user's earlier request would silently break option lookups for every subsequent user
+- The Kite CSV is current and fresh — no need to switch to the Google Script approach. The 24334.55 spot price the user reported came from the live Kite quote API (their token was valid); the only thing failing was option instrument lookup, and that's now fixed
+- Strike Flow, Options Flow, Big Bets, OI Walls, and Historical OI Backfill tabs should ALL now work when the user reloads the dashboard (after redeploy). The instruments-debug endpoint gives the user a one-shot verification URL: `/api/kite/instruments-debug?api_key=X&access_token=Y&refresh=1`
