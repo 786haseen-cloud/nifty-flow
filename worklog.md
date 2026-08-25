@@ -353,3 +353,43 @@ Stage Summary:
   4. Or update VITE_ACCESS_TOKEN in Vercel dashboard for cross-device
 - After token refresh: next poll detects demo→live transition, clears demo data,
   backfill auto-runs within 5 min, all 4 charts show real data
+
+---
+Task ID: 8
+Agent: main
+Task: Fix "Strike Flow + Options Flow tabs not working"
+
+Work Log:
+- User reported Strike Flow + Options Flow tabs broken
+- Diagnosed root cause: Kite changed their /instruments CSV format in 2025
+  - OLD: instrument_type column = 'OPTIDX'/'OPTSTK'/'FUTIDX'/'FUTSTK'
+  - NEW: instrument_type column = 'CE'/'PE'/'FUT'
+  - OLD: segment column = 'NFO'/'BFO'
+  - NEW: segment column = 'NFO-OPT'/'NFO-FUT'/'BFO-OPT'/'BFO-FUT'
+  - Also: name field now wrapped in double quotes (e.g. "NIFTY" not NIFTY)
+- All callers filter by 'OPTIDX' → 0 matches → fallback to demo
+- Applied 3 fixes to kite-api.ts getInstruments():
+  1. normalizeInstrumentType(): maps CE/PE → OPTIDX, FUT → FUTIDX (using segment)
+  2. Strip surrounding double-quotes from name field
+  3. Use startsWith() for segment match in getOptionInstruments
+     (so spec.segment='NFO' matches both 'NFO' and 'NFO-OPT')
+- Applied same segment fix to highest-bet route (uses exchange, already correct)
+- Verified option instruments now found (NIFTY26AUG24200CE etc.)
+- Added debug mode to strike-flow route (?debug=1) — surfaces actual failure point
+- Pushed: 3 commits (5ff6f9b, 075761e, d1d3456)
+
+Stage Summary:
+- Kite CSV format change affected all F&O tabs (Strike Flow, Options Flow,
+  Big Bets, OI Walls, Trend Analysis flow sections, Historical backfill)
+- Now options instruments are correctly found (sample: NIFTY26AUG24200CE)
+- BUT: Vercel env var KITE_ACCESS_TOKEN is expired again
+  - All /quote calls return 403 TokenException
+  - Cannot test if strike-flow returns real data without working token
+- USER ACTION REQUIRED: refresh Kite access token (env var or Settings tab)
+- After token refresh:
+  * Strike Flow tab will show real OI per strike
+  * Options Flow tab will show real 4-color flow
+  * Big Bets tab will show real highest bets
+  * OI Walls tab will show real OI walls
+  * Trend Analysis: index options flow + stock options flow will populate
+  * Historical backfill will run within 5 min and fill morning-to-now data
