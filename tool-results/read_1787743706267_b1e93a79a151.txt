@@ -1,0 +1,759 @@
+     1→'use client';
+     2→
+     3→import { useState, useEffect, useRef, useCallback } from 'react';
+     4→import { Badge } from '@/components/ui/badge';
+     5→import { withCreds } from '@/lib/kite-creds';
+     6→import { Wifi, WifiOff, RefreshCw, Crosshair } from 'lucide-react';
+     7→import { INDEX_SPECS, STOCK_SPECS } from '@/lib/kite-api';
+     8→import type { StrikeFlowSnapshot, StrikeFlowData } from '@/lib/kite-api';
+     9→
+    10→// ═══════════════════════════════════════════
+    11→// TYPES
+    12→// ═══════════════════════════════════════════
+    13→
+    14→interface StrikeFlowCell {
+    15→  strike: number;
+    16→  isATM: boolean;
+    17→  ceBuy: number;    // bright green
+    18→  ceWrite: number;   // light red
+    19→  peBuy: number;    // bright red
+    20→  peWrite: number;   // light green
+    21→  ceDisplay: number; // max(ceBuy, ceWrite) for display
+    22→  peDisplay: number; // max(peWrite, peBuy) for display
+    23→  ceType: 'buy' | 'write' | 'none';
+    24→  peType: 'write' | 'buy' | 'none';
+    25→}
+    26→
+    27→interface FlowTotals {
+    28→  ceBuy: number;
+    29→  ceWrite: number;
+    30→  peBuy: number;
+    31→  peWrite: number;
+    32→  netFlow: number;
+    33→}
+    34→
+    35→// ═══════════════════════════════════════════
+    36→// 4-COLOR FLOW ENGINE (from your Google Script)
+    37→// OI change + Price change → 4 cases
+    38→// ═══════════════════════════════════════════
+    39→
+    40→function computeStrikeFlow(
+    41→  prev: StrikeFlowData,
+    42→  curr: StrikeFlowData,
+    43→  lotSize: number,
+    44→): Omit<StrikeFlowCell, 'strike' | 'isATM'> {
+    45→  const DIVISOR = 10000000; // Convert to Crores
+    46→
+    47→  // CE side
+    48→  const dceOI = curr.ceOI - prev.ceOI;
+    49→  const dceP = curr.ceLTP - prev.ceLTP;
+    50→  let ceBuy = 0, ceWrite = 0;
+    51→
+    52→  if (dceOI > 0 && dceP >= 0) {
+    53→    // Case 1: OI up + Price up → CE BUY (writers losing, buyers aggressive)
+    54→    ceBuy = (dceOI * curr.ceDelta * lotSize) / DIVISOR;
+    55→  } else if (dceOI > 0 && dceP < 0) {
+    56→    // Case 2: OI up + Price down → CE WRITE (writing at higher premium, price falling)
+    57→    ceWrite = (dceOI * curr.ceDelta * lotSize) / DIVISOR;
+    58→  } else if (dceOI < 0 && dceP < 0) {
+    59→    // Case 3: OI down + Price down → CE WRITE (short covering at lower price = write)
+    60→    ceWrite = (Math.abs(dceOI) * curr.ceDelta * lotSize * 0.3) / DIVISOR;
+    61→  } else if (dceOI < 0 && dceP >= 0) {
+    62→    // Case 4: OI down + Price up → CE WRITE (long unwinding at higher price = write)
+    63→    ceWrite = (Math.abs(dceOI) * curr.ceDelta * lotSize * 0.3) / DIVISOR;
+    64→  }
+    65→
+    66→  // Volume fallback when OI unchanged (from your script v5)
+    67→  if (ceBuy === 0 && ceWrite === 0 && curr.ceVol > 0) {
+    68→    const vf = 0.4;
+    69→    if (dceP >= 0) ceBuy = (curr.ceVol * curr.ceDelta * lotSize * vf) / DIVISOR;
+    70→    else ceWrite = (curr.ceVol * curr.ceDelta * lotSize * vf) / DIVISOR;
+    71→  }
+    72→
+    73→  // PE side (same 4 cases, mirrored)
+    74→  const dpeOI = curr.peOI - prev.peOI;
+    75→  const dpeP = curr.peLTP - prev.peLTP;
+    76→  let peBuy = 0, peWrite = 0;
+    77→
+    78→  if (dpeOI > 0 && dpeP >= 0) {
+    79→    peBuy = (dpeOI * curr.peDelta * lotSize) / DIVISOR;
+    80→  } else if (dpeOI > 0 && dpeP < 0) {
+    81→    peWrite = (dpeOI * curr.peDelta * lotSize) / DIVISOR;
+    82→  } else if (dpeOI < 0 && dpeP < 0) {
+    83→    peWrite = (Math.abs(dpeOI) * curr.peDelta * lotSize * 0.3) / DIVISOR;
+    84→  } else if (dpeOI < 0 && dpeP >= 0) {
+    85→    peBuy = (Math.abs(dpeOI) * curr.peDelta * lotSize * 0.3) / DIVISOR;
+    86→  }
+    87→
+    88→  // Volume fallback for PE
+    89→  if (peBuy === 0 && peWrite === 0 && curr.peVol > 0) {
+    90→    const vf = 0.4;
+    91→    if (dpeP >= 0) peBuy = (curr.peVol * curr.peDelta * lotSize * vf) / DIVISOR;
+    92→    else peWrite = (curr.peVol * curr.peDelta * lotSize * vf) / DIVISOR;
+    93→  }
+    94→
+    95→  // Determine display values (show dominant flow per side)
+    96→  const ceDisplay = ceBuy >= ceWrite ? ceBuy : ceWrite;
+    97→  const peDisplay = peWrite >= peBuy ? peWrite : peBuy;
+    98→  const ceType = ceBuy > 0 && ceBuy >= ceWrite ? 'buy' : ceWrite > 0 ? 'write' : 'none';
+    99→  const peType = peWrite > 0 && peWrite >= peBuy ? 'write' : peBuy > 0 ? 'buy' : 'none';
+   100→
+   101→  return { ceBuy, ceWrite, peBuy, peWrite, ceDisplay, peDisplay, ceType, peType };
+   102→}
+   103→
+   104→// ═══════════════════════════════════════════
+   105→// COLOR SYSTEM (matching your Google Sheet)
+   106→// ═══════════════════════════════════════════
+   107→
+   108→const COLORS = {
+   109→  dark: '#1a1a2e',
+   110→  darkAlt: '#16213e',
+   111→  zero: '#555555',
+   112→  ceBuy: '#00B050',      // Bright green — CE Buy (bullish)
+   113→  ceBuyText: '#ffffff',
+   114→  ceWrite: '#FFCCCC',    // Light red — CE Write (bearish)
+   115→  ceWriteText: '#9c0006',
+   116→  peWrite: '#C6EFCE',    // Light green — PE Write (bullish)
+   117→  peWriteText: '#006100',
+   118→  peBuy: '#BD2130',      // Bright red — PE Buy (bearish)
+   119→  peBuyText: '#ffffff',
+   120→  netBull: '#00B050',
+   121→  netBear: '#BD2130',
+   122→  netText: '#ffffff',
+   123→  otm: { bg: '#3D2200', fg: '#FFA500' },
+   124→  atm: { bg: '#3D3D00', fg: '#FFD700' },
+   125→  itm: { bg: '#003040', fg: '#00BFFF' },
+   126→  accent: '#e94560',
+   127→  info: '#a8d8ea',
+   128→};
+   129→
+   130→// ═══════════════════════════════════════════
+   131→// COMPONENT
+   132→// ═══════════════════════════════════════════
+   133→
+   134→const REFRESH_INTERVAL = 30000; // 30 seconds (options data doesn't change every second)
+   135→const ALL_SYMBOLS = [
+   136→  ...INDEX_SPECS.map(s => ({ symbol: s.symbol, name: s.name, type: 'index' as const })),
+   137→  ...STOCK_SPECS.map(s => ({ symbol: s.symbol, name: s.name, type: 'stock' as const })),
+   138→];
+   139→
+   140→export default function StrikeFlowMap() {
+   141→  const [symbol, setSymbol] = useState('NIFTY');
+   142→  const [prevSnapshot, setPrevSnapshot] = useState<StrikeFlowSnapshot | null>(null);
+   143→  const [currSnapshot, setCurrSnapshot] = useState<StrikeFlowSnapshot | null>(null);
+   144→  const [loading, setLoading] = useState(false);
+   145→  const [error, setError] = useState<string | null>(null);
+   146→  const [isLive, setIsLive] = useState(false);
+   147→  const [lastUpdate, setLastUpdate] = useState<string>('');
+   148→  const [flowHistory, setFlowHistory] = useState<FlowTotals[]>([]);
+   149→  const intervalRef = useRef<NodeJS.Timeout | null>(null);
+   150→
+   151→  const fetchData = useCallback(async () => {
+   152→    setLoading(true);
+   153→    setError(null);
+   154→    try {
+   155→      const res = await fetch(withCreds(`/api/kite/strike-flow?symbol=${symbol}`));
+   156→      const data = await res.json();
+   157→
+   158→      if (data.mode === 'demo') {
+   159→        setIsLive(false);
+   160→        setError('Kite API not configured. Set KITE_API_KEY + KITE_ACCESS_TOKEN in Settings.');
+   161→        setLoading(false);
+   162→        return;
+   163→      }
+   164→
+   165→      if (data.mode === 'error') {
+   166→        setError(data.error || 'Unknown error');
+   167→        setLoading(false);
+   168→        return;
+   169→      }
+   170→
+   171→      setIsLive(true);
+   172→      setLastUpdate(new Date(data.timestamp).toLocaleTimeString('en-IN', {
+   173→        hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+   174→      }));
+   175→
+   176→      // Shift current to prev, set new current
+   177→      setPrevSnapshot(prev => {
+   178→        if (prev && prev.symbol === data.symbol && data.strikes?.length >= 11) {
+   179→          // We have both snapshots — compute flow
+   180→          const cells = computeFlowCells(prev, data);
+   181→          const totals = computeTotals(cells);
+   182→          setFlowHistory(h => {
+   183→            const updated = [...h, { ...totals, netFlow: totals.netFlow }];
+   184→            return updated.slice(-60); // keep last 60 intervals
+   185→          });
+   186→        }
+   187→        return currSnapshot;
+   188→      });
+   189→      setCurrSnapshot(data);
+   190→    } catch (err) {
+   191→      setError(err instanceof Error ? err.message : 'Fetch failed');
+   192→    } finally {
+   193→      setLoading(false);
+   194→    }
+   195→  }, [symbol, currSnapshot]);
+   196→
+   197→  // Initial fetch + interval
+   198→  useEffect(() => {
+   199→    fetchData();
+   200→    intervalRef.current = setInterval(fetchData, REFRESH_INTERVAL);
+   201→    return () => {
+   202→      if (intervalRef.current) clearInterval(intervalRef.current);
+   203→    };
+   204→  }, [fetchData]);
+   205→
+   206→  // Compute flow cells from two snapshots
+   207→  function computeFlowCells(prev: StrikeFlowSnapshot, curr: StrikeFlowSnapshot): StrikeFlowCell[] {
+   208→    const prevMap = new Map(prev.strikes.map(s => [s.strike, s]));
+   209→    return curr.strikes
+   210→      .filter(s => prevMap.has(s.strike))
+   211→      .map(s => ({
+   212→        strike: s.strike,
+   213→        isATM: s.isATM,
+   214→        ...computeStrikeFlow(prevMap.get(s.strike)!, s, curr.lotSize),
+   215→      }))
+   216→      .sort((a, b) => a.strike - b.strike);
+   217→  }
+   218→
+   219→  // Compute totals
+   220→  function computeTotals(cells: StrikeFlowCell[]): FlowTotals {
+   221→    let ceBuy = 0, ceWrite = 0, peBuy = 0, peWrite = 0;
+   222→    for (const c of cells) {
+   223→      ceBuy += c.ceBuy;
+   224→      ceWrite += c.ceWrite;
+   225→      peBuy += c.peBuy;
+   226→      peWrite += c.peWrite;
+   227→    }
+   228→    return {
+   229→      ceBuy: Math.round(ceBuy * 100) / 100,
+   230→      ceWrite: Math.round(ceWrite * 100) / 100,
+   231→      peBuy: Math.round(peBuy * 100) / 100,
+   232→      peWrite: Math.round(peWrite * 100) / 100,
+   233→      netFlow: Math.round((ceBuy + peWrite - ceWrite - peBuy) * 100) / 100,
+   234→    };
+   235→  }
+   236→
+   237→  // Compute current flow from stored prev/curr
+   238→  const flowCells: StrikeFlowCell[] = (() => {
+   239→    if (!prevSnapshot || !currSnapshot) return [];
+   240→    if (prevSnapshot.symbol !== currSnapshot.symbol) return [];
+   241→    if (currSnapshot.strikes.length < 11) return [];
+   242→    return computeFlowCells(prevSnapshot, currSnapshot);
+   243→  })();
+   244→
+   245→  const totals: FlowTotals = flowCells.length > 0 ? computeTotals(flowCells) : { ceBuy: 0, ceWrite: 0, peBuy: 0, peWrite: 0, netFlow: 0 };
+   246→
+   247→  // Find max single bet for thick border
+   248→  let maxBetVal = 0, maxBetSide: 'ce' | 'pe' | null = null, maxBetIdx = -1;
+   249→  for (let i = 0; i < flowCells.length; i++) {
+   250→    const c = flowCells[i];
+   251→    if (c.ceDisplay > maxBetVal) { maxBetVal = c.ceDisplay; maxBetSide = 'ce'; maxBetIdx = i; }
+   252→    if (c.peDisplay > maxBetVal) { maxBetVal = c.peDisplay; maxBetSide = 'pe'; maxBetIdx = i; }
+   253→  }
+   254→
+   255→  // Dynamic offsets based on strikeStep (works for Nifty=50, HDFCBANK=10, etc.)
+   256→  const step = currSnapshot ? currSnapshot.strikeStep : 50;
+   257→  const n = 5;
+   258→  const CE_OFFSETS = Array.from({ length: n * 2 + 1 }, function(_, i) { return (n - i) * step; });
+   259→  const PE_OFFSETS = Array.from({ length: n * 2 + 1 }, function(_, i) { return (i - n) * step; });
+   260→  const CE_CATS = Array.from({ length: n * 2 + 1 }, function(_, i) { return i < n ? 'OTM' : i === n ? 'ATM' : 'ITM'; });
+   261→  const PE_CATS = Array.from({ length: n * 2 + 1 }, function(_, i) { return i < n ? 'ITM' : i === n ? 'ATM' : 'OTM'; });
+   262→
+   263→  function getCellByOffset(cells: StrikeFlowCell[], offset: number): StrikeFlowCell | undefined {
+   264→    if (!currSnapshot) return undefined;
+   265→    const strike = currSnapshot.atmStrike + offset;
+   266→    return cells.find(c => c.strike === strike);
+   267→  }
+   268→
+   269→  function cellBg(type: 'buy' | 'write' | 'none', side: 'ce' | 'pe'): string {
+   270→    if (type === 'none') return COLORS.dark;
+   271→    if (side === 'ce') return type === 'buy' ? COLORS.ceBuy : COLORS.ceWrite;
+   272→    return type === 'write' ? COLORS.peWrite : COLORS.peBuy;
+   273→  }
+   274→
+   275→  function cellText(type: 'buy' | 'write' | 'none', side: 'ce' | 'pe'): string {
+   276→    if (type === 'none') return COLORS.zero;
+   277→    if (side === 'ce') return type === 'buy' ? COLORS.ceBuyText : COLORS.ceWriteText;
+   278→    return type === 'write' ? COLORS.peWriteText : COLORS.peBuyText;
+   279→  }
+   280→
+   281→  function catStyle(cat: string) {
+   282→    const c = cat === 'OTM' ? COLORS.otm : cat === 'ATM' ? COLORS.atm : COLORS.itm;
+   283→    return { background: c.bg, color: c.fg };
+   284→  }
+   285→
+   286→  function fmtVal(v: number): string {
+   287→    if (v === 0) return '—';
+   288→    return v >= 0 ? `+${v.toFixed(2)}` : v.toFixed(2);
+   289→  }
+   290→
+   291→  // ═══════════════════════════════════════════
+   292→  // NET FLOW MINI CHART (last 60 intervals)
+   293→  // ═══════════════════════════════════════════
+   294→  function NetFlowMiniChart() {
+   295→    if (flowHistory.length < 2) return null;
+   296→    const vals = flowHistory.map(h => h.netFlow);
+   297→    const maxAbs = Math.max(...vals.map(Math.abs), 0.01);
+   298→    const w = 300, h = 40;
+   299→    const step = w / (vals.length - 1);
+   300→
+   301→    const points = vals.map((v, i) => `${i * step},${h / 2 - (v / maxAbs) * (h / 2 - 2)}`).join(' ');
+   302→    const zeroLine = `M0,${h / 2} L${w},${h / 2}`;
+   303→
+   304→    // Fill area
+   305→    const areaPoints = `0,${h / 2} ${points} ${w},${h / 2}`;
+   306→    const lastVal = vals[vals.length - 1];
+   307→    const fill = lastVal >= 0 ? 'rgba(0,176,80,0.15)' : 'rgba(189,33,48,0.15)';
+   308→    const stroke = lastVal >= 0 ? '#00B050' : '#BD2130';
+   309→
+   310→    return (
+   311→      <svg width="100%" height={h} viewBox={`0 0 ${w} ${h}`} className="overflow-visible">
+   312→        <line x1="0" y1={h/2} x2={w} y2={h/2} stroke="#333" strokeWidth="0.5" />
+   313→        <polygon points={areaPoints} fill={fill} />
+   314→        <polyline points={points} fill="none" stroke={stroke} strokeWidth="1.5" />
+   315→        {/* Current value dot */}
+   316→        <circle cx={(vals.length - 1) * step} cy={h / 2 - (lastVal / maxAbs) * (h / 2 - 2)} r="2.5" fill={stroke} />
+   317→      </svg>
+   318→    );
+   319→  }
+   320→
+   321→  // ═══════════════════════════════════════════
+   322→  // TOTALS STACKED BAR (matching your SF_TOTAL sheet)
+   323→  // ═══════════════════════════════════════════
+   324→  function TotalFlowBar() {
+   325→    const maxTotal = Math.max(Math.abs(totals.ceBuy), Math.abs(totals.ceWrite),
+   326→      Math.abs(totals.peWrite), Math.abs(totals.peBuy), 0.01);
+   327→    const barH = 20;
+   328→
+   329→    return (
+   330→      <div className="space-y-1">
+   331→        <div className="flex items-center gap-2 text-[10px]">
+   332→          <span className="text-muted-foreground w-16">CE Buy</span>
+   333→          <div className="flex-1 h-4 rounded-sm overflow-hidden" style={{ background: COLORS.dark }}>
+   334→            <div className="h-full rounded-sm transition-all duration-500" style={{
+   335→              width: `${Math.min(100, (totals.ceBuy / maxTotal) * 100)}%`,
+   336→              background: COLORS.ceBuy,
+   337→              minWidth: totals.ceBuy > 0 ? '2px' : '0',
+   338→            }} />
+   339→          </div>
+   340→          <span className="w-16 text-right font-mono" style={{ color: COLORS.ceBuy }}>{totals.ceBuy.toFixed(2)} Cr</span>
+   341→        </div>
+   342→        <div className="flex items-center gap-2 text-[10px]">
+   343→          <span className="text-muted-foreground w-16">CE Write</span>
+   344→          <div className="flex-1 h-4 rounded-sm overflow-hidden" style={{ background: COLORS.dark }}>
+   345→            <div className="h-full rounded-sm transition-all duration-500" style={{
+   346→              width: `${Math.min(100, (totals.ceWrite / maxTotal) * 100)}%`,
+   347→              background: COLORS.ceWrite,
+   348→              minWidth: totals.ceWrite > 0 ? '2px' : '0',
+   349→            }} />
+   350→          </div>
+   351→          <span className="w-16 text-right font-mono" style={{ color: COLORS.ceWriteText }}>{totals.ceWrite.toFixed(2)} Cr</span>
+   352→        </div>
+   353→        <div className="flex items-center gap-2 text-[10px]">
+   354→          <span className="text-muted-foreground w-16">PE Write</span>
+   355→          <div className="flex-1 h-4 rounded-sm overflow-hidden" style={{ background: COLORS.dark }}>
+   356→            <div className="h-full rounded-sm transition-all duration-500" style={{
+   357→              width: `${Math.min(100, (totals.peWrite / maxTotal) * 100)}%`,
+   358→              background: COLORS.peWrite,
+   359→              minWidth: totals.peWrite > 0 ? '2px' : '0',
+   360→            }} />
+   361→          </div>
+   362→          <span className="w-16 text-right font-mono" style={{ color: COLORS.peWriteText }}>{totals.peWrite.toFixed(2)} Cr</span>
+   363→        </div>
+   364→        <div className="flex items-center gap-2 text-[10px]">
+   365→          <span className="text-muted-foreground w-16">PE Buy</span>
+   366→          <div className="flex-1 h-4 rounded-sm overflow-hidden" style={{ background: COLORS.dark }}>
+   367→            <div className="h-full rounded-sm transition-all duration-500" style={{
+   368→              width: `${Math.min(100, (totals.peBuy / maxTotal) * 100)}%`,
+   369→              background: COLORS.peBuy,
+   370→              minWidth: totals.peBuy > 0 ? '2px' : '0',
+   371→            }} />
+   372→          </div>
+   373→          <span className="w-16 text-right font-mono" style={{ color: COLORS.peBuyText }}>{totals.peBuy.toFixed(2)} Cr</span>
+   374→        </div>
+   375→      </div>
+   376→    );
+   377→  }
+   378→
+   379→  // ═══════════════════════════════════════════
+   380→  // RENDER
+   381→  // ═══════════════════════════════════════════
+   382→
+   383→  return (
+   384→    <div className="space-y-3">
+   385→      {/* Header Bar */}
+   386→      <div className="flex items-center justify-between flex-wrap gap-2">
+   387→        <div className="flex items-center gap-2">
+   388→          <h2 className="text-sm font-bold" style={{ color: COLORS.accent }}>
+   389→            STRIKE FLOW MAP
+   390→          </h2>
+   391→          {isLive ? (
+   392→            <Badge variant="outline" className="text-[10px] border-emerald-500/40 text-emerald-300">
+   393→              <Wifi className="mr-1 h-3 w-3" />Kite LIVE
+   394→            </Badge>
+   395→          ) : (
+   396→            <Badge variant="outline" className="text-[10px] border-red-500/40 text-red-300">
+   397→              <WifiOff className="mr-1 h-3 w-3" />Offline
+   398→            </Badge>
+   399→          )}
+   400→          {loading && <RefreshCw className="h-3 w-3 animate-spin text-muted-foreground" />}
+   401→          {lastUpdate && (
+   402→            <span className="text-[10px] font-mono text-muted-foreground">Updated: {lastUpdate}</span>
+   403→          )}
+   404→        </div>
+   405→
+   406→        {/* Symbol Selector — dropdown for 19 symbols */}
+   407→        <div className="flex items-center gap-2">
+   408→          <select
+   409→            value={symbol}
+   410→            onChange={function(e) { setSymbol(e.target.value); setPrevSnapshot(null); setCurrSnapshot(null); setFlowHistory([]); }}
+   411→            className="bg-muted/50 border border-border/50 rounded-md px-2 py-1 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-purple-500/50"
+   412→          >
+   413→            <optgroup label="Indices">
+   414→              {ALL_SYMBOLS.filter(function(s) { return s.type === 'index'; }).map(function(s) {
+   415→                return <option key={s.symbol} value={s.symbol}>{s.name}</option>;
+   416→              })}
+   417→            </optgroup>
+   418→            <optgroup label="Stocks">
+   419→              {ALL_SYMBOLS.filter(function(s) { return s.type === 'stock'; }).map(function(s) {
+   420→                return <option key={s.symbol} value={s.symbol}>{s.name}</option>;
+   421→              })}
+   422→            </optgroup>
+   423→          </select>
+   424→          <Badge variant="outline" className="text-[9px] border-purple-500/30 text-purple-300">
+   425→            {ALL_SYMBOLS.find(function(s) { return s.symbol === symbol; }) ? 'INDEX/STOCK' : ''}
+   426→          </Badge>
+   427→        </div>
+   428→      </div>
+   429→
+   430→      {error && (
+   431→        <div className="rounded-md p-3 text-xs" style={{ background: '#2e0a0a', color: '#ff6666', border: '1px solid #5a1a1a' }}>
+   432→          {error}
+   433→        </div>
+   434→      )}
+   435→
+   436→      {/* Waiting for 2 snapshots */}
+   437→      {isLive && !error && flowCells.length === 0 && (
+   438→        <div className="rounded-md p-4 text-center text-xs text-muted-foreground" style={{ background: COLORS.dark }}>
+   439→          <Crosshair className="h-5 w-5 mx-auto mb-2 animate-pulse" style={{ color: COLORS.info }} />
+   440→          <p className="font-semibold" style={{ color: COLORS.info }}>Collecting snapshots...</p>
+   441→          <p className="mt-1">Need 2 consecutive data points to compute flow. Next poll in {REFRESH_INTERVAL / 1000}s.</p>
+   442→          {currSnapshot && (
+   443→            <p className="mt-1 font-mono">Snapshot 1 received: {currSnapshot.strikes.length} strikes, Spot: {currSnapshot.spotPrice.toFixed(0)}</p>
+   444→          )}
+   445→        </div>
+   446→      )}
+   447→
+   448→      {/* Main Grid */}
+   449→      {flowCells.length > 0 && currSnapshot && (
+   450→        <div className="overflow-x-auto">
+   451→          {/* Spot + ATM Info */}
+   452→          <div className="flex items-center gap-3 mb-2 px-1">
+   453→            <span className="text-[10px] font-mono" style={{ color: COLORS.info }}>
+   454→              Spot: <b className="text-white">{currSnapshot.spotPrice >= 1000 ? currSnapshot.spotPrice.toFixed(0) : currSnapshot.spotPrice.toFixed(2)}</b>
+   455→            </span>
+   456→            <span className="text-[10px] font-mono" style={{ color: '#FFD700' }}>
+   457→              ATM: <b className="text-white">{currSnapshot.atmStrike}</b>
+   458→            </span>
+   459→            <span className="text-[10px] font-mono text-muted-foreground">
+   460→              Lot: {currSnapshot.lotSize} | Step: {currSnapshot.strikeStep}
+   461→            </span>
+   462→            <span className="text-[10px] font-mono text-muted-foreground">
+   463→              Expiry: {currSnapshot.expiry}
+   464→            </span>
+   465→          </div>
+   466→
+   467→          {/* Strike Flow Grid */}
+   468→          <div className="rounded-lg overflow-hidden border" style={{ borderColor: '#333' }}>
+   469→            {/* Row 0: Section Headers */}
+   470→            <div className="grid gap-0" style={{
+   471→              gridTemplateColumns: '56px repeat(11, 1fr) 72px repeat(11, 1fr)',
+   472→            }}>
+   473→              {/* Time col */}
+   474→              <div className="p-1 text-[9px] font-bold text-center" style={{ background: COLORS.darkAlt, color: '#eee' }}>
+   475→                TIME
+   476→              </div>
+   477→              {/* CE Section */}
+   478→              <div className="col-span-11 p-1 text-[9px] font-bold text-center" style={{ background: '#0f3460', color: COLORS.info }}>
+   479→                ← CALL SIDE (CE) — Smart Money Flow per Strike
+   480→              </div>
+   481→              {/* NET FLOW */}
+   482→              <div className="p-1 text-[8px] font-bold text-center" style={{ background: '#0f3460', color: '#FFD700' }}>
+   483→                NET<br/>FLOW
+   484→              </div>
+   485→              {/* PE Section */}
+   486→              <div className="col-span-11 p-1 text-[9px] font-bold text-center" style={{ background: '#0f3460', color: COLORS.info }}>
+   487→                PUT SIDE (PE) — Smart Money Flow per Strike →
+   488→              </div>
+   489→            </div>
+   490→
+   491→            {/* Row 1: OTM/ATM/ITM Labels */}
+   492→            <div className="grid gap-0" style={{
+   493→              gridTemplateColumns: '56px repeat(11, 1fr) 72px repeat(11, 1fr)',
+   494→            }}>
+   495→              <div style={{ background: COLORS.darkAlt }} />
+   496→              {CE_CATS.map((cat, i) => (
+   497→                <div key={`ce-cat-${i}`} className="p-0.5 text-[8px] font-bold text-center" style={catStyle(cat)}>
+   498→                  {cat}
+   499→                </div>
+   500→              ))}
+   501→              <div className="text-[7px] font-bold text-center" style={{ background: '#2C3E50', color: '#FFD700' }}>
+   502→                BULL|BEAR
+   503→              </div>
+   504→              {PE_CATS.map((cat, i) => (
+   505→                <div key={`pe-cat-${i}`} className="p-0.5 text-[8px] font-bold text-center" style={catStyle(cat)}>
+   506→                  {cat}
+   507→                </div>
+   508→              ))}
+   509→            </div>
+   510→
+   511→            {/* Row 2: Strike Headers */}
+   512→            <div className="grid gap-0" style={{
+   513→              gridTemplateColumns: '56px repeat(11, 1fr) 72px repeat(11, 1fr)',
+   514→            }}>
+   515→              <div className="p-0.5 text-[7px] font-bold text-center" style={{ background: COLORS.darkAlt, color: '#aaa' }}>
+   516→                HH:MM:SS
+   517→              </div>
+   518→              {CE_OFFSETS.map((off, i) => {
+   519→                const strike = currSnapshot.atmStrike + off;
+   520→                const label = off === 0 ? `ATM ${strike}` : `ATM${off > 0 ? '+' : ''}${off}`;
+   521→                return (
+   522→                  <div key={`ce-hdr-${i}`} className="p-0.5 text-[8px] font-bold text-center"
+   523→                    style={{
+   524→                      background: off === 0 ? '#2C3E50' : COLORS.darkAlt,
+   525→                      color: '#fff',
+   526→                    }}>
+   527→                    {label}<br/><span className="text-[7px] font-normal" style={{ color: COLORS.info }}>CE</span>
+   528→                  </div>
+   529→                );
+   530→              })}
+   531→              <div className="p-0.5 text-[7px] font-bold text-center" style={{ background: '#2C3E50', color: '#fff' }}>
+   532→                NET (Cr)
+   533→              </div>
+   534→              {PE_OFFSETS.map((off, i) => {
+   535→                const strike = currSnapshot.atmStrike + off;
+   536→                const label = off === 0 ? `ATM ${strike}` : `ATM${off > 0 ? '+' : ''}${off}`;
+   537→                return (
+   538→                  <div key={`pe-hdr-${i}`} className="p-0.5 text-[8px] font-bold text-center"
+   539→                    style={{
+   540→                      background: off === 0 ? '#2C3E50' : COLORS.darkAlt,
+   541→                      color: '#fff',
+   542→                    }}>
+   543→                    {label}<br/><span className="text-[7px] font-normal" style={{ color: COLORS.info }}>PE</span>
+   544→                  </div>
+   545→                );
+   546→              })}
+   547→            </div>
+   548→
+   549→            {/* Row 3: Color Legend */}
+   550→            <div className="grid gap-0" style={{
+   551→              gridTemplateColumns: '56px repeat(11, 1fr) 72px repeat(11, 1fr)',
+   552→            }}>
+   553→              <div className="p-0.5 text-[7px] font-bold" style={{ background: COLORS.dark, color: COLORS.accent }}>COLOR KEY</div>
+   554→              {[0,1,2,3,4,5,6,7,8,9,10].map(i => (
+   555→                <div key={`ce-legend-${i}`} className="p-0.5" style={{ background: COLORS.dark }} />
+   556→              ))}
+   557→              <div style={{ background: COLORS.dark }} />
+   558→              {[0,1,2,3,4,5,6,7,8,9,10].map(i => (
+   559→                <div key={`pe-legend-${i}`} className="p-0.5" style={{ background: COLORS.dark }} />
+   560→              ))}
+   561→            </div>
+   562→
+   563→            {/* Legend row rendered separately for clarity */}
+   564→            <div className="grid gap-0" style={{
+   565→              gridTemplateColumns: '56px repeat(24, 1fr)',
+   566→            }}>
+   567→              <div style={{ background: COLORS.dark }} />
+   568→              <div className="p-0.5" style={{ background: COLORS.dark }} />
+   569→              <div className="p-1 text-[7px]" style={{ background: COLORS.dark, color: '#eee' }}>CE Wr</div>
+   570→              <div className="p-0.5" style={{ background: COLORS.dark }} />
+   571→              <div className="p-1 text-[7px]" style={{ background: COLORS.dark, color: '#eee' }}>CE Buy</div>
+   572→              <div className="p-0.5" style={{ background: COLORS.dark }} />
+   573→              <div className="p-1 text-[7px]" style={{ background: COLORS.dark, color: '#eee' }}>PE Wr</div>
+   574→              <div className="p-0.5" style={{ background: COLORS.dark }} />
+   575→              <div className="p-1 text-[7px]" style={{ background: COLORS.dark, color: '#eee' }}>PE Buy</div>
+   576→              <div className="col-span-17 p-0.5" style={{ background: COLORS.dark }} />
+   577→            </div>
+   578→
+   579→            {/* DATA ROW: Flow values */}
+   580→            <div className="grid gap-0" style={{
+   581→              gridTemplateColumns: '56px repeat(11, 1fr) 72px repeat(11, 1fr)',
+   582→            }}>
+   583→              {/* Time column */}
+   584→              <div className="p-1 text-[9px] font-mono text-center flex items-center justify-center" style={{ background: COLORS.dark, color: COLORS.info }}>
+   585→                {lastUpdate}
+   586→              </div>
+   587→
+   588→              {/* CE Cells */}
+   589→              {CE_OFFSETS.map((off, i) => {
+   590→                const cell = getCellByOffset(flowCells, off);
+   591→                const isMaxBet = maxBetSide === 'ce' && maxBetIdx === flowCells.indexOf(cell!);
+   592→                return (
+   593→                  <div
+   594→                    key={`ce-cell-${i}`}
+   595→                    className={`p-1 text-[9px] font-mono font-bold text-center flex items-center justify-center min-h-[32px] ${
+   596→                      isMaxBet ? 'ring-2 ring-black ring-offset-0' : ''
+   597→                    }`}
+   598→                    style={{
+   599→                      background: cellBg(cell?.ceType || 'none', 'ce'),
+   600→                      color: cellText(cell?.ceType || 'none', 'ce'),
+   601→                      border: isMaxBet ? '2px solid #000' : '0.5px solid #222',
+   602→                    }}
+   603→                    title={`Strike ${(currSnapshot.atmStrike + off)} CE\nCE Buy: ${cell?.ceBuy.toFixed(2) || 0}\nCE Write: ${cell?.ceWrite.toFixed(2) || 0}`}
+   604→                  >
+   605→                    {cell?.ceDisplay ? cell.ceDisplay.toFixed(2) : '—'}
+   606→                  </div>
+   607→                );
+   608→              })}
+   609→
+   610→              {/* NET FLOW Column */}
+   611→              <div
+   612→                className="p-1 text-[10px] font-mono font-bold text-center flex items-center justify-center"
+   613→                style={{
+   614→                  background: totals.netFlow > 0 ? COLORS.netBull : totals.netFlow < 0 ? COLORS.netBear : COLORS.dark,
+   615→                  color: totals.netFlow === 0 ? COLORS.zero : COLORS.netText,
+   616→                  borderLeft: '2px solid #444',
+   617→                  borderRight: '2px solid #444',
+   618→                }}
+   619→              >
+   620→                {totals.netFlow >= 0 ? '+' : ''}{totals.netFlow.toFixed(2)}
+   621→              </div>
+   622→
+   623→              {/* PE Cells */}
+   624→              {PE_OFFSETS.map((off, i) => {
+   625→                const cell = getCellByOffset(flowCells, off);
+   626→                const isMaxBet = maxBetSide === 'pe' && maxBetIdx === flowCells.indexOf(cell!);
+   627→                return (
+   628→                  <div
+   629→                    key={`pe-cell-${i}`}
+   630→                    className={`p-1 text-[9px] font-mono font-bold text-center flex items-center justify-center min-h-[32px] ${
+   631→                      isMaxBet ? 'ring-2 ring-black ring-offset-0' : ''
+   632→                    }`}
+   633→                    style={{
+   634→                      background: cellBg(cell?.peType || 'none', 'pe'),
+   635→                      color: cellText(cell?.peType || 'none', 'pe'),
+   636→                      border: isMaxBet ? '2px solid #000' : '0.5px solid #222',
+   637→                    }}
+   638→                    title={`Strike ${(currSnapshot.atmStrike + off)} PE\nPE Write: ${cell?.peWrite.toFixed(2) || 0}\nPE Buy: ${cell?.peBuy.toFixed(2) || 0}`}
+   639→                  >
+   640→                    {cell?.peDisplay ? cell.peDisplay.toFixed(2) : '—'}
+   641→                  </div>
+   642→                );
+   643→              })}
+   644→            </div>
+   645→          </div>
+   646→        </div>
+   647→      )}
+   648→
+   649→      {/* Bottom Section: Totals + Mini Chart */}
+   650→      {flowCells.length > 0 && (
+   651→        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+   652→          {/* Totals */}
+   653→          <div className="rounded-lg p-3 border" style={{ borderColor: '#333', background: COLORS.dark }}>
+   654→            <h3 className="text-[10px] font-bold mb-2" style={{ color: COLORS.accent }}>
+   655→              TOTAL FLOW — All Strikes Combined (Cr)
+   656→            </h3>
+   657→            <TotalFlowBar />
+   658→            <div className="mt-2 pt-2 border-t" style={{ borderColor: '#333' }}>
+   659→              <div className="flex justify-between items-center">
+   660→                <span className="text-[9px]" style={{ color: COLORS.info }}>Bullish (CE Buy + PE Write)</span>
+   661→                <span className="text-[11px] font-mono font-bold" style={{ color: COLORS.ceBuy }}>
+   662→                  +{(totals.ceBuy + totals.peWrite).toFixed(2)} Cr
+   663→                </span>
+   664→              </div>
+   665→              <div className="flex justify-between items-center mt-1">
+   666→                <span className="text-[9px]" style={{ color: COLORS.info }}>Bearish (CE Write + PE Buy)</span>
+   667→                <span className="text-[11px] font-mono font-bold" style={{ color: COLORS.peBuy }}>
+   668→                  -{(totals.ceWrite + totals.peBuy).toFixed(2)} Cr
+   669→                </span>
+   670→              </div>
+   671→            </div>
+   672→          </div>
+   673→
+   674→          {/* Net Flow Trend */}
+   675→          <div className="rounded-lg p-3 border" style={{ borderColor: '#333', background: COLORS.dark }}>
+   676→            <h3 className="text-[10px] font-bold mb-2" style={{ color: COLORS.accent }}>
+   677→              NET FLOW TREND
+   678→            </h3>
+   679→            {flowHistory.length >= 2 ? (
+   680→              <NetFlowMiniChart />
+   681→            ) : (
+   682→              <div className="h-10 flex items-center justify-center text-[10px] text-muted-foreground">
+   683→                Collecting data points...
+   684→              </div>
+   685→            )}
+   686→            <div className="flex justify-between items-center mt-2 pt-2 border-t" style={{ borderColor: '#333' }}>
+   687→              <span className="text-[9px]" style={{ color: COLORS.info }}>Net Flow (Latest)</span>
+   688→              <span className="text-[11px] font-mono font-bold" style={{
+   689→                color: totals.netFlow >= 0 ? COLORS.netBull : COLORS.netBear,
+   690→              }}>
+   691→                {totals.netFlow >= 0 ? '+' : ''}{totals.netFlow.toFixed(2)} Cr
+   692→              </span>
+   693→            </div>
+   694→            <div className="flex justify-between items-center mt-1">
+   695→              <span className="text-[9px]" style={{ color: COLORS.info }}>Intervals Tracked</span>
+   696→              <span className="text-[10px] font-mono text-muted-foreground">{flowHistory.length}</span>
+   697→            </div>
+   698→          </div>
+   699→        </div>
+   700→      )}
+   701→
+   702→      {/* Per-Strike Detail Table (collapsed by default concept — shown always for now) */}
+   703→      {flowCells.length > 0 && currSnapshot && (
+   704→        <div className="rounded-lg overflow-hidden border" style={{ borderColor: '#333' }}>
+   705→          <div className="p-2 text-[10px] font-bold" style={{ background: COLORS.darkAlt, color: COLORS.accent }}>
+   706→            PER-STRIKE BREAKDOWN
+   707→          </div>
+   708→          <div className="overflow-x-auto">
+   709→            <table className="w-full text-[9px] font-mono">
+   710→              <thead>
+   711→                <tr style={{ background: COLORS.darkAlt }}>
+   712→                  <th className="p-1 text-left" style={{ color: '#aaa' }}>Strike</th>
+   713→                  <th className="p-1 text-right" style={{ color: COLORS.ceBuy }}>CE Buy</th>
+   714→                  <th className="p-1 text-right" style={{ color: COLORS.ceWriteText }}>CE Write</th>
+   715→                  <th className="p-1 text-right" style={{ color: COLORS.peWriteText }}>PE Write</th>
+   716→                  <th className="p-1 text-right" style={{ color: COLORS.peBuyText }}>PE Buy</th>
+   717→                  <th className="p-1 text-right" style={{ color: '#aaa' }}>CE OI</th>
+   718→                  <th className="p-1 text-right" style={{ color: '#aaa' }}>PE OI</th>
+   719→                  <th className="p-1 text-right" style={{ color: '#aaa' }}>CE Vol</th>
+   720→                  <th className="p-1 text-right" style={{ color: '#aaa' }}>PE Vol</th>
+   721→                </tr>
+   722→              </thead>
+   723→              <tbody>
+   724→                {flowCells.map((cell, idx) => {
+   725→                  const strikeData = currSnapshot.strikes.find(s => s.strike === cell.strike);
+   726→                  return (
+   727→                    <tr key={cell.strike} style={{
+   728→                      background: cell.isATM ? '#2C3E50' : idx % 2 === 0 ? COLORS.dark : COLORS.darkAlt,
+   729→                    }}>
+   730→                      <td className="p-1 font-bold" style={{ color: cell.isATM ? '#FFD700' : '#fff' }}>
+   731→                        {cell.strike} {cell.isATM ? '(ATM)' : ''}
+   732→                      </td>
+   733→                      <td className="p-1 text-right" style={{ color: COLORS.ceBuy }}>{cell.ceBuy.toFixed(2)}</td>
+   734→                      <td className="p-1 text-right" style={{ color: COLORS.ceWriteText }}>{cell.ceWrite.toFixed(2)}</td>
+   735→                      <td className="p-1 text-right" style={{ color: COLORS.peWriteText }}>{cell.peWrite.toFixed(2)}</td>
+   736→                      <td className="p-1 text-right" style={{ color: COLORS.peBuyText }}>{cell.peBuy.toFixed(2)}</td>
+   737→                      <td className="p-1 text-right text-muted-foreground">
+   738→                        {strikeData?.ceOI?.toLocaleString() || '—'}
+   739→                      </td>
+   740→                      <td className="p-1 text-right text-muted-foreground">
+   741→                        {strikeData?.peOI?.toLocaleString() || '—'}
+   742→                      </td>
+   743→                      <td className="p-1 text-right text-muted-foreground">
+   744→                        {strikeData?.ceVol?.toLocaleString() || '—'}
+   745→                      </td>
+   746→                      <td className="p-1 text-right text-muted-foreground">
+   747→                        {strikeData?.peVol?.toLocaleString() || '—'}
+   748→                      </td>
+   749→                    </tr>
+   750→                  );
+   751→                })}
+   752→              </tbody>
+   753→            </table>
+   754→          </div>
+   755→        </div>
+   756→      )}
+   757→    </div>
+   758→  );
+   759→}

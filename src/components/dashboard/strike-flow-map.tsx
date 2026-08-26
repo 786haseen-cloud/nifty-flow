@@ -30,6 +30,7 @@ interface FlowTotals {
   peBuy: number;
   peWrite: number;
   netFlow: number;
+  time: string; // HH:MM:SS timestamp
 }
 
 // ═══════════════════════════════════════════
@@ -180,8 +181,11 @@ export default function StrikeFlowMap() {
           const cells = computeFlowCells(prev, data);
           const totals = computeTotals(cells);
           setFlowHistory(h => {
-            const updated = [...h, { ...totals, netFlow: totals.netFlow }];
-            return updated.slice(-60); // keep last 60 intervals
+            const now = new Date().toLocaleTimeString('en-IN', {
+              hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+            });
+            const updated = [...h, { ...totals, netFlow: totals.netFlow, time: now }];
+            return updated.slice(-120); // keep last 120 intervals (~1 hour at 30s)
           });
         }
         return currSnapshot;
@@ -258,7 +262,7 @@ export default function StrikeFlowMap() {
   const CE_OFFSETS = Array.from({ length: n * 2 + 1 }, function(_, i) { return (n - i) * step; });
   const PE_OFFSETS = Array.from({ length: n * 2 + 1 }, function(_, i) { return (i - n) * step; });
   const CE_CATS = Array.from({ length: n * 2 + 1 }, function(_, i) { return i < n ? 'OTM' : i === n ? 'ATM' : 'ITM'; });
-  const PE_CATS = Array.from({ length: n * 2 + 1 }, function(_, i) { return i < n ? 'ITM' : i === n ? 'ATM' : 'OTM'; });
+  const PE_CATS = Array.from({ length: n * 2 + 1 }, function(_, i) { return i < n ? 'OTM' : i === n ? 'ATM' : 'ITM'; });
 
   function getCellByOffset(cells: StrikeFlowCell[], offset: number): StrikeFlowCell | undefined {
     if (!currSnapshot) return undefined;
@@ -289,32 +293,123 @@ export default function StrikeFlowMap() {
   }
 
   // ═══════════════════════════════════════════
-  // NET FLOW MINI CHART (last 60 intervals)
+  // HISTORICAL BAR CHART (9:15 AM → 3:40 PM)
   // ═══════════════════════════════════════════
-  function NetFlowMiniChart() {
-    if (flowHistory.length < 2) return null;
+  function HistoricalBarChart() {
+    if (flowHistory.length < 1) return null;
     const vals = flowHistory.map(h => h.netFlow);
+    const times = flowHistory.map(h => h.time);
     const maxAbs = Math.max(...vals.map(Math.abs), 0.01);
-    const w = 300, h = 40;
-    const step = w / (vals.length - 1);
 
-    const points = vals.map((v, i) => `${i * step},${h / 2 - (v / maxAbs) * (h / 2 - 2)}`).join(' ');
-    const zeroLine = `M0,${h / 2} L${w},${h / 2}`;
+    // Chart dimensions
+    const chartH = 160;
+    const labelH = 50;
+    const padLeft = 45;
+    const padRight = 10;
+    const padTop = 8;
+    const padBot = 0;
+    const totalW = 1000;
+    const plotW = totalW - padLeft - padRight;
+    const plotH = chartH - padTop - padBot;
+    const zeroY = padTop + plotH / 2;
 
-    // Fill area
-    const areaPoints = `0,${h / 2} ${points} ${w},${h / 2}`;
-    const lastVal = vals[vals.length - 1];
-    const fill = lastVal >= 0 ? 'rgba(0,176,80,0.15)' : 'rgba(189,33,48,0.15)';
-    const stroke = lastVal >= 0 ? '#00B050' : '#BD2130';
+    // Bar sizing
+    const barGap = 1;
+    const barW = Math.max(2, (plotW - barGap * vals.length) / vals.length);
+    const actualTotalBarW = barW * vals.length + barGap * (vals.length - 1);
+    const offsetX = padLeft + (plotW - actualTotalBarW) / 2;
+
+    // Y-axis labels
+    const yTicks = 5;
+    const yTickVals = Array.from({ length: yTicks + 1 }, (_, i) => {
+      const v = maxAbs - (2 * maxAbs * i) / yTicks;
+      return Math.round(v * 100) / 100;
+    });
+
+    // Time labels — show every N bars to avoid crowding
+    const maxLabels = Math.floor(plotW / 55);
+    const labelEvery = Math.max(1, Math.ceil(vals.length / maxLabels));
+
+    // Cumulative line data
+    let cumVals: number[] = [];
+    let cum = 0;
+    for (const v of vals) { cum += v; cumVals.push(cum); }
+    const cumMaxAbs = Math.max(...cumVals.map(Math.abs), 0.01);
 
     return (
-      <svg width="100%" height={h} viewBox={`0 0 ${w} ${h}`} className="overflow-visible">
-        <line x1="0" y1={h/2} x2={w} y2={h/2} stroke="#333" strokeWidth="0.5" />
-        <polygon points={areaPoints} fill={fill} />
-        <polyline points={points} fill="none" stroke={stroke} strokeWidth="1.5" />
-        {/* Current value dot */}
-        <circle cx={(vals.length - 1) * step} cy={h / 2 - (lastVal / maxAbs) * (h / 2 - 2)} r="2.5" fill={stroke} />
-      </svg>
+      <div>
+        <svg width="100%" viewBox={`0 0 ${totalW} ${chartH + labelH}`} style={{ background: COLORS.dark, borderRadius: '6px' }}>
+          {/* Grid lines */}
+          {yTickVals.map((v, i) => {
+            const y = padTop + (plotH * i) / yTicks;
+            return (
+              <g key={`grid-${i}`}>
+                <line x1={padLeft} y1={y} x2={totalW - padRight} y2={y} stroke="#222" strokeWidth="0.5" />
+                <text x={padLeft - 4} y={y + 3} textAnchor="end" fill="#888" fontSize="7" fontFamily="monospace">
+                  {v >= 0 ? '+' : ''}{v.toFixed(1)}
+                </text>
+              </g>
+            );
+          })}
+
+          {/* Zero line */}
+          <line x1={padLeft} y1={zeroY} x2={totalW - padRight} y2={zeroY} stroke="#555" strokeWidth="1" />
+
+          {/* Bars */}
+          {vals.map((v, i) => {
+            const x = offsetX + i * (barW + barGap);
+            const barH = (Math.abs(v) / maxAbs) * (plotH / 2 - 2);
+            const y = v >= 0 ? zeroY - barH : zeroY;
+            const color = v >= 0 ? COLORS.netBull : COLORS.netBear;
+            const opacity = 0.85;
+            return (
+              <rect key={`bar-${i}`} x={x} y={y} width={barW} height={barH} fill={color} opacity={opacity} rx="1">
+                <title>{times[i]}: {v >= 0 ? '+' : ''}{v.toFixed(2)} Cr</title>
+              </rect>
+            );
+          })}
+
+          {/* Cumulative flow line */}
+          {cumVals.length >= 2 && (
+            <polyline
+              points={cumVals.map((v, i) => {
+                const x = offsetX + i * (barW + barGap) + barW / 2;
+                const y = zeroY - (v / cumMaxAbs) * (plotH / 2 - 6);
+                return `${x},${y}`;
+              }).join(' ')}
+              fill="none" stroke="#FFD700" strokeWidth="1" opacity="0.6"
+              strokeLinejoin="round"
+            />
+          )}
+
+          {/* X-axis time labels */}
+          {times.map((t, i) => {
+            if (i % labelEvery !== 0 && i !== vals.length - 1) return null;
+            const x = offsetX + i * (barW + barGap) + barW / 2;
+            const labelY = chartH + 12;
+            // Show HH:MM format (drop seconds for readability)
+            const shortTime = t.substring(0, 5);
+            return (
+              <text key={`time-${i}`} x={x} y={labelY} textAnchor="middle" fill="#888" fontSize="7" fontFamily="monospace">
+                {shortTime}
+              </text>
+            );
+          })}
+
+          {/* Legend */}
+          <rect x={padLeft + 5} y={chartH + 28} width="8" height="8" fill={COLORS.netBull} rx="1" />
+          <text x={padLeft + 16} y={chartH + 35} fill="#aaa" fontSize="7" fontFamily="monospace">Bullish</text>
+          <rect x={padLeft + 65} y={chartH + 28} width="8" height="8" fill={COLORS.netBear} rx="1" />
+          <text x={padLeft + 76} y={chartH + 35} fill="#aaa" fontSize="7" fontFamily="monospace">Bearish</text>
+          <line x1={padLeft + 130} y1={chartH + 32} x2={padLeft + 150} y2={chartH + 32} stroke="#FFD700" strokeWidth="1" opacity="0.6" />
+          <text x={padLeft + 154} y={chartH + 35} fill="#aaa" fontSize="7" fontFamily="monospace">Cumulative</text>
+
+          {/* Data points count */}
+          <text x={totalW - padRight - 5} y={chartH + 35} textAnchor="end" fill="#555" fontSize="7" fontFamily="monospace">
+            {vals.length} intervals
+          </text>
+        </svg>
+      </div>
     );
   }
 
@@ -646,7 +741,46 @@ export default function StrikeFlowMap() {
         </div>
       )}
 
-      {/* Bottom Section: Totals + Mini Chart */}
+      {/* Full-width Historical Bar Chart */}
+      {flowCells.length > 0 && (
+        <div className="rounded-lg p-3 border" style={{ borderColor: '#333', background: COLORS.dark }}>
+          <h3 className="text-[10px] font-bold mb-2" style={{ color: COLORS.accent }}>
+            NET FLOW HISTORY — Intraday 9:15 to 3:40
+          </h3>
+          {flowHistory.length >= 1 ? (
+            <HistoricalBarChart />
+          ) : (
+            <div className="h-10 flex items-center justify-center text-[10px] text-muted-foreground">
+              Collecting data points... (need 2 snapshots, 30s intervals)
+            </div>
+          )}
+          <div className="flex justify-between items-center mt-2 pt-2 border-t" style={{ borderColor: '#333' }}>
+            <span className="text-[9px]" style={{ color: COLORS.info }}>Net Flow (Latest)</span>
+            <span className="text-[11px] font-mono font-bold" style={{
+              color: totals.netFlow >= 0 ? COLORS.netBull : COLORS.netBear,
+            }}>
+              {totals.netFlow >= 0 ? '+' : ''}{totals.netFlow.toFixed(2)} Cr
+            </span>
+          </div>
+          <div className="flex justify-between items-center mt-1">
+            <span className="text-[9px]" style={{ color: COLORS.info }}>Intervals Tracked</span>
+            <span className="text-[10px] font-mono text-muted-foreground">{flowHistory.length} / 120</span>
+          </div>
+          {flowHistory.length > 0 && (
+            <div className="flex justify-between items-center mt-1">
+              <span className="text-[9px]" style={{ color: '#FFD700' }}>Cumulative Flow (Day)</span>
+              <span className="text-[10px] font-mono font-bold" style={{ color: '#FFD700' }}>
+                {(() => {
+                  const cum = flowHistory.reduce((s, h) => s + h.netFlow, 0);
+                  return (cum >= 0 ? '+' : '') + cum.toFixed(2) + ' Cr';
+                })()}
+              </span>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Bottom Section: Totals + Breakup */}
       {flowCells.length > 0 && (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
           {/* Totals */}
@@ -671,29 +805,50 @@ export default function StrikeFlowMap() {
             </div>
           </div>
 
-          {/* Net Flow Trend */}
+          {/* Summary Panel */}
           <div className="rounded-lg p-3 border" style={{ borderColor: '#333', background: COLORS.dark }}>
             <h3 className="text-[10px] font-bold mb-2" style={{ color: COLORS.accent }}>
-              NET FLOW TREND
+              SIGNAL SUMMARY
             </h3>
-            {flowHistory.length >= 2 ? (
-              <NetFlowMiniChart />
-            ) : (
-              <div className="h-10 flex items-center justify-center text-[10px] text-muted-foreground">
-                Collecting data points...
+            <div className="space-y-2">
+              <div className="flex justify-between items-center">
+                <span className="text-[9px]" style={{ color: COLORS.info }}>Max Single Bet</span>
+                <span className="text-[10px] font-mono font-bold text-white">
+                  {maxBetVal > 0 ? `${maxBetVal.toFixed(2)} Cr @ ${flowCells[maxBetIdx]?.strike}` : '—'}
+                </span>
               </div>
-            )}
-            <div className="flex justify-between items-center mt-2 pt-2 border-t" style={{ borderColor: '#333' }}>
-              <span className="text-[9px]" style={{ color: COLORS.info }}>Net Flow (Latest)</span>
-              <span className="text-[11px] font-mono font-bold" style={{
-                color: totals.netFlow >= 0 ? COLORS.netBull : COLORS.netBear,
-              }}>
-                {totals.netFlow >= 0 ? '+' : ''}{totals.netFlow.toFixed(2)} Cr
-              </span>
-            </div>
-            <div className="flex justify-between items-center mt-1">
-              <span className="text-[9px]" style={{ color: COLORS.info }}>Intervals Tracked</span>
-              <span className="text-[10px] font-mono text-muted-foreground">{flowHistory.length}</span>
+              <div className="flex justify-between items-center">
+                <span className="text-[9px]" style={{ color: COLORS.info }}>Max Bet Side</span>
+                <span className="text-[10px] font-mono font-bold" style={{ color: maxBetSide === 'ce' ? COLORS.ceBuy : COLORS.peBuy }}>
+                  {maxBetSide ? (maxBetSide === 'ce' ? 'CE' : 'PE') : '—'}
+                </span>
+              </div>
+              <div className="flex justify-between items-center">
+                <span className="text-[9px]" style={{ color: COLORS.info }}>CE Buy vs CE Write</span>
+                <span className="text-[10px] font-mono">
+                  <span style={{ color: COLORS.ceBuy }}>{totals.ceBuy.toFixed(2)}</span>
+                  <span className="text-muted-foreground"> / </span>
+                  <span style={{ color: COLORS.ceWriteText }}>{totals.ceWrite.toFixed(2)}</span>
+                </span>
+              </div>
+              <div className="flex justify-between items-center">
+                <span className="text-[9px]" style={{ color: COLORS.info }}>PE Write vs PE Buy</span>
+                <span className="text-[10px] font-mono">
+                  <span style={{ color: COLORS.peWriteText }}>{totals.peWrite.toFixed(2)}</span>
+                  <span className="text-muted-foreground"> / </span>
+                  <span style={{ color: COLORS.peBuyText }}>{totals.peBuy.toFixed(2)}</span>
+                </span>
+              </div>
+              <div className="pt-1 border-t" style={{ borderColor: '#333' }}>
+                <div className="flex justify-between items-center">
+                  <span className="text-[9px]" style={{ color: '#FFD700' }}>Net Signal</span>
+                  <span className="text-[11px] font-mono font-bold" style={{
+                    color: totals.netFlow >= 0 ? COLORS.netBull : COLORS.netBear,
+                  }}>
+                    {totals.netFlow >= 0 ? 'BULLISH' : 'BEARISH'} ({totals.netFlow >= 0 ? '+' : ''}{totals.netFlow.toFixed(2)})
+                  </span>
+                </div>
+              </div>
             </div>
           </div>
         </div>
