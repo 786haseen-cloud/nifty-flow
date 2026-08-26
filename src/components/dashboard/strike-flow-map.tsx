@@ -138,6 +138,16 @@ const ALL_SYMBOLS = [
   ...STOCK_SPECS.map(s => ({ symbol: s.symbol, name: s.name, type: 'stock' as const })),
 ];
 
+// Historical backfill type
+interface HistoricalPoint {
+  time: string;
+  netFlow: number;
+  ceBuy: number;
+  ceWrite: number;
+  peBuy: number;
+  peWrite: number;
+}
+
 export default function StrikeFlowMap() {
   const [symbol, setSymbol] = useState('NIFTY');
   const [prevSnapshot, setPrevSnapshot] = useState<StrikeFlowSnapshot | null>(null);
@@ -147,6 +157,10 @@ export default function StrikeFlowMap() {
   const [isLive, setIsLive] = useState(false);
   const [lastUpdate, setLastUpdate] = useState<string>('');
   const [flowHistory, setFlowHistory] = useState<FlowTotals[]>([]);
+  const [historicalData, setHistoricalData] = useState<HistoricalPoint[]>([]);
+  const [backfillLoading, setBackfillLoading] = useState(false);
+  const [backfillDone, setBackfillDone] = useState(false);
+  const historicalCacheRef = useRef<Record<string, HistoricalPoint[]> | null>(null);
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
 
   const fetchData = useCallback(async () => {
@@ -197,6 +211,79 @@ export default function StrikeFlowMap() {
       setLoading(false);
     }
   }, [symbol, currSnapshot]);
+
+  // ── Historical Backfill (once per session) ──
+  useEffect(() => {
+    if (backfillDone) return;
+    let cancelled = false;
+
+    async function loadHistorical() {
+      setBackfillLoading(true);
+      try {
+        const res = await fetch(withCreds('/api/kite/historical-flow'));
+        const data = await res.json();
+        if (cancelled) return;
+
+        if (data.mode === 'live' && data.flowTrend?.length > 0) {
+          // Cache the raw flow trend per symbol
+          const cache: Record<string, HistoricalPoint[]> = {};
+          const symbols = ['NIFTY', 'BANKNIFTY', 'FINNIFTY', 'SENSEX'];
+          for (const sym of symbols) {
+            const points = data.flowTrend.map(p => ({
+              time: p.time,
+              netFlow: p[sym as keyof typeof p] as number,
+              ceBuy: 0, ceWrite: 0, peBuy: 0, peWrite: 0,
+            }));
+            // Convert cumulative → per-interval delta
+            const deltas: HistoricalPoint[] = [];
+            for (let i = 0; i < points.length; i++) {
+              const delta = i === 0 ? points[0].netFlow : points[i].netFlow - points[i - 1].netFlow;
+              deltas.push({ ...points[i], netFlow: Math.round(delta * 100) / 100 });
+            }
+            cache[sym] = deltas;
+          }
+
+          // Stock aggregate
+          const stockPoints = data.flowTrend.map(p => ({
+            time: p.time,
+            netFlow: p.stockAggregate as number,
+            ceBuy: 0, ceWrite: 0, peBuy: 0, peWrite: 0,
+          }));
+          const stockDeltas: HistoricalPoint[] = [];
+          for (let i = 0; i < stockPoints.length; i++) {
+            const delta = i === 0 ? stockPoints[0].netFlow : stockPoints[i].netFlow - stockPoints[i - 1].netFlow;
+            stockDeltas.push({ ...stockPoints[i], netFlow: Math.round(delta * 100) / 100 });
+          }
+          // Store stock data under each STOCK_SPEC symbol
+          for (const s of STOCK_SPECS) {
+            cache[s.symbol] = stockDeltas;
+          }
+
+          historicalCacheRef.current = cache;
+          setHistoricalData(cache[symbol] || []);
+          setBackfillDone(true);
+          console.log(`[StrikeFlow] Historical backfill loaded: ${Object.keys(cache).length} symbols, ${data.flowTrend.length} time points`);
+        } else {
+          setBackfillDone(true); // skip on error/demo
+        }
+      } catch (e) {
+        console.warn('[StrikeFlow] Historical backfill failed:', e);
+        setBackfillDone(true);
+      } finally {
+        if (!cancelled) setBackfillLoading(false);
+      }
+    }
+
+    loadHistorical();
+    return () => { cancelled = true; };
+  }, [backfillDone, symbol]);
+
+  // When symbol changes, switch historical data from cache
+  useEffect(() => {
+    if (historicalCacheRef.current && backfillDone) {
+      setHistoricalData(historicalCacheRef.current[symbol] || []);
+    }
+  }, [symbol, backfillDone]);
 
   // Initial fetch + interval
   useEffect(() => {
@@ -294,11 +381,18 @@ export default function StrikeFlowMap() {
 
   // ═══════════════════════════════════════════
   // HISTORICAL BAR CHART (9:15 AM → 3:40 PM)
+  // Merges backfilled 5-min historical data + live 30s data
   // ═══════════════════════════════════════════
   function HistoricalBarChart() {
-    if (flowHistory.length < 1) return null;
-    const vals = flowHistory.map(h => h.netFlow);
-    const times = flowHistory.map(h => h.time);
+    // Merge: historical backfill (5-min intervals) + live data (30s intervals)
+    const allPoints = [
+      ...historicalData.map(h => ({ time: h.time, netFlow: h.netFlow })),
+      ...flowHistory.map(h => ({ time: h.time, netFlow: h.netFlow })),
+    ];
+
+    if (allPoints.length < 1) return null;
+    const vals = allPoints.map(h => h.netFlow);
+    const times = allPoints.map(h => h.time);
     const maxAbs = Math.max(...vals.map(Math.abs), 0.01);
 
     // Chart dimensions
@@ -742,16 +836,18 @@ export default function StrikeFlowMap() {
       )}
 
       {/* Full-width Historical Bar Chart */}
-      {flowCells.length > 0 && (
+      {(flowCells.length > 0 || historicalData.length > 0) && (
         <div className="rounded-lg p-3 border" style={{ borderColor: '#333', background: COLORS.dark }}>
           <h3 className="text-[10px] font-bold mb-2" style={{ color: COLORS.accent }}>
             NET FLOW HISTORY — Intraday 9:15 to 3:40
+            {backfillLoading && <span className="ml-2 text-[9px] text-amber-300 animate-pulse">Loading morning data...</span>}
+            {!backfillLoading && historicalData.length > 0 && <span className="ml-2 text-[9px]" style={{ color: '#00B050' }}>{historicalData.length} pts from 9:15</span>}
           </h3>
-          {flowHistory.length >= 1 ? (
+          {(historicalData.length > 0 || flowHistory.length >= 1) ? (
             <HistoricalBarChart />
           ) : (
             <div className="h-10 flex items-center justify-center text-[10px] text-muted-foreground">
-              Collecting data points... (need 2 snapshots, 30s intervals)
+              {backfillLoading ? 'Loading historical data from 9:15 AM...' : 'Collecting data points... (need 2 snapshots, 30s intervals)'}
             </div>
           )}
           <div className="flex justify-between items-center mt-2 pt-2 border-t" style={{ borderColor: '#333' }}>
@@ -764,14 +860,16 @@ export default function StrikeFlowMap() {
           </div>
           <div className="flex justify-between items-center mt-1">
             <span className="text-[9px]" style={{ color: COLORS.info }}>Intervals Tracked</span>
-            <span className="text-[10px] font-mono text-muted-foreground">{flowHistory.length} / 120</span>
+            <span className="text-[10px] font-mono text-muted-foreground">{historicalData.length + flowHistory.length} total</span>
           </div>
-          {flowHistory.length > 0 && (
+          {(historicalData.length > 0 || flowHistory.length > 0) && (
             <div className="flex justify-between items-center mt-1">
               <span className="text-[9px]" style={{ color: '#FFD700' }}>Cumulative Flow (Day)</span>
               <span className="text-[10px] font-mono font-bold" style={{ color: '#FFD700' }}>
                 {(() => {
-                  const cum = flowHistory.reduce((s, h) => s + h.netFlow, 0);
+                  const histCum = historicalData.reduce((s, h) => s + h.netFlow, 0);
+                  const liveCum = flowHistory.reduce((s, h) => s + h.netFlow, 0);
+                  const cum = histCum + liveCum;
                   return (cum >= 0 ? '+' : '') + cum.toFixed(2) + ' Cr';
                 })()}
               </span>
