@@ -112,21 +112,47 @@ async function fetchLiveData(): Promise<HighestBetResponse> {
     const futType = isIndex ? 'FUTIDX' : 'FUTSTK';
 
     // Find cash/spot instrument
+    // In 2025+ Kite CSV: index cash instruments have instrumentType='EQ' + segment='INDICES',
+    // but kite-api.ts normalizer converts these to 'INDEX'. Stock cash instruments stay 'EQ'.
+    // Name mapping: Kite uses 'NIFTY 50', 'NIFTY BANK', 'NIFTY FIN SERVICE', 'SENSEX'
+    // while our spec.symbol uses 'NIFTY', 'BANKNIFTY', 'FINNIFTY', 'SENSEX'.
+    const KITE_INDEX_NAMES: Record<string, string[]> = {
+      'NIFTY': ['NIFTY 50', 'NIFTY'],
+      'BANKNIFTY': ['NIFTY BANK', 'BANKNIFTY'],
+      'FINNIFTY': ['NIFTY FIN SERVICE', 'FINNIFTY'],
+      'SENSEX': ['SENSEX'],
+    };
+    const altNames = KITE_INDEX_NAMES[spec.symbol] || [spec.symbol];
     const cashInst = allInstruments.find(i =>
       i.exchange === cashExchange &&
       i.instrumentType === cashType &&
-      (i.tradingSymbol.toUpperCase() === spec.symbol.toUpperCase() ||
-        (isIndex && i.name.toUpperCase().includes(spec.symbol.toUpperCase())))
+      (altNames.some(n => i.tradingSymbol.toUpperCase() === n.toUpperCase()) ||
+        altNames.some(n => i.name.toUpperCase().includes(n.toUpperCase())))
+    ) || allInstruments.find(i =>
+      // Fallback: match by segment 'INDICES' for indices (in case normalizer didn't run)
+      isIndex && i.exchange === cashExchange &&
+      i.segment === 'INDICES' &&
+      (altNames.some(n => i.tradingSymbol.toUpperCase().includes(n.toUpperCase())) ||
+        altNames.some(n => i.name.toUpperCase().includes(n.toUpperCase())))
     );
 
     if (!cashInst) continue;
 
+    const KITE_STOCK_NAMES: Record<string, string[]> = {
+      'LT': ['LARSEN', 'LT'],
+      'MARUTI': ['MARUTI SUZUKI', 'MARUTI'],
+      'HINDUNILVR': ['HINDUSTAN UNILEVER', 'HINDUNILVR'],
+      'TATAMOTORS': ['TATA MOTORS', 'TMCV', 'TMPV'],
+    };
+    const altStockNames = KITE_STOCK_NAMES[spec.symbol.toUpperCase()] || [spec.symbol.toUpperCase()];
     // Find current-month future instrument
     const futures = allInstruments.filter(i =>
       i.exchange === optExchange &&
       i.instrumentType === futType &&
-      (i.name.toUpperCase().includes(spec.symbol.toUpperCase()) ||
-        i.tradingSymbol.toUpperCase().includes(spec.symbol.toUpperCase()))
+      altStockNames.some(n =>
+        i.name.toUpperCase().includes(n.toUpperCase()) ||
+        i.tradingSymbol.toUpperCase().includes(n.toUpperCase())
+      )
     );
     const today = new Date();
     const todayStr = today.toDateString();
@@ -223,12 +249,24 @@ async function fetchLiveData(): Promise<HighestBetResponse> {
     // (which equals the last segment component) rather than exact segment equality.
     // The instrumentType filter works because kite-api.ts normalizes new types
     // ('CE'/'PE') back to legacy ('OPTIDX'/'OPTSTK') when parsing the CSV.
-    const symUpper = prep.symbol.toUpperCase();
+    //
+    // Stock name mapping: Kite uses underlying name for F&O (e.g. 'LARSEN & TOUBRO'
+    // for LT options, 'MARUTI SUZUKI INDIA' for MARUTI options). We map our short
+    // symbol to the possible Kite names/tradingSymbol prefixes.
+    const KITE_STOCK_NAMES: Record<string, string[]> = {
+      'LT': ['LARSEN', 'LT'],
+      'MARUTI': ['MARUTI SUZUKI', 'MARUTI'],
+      'HINDUNILVR': ['HINDUSTAN UNILEVER', 'HINDUNILVR'],
+      'TATAMOTORS': ['TATA MOTORS', 'TMCV', 'TMPV'],
+    };
+    const stockAltNames = KITE_STOCK_NAMES[prep.symbol.toUpperCase()] || [prep.symbol.toUpperCase()];
     const opts = allInstruments.filter(i =>
       i.exchange === prep.optExchange &&
       i.instrumentType === prep.instrumentType &&
-      (i.name.toUpperCase().includes(symUpper) ||
-        i.tradingSymbol.toUpperCase().includes(symUpper))
+      stockAltNames.some(n =>
+        i.name.toUpperCase().includes(n.toUpperCase()) ||
+        i.tradingSymbol.toUpperCase().includes(n.toUpperCase())
+      )
     );
 
     if (opts.length === 0) continue;

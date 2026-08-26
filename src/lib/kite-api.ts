@@ -208,7 +208,18 @@ export async function getInstruments(exchange?: string, forceRefresh?: boolean):
     const normalizeInstrumentType = (rawType: string, segment: string, name: string): string => {
       // Keep legacy values as-is (in case Kite reverts or some entries still use old format)
       if (rawType === 'OPTIDX' || rawType === 'OPTSTK' || rawType === 'FUTIDX' || rawType === 'FUTSTK' ||
-          rawType === 'EQ' || rawType === 'INDEX') {
+          rawType === 'INDEX') {
+        return rawType;
+      }
+      // CRITICAL FIX: In the 2025+ Kite CSV, cash index instruments (NIFTY 50, SENSEX, etc.)
+      // have instrument_type='EQ' and segment='INDICES'. We must normalize these to 'INDEX'
+      // so that downstream lookups (e.g. highest-bet finding cash instruments) can filter by
+      // instrumentType === 'INDEX' instead of the ambiguous 'EQ' (which also matches stocks).
+      if (rawType === 'EQ' && segment === 'INDICES') {
+        return 'INDEX';
+      }
+      // Regular EQ stocks stay as 'EQ'
+      if (rawType === 'EQ') {
         return rawType;
       }
       const nameUpper = name.toUpperCase();
@@ -300,47 +311,58 @@ export async function getQuotes(instruments: string[]): Promise<Record<string, K
     const iList = tokenList.join(',');
     // Kite requires SEPARATE 'i' query params for multiple instruments.
     // ?i=256265&i=260105 works, but ?i=256265,260105 returns empty data.
-    const params = tokenList.map(t => `i=${t}`).join('&');
-    const res = await fetch(`${KITE_BASE}/quote?${params}`, {
-      headers: kiteHeaders(),
-    });
+    // Chunk into batches of 100 to avoid URL length limits and API throttling.
+    const CHUNK_SIZE = 100;
+    const allQuotes: Record<string, KiteQuote> = {};
 
-    // Log non-success for debugging
-    if (!res.ok) {
-      const errText = await res.text();
-      console.error(`[Kite] quote API ${res.status}: ${errText}`);
-      return { _error: `HTTP ${res.status}: ${errText}` } as any;
+    for (let chunkStart = 0; chunkStart < tokenList.length; chunkStart += CHUNK_SIZE) {
+      const chunk = tokenList.slice(chunkStart, chunkStart + CHUNK_SIZE);
+      const params = chunk.map(t => `i=${t}`).join('&');
+      const res = await fetch(`${KITE_BASE}/quote?${params}`, {
+        headers: kiteHeaders(),
+      });
+
+      // Log non-success for debugging
+      if (!res.ok) {
+        const errText = await res.text();
+        console.error(`[Kite] quote API ${res.status}: ${errText}`);
+        if (Object.keys(allQuotes).length === 0) {
+          return { _error: `HTTP ${res.status}: ${errText}` } as any;
+        }
+        continue; // partial success — return what we have
+      }
+
+      const data = await res.json();
+      if (data.status !== 'success' || !data.data) {
+        console.error('[Kite] quote API error:', JSON.stringify(data));
+        if (Object.keys(allQuotes).length === 0) {
+          return { _error: data.message || 'Unknown error' } as any;
+        }
+        continue;
+      }
+
+      for (const [key, q] of Object.entries(data.data as Record<string, any>)) {
+        const displayKey = tokenToKey[key] || key;
+        allQuotes[displayKey] = {
+          instrumentToken: q.instrument_token || 0,
+          lastPrice: q.last_price || 0,
+          open: q.ohlc?.open || 0,
+          high: q.ohlc?.high || 0,
+          low: q.ohlc?.low || 0,
+          close: q.ohlc?.close || 0,
+          volume: q.volume || 0,
+          netChange: q.net_change || 0,
+          averagePrice: q.average_price || 0,
+          oi: q.oi || 0,
+          oiDayHigh: q.oi_day_high || 0,
+          oiDayLow: q.oi_day_low || 0,
+          dayHigh: q.ohlc?.high || 0,
+          dayLow: q.ohlc?.low || 0,
+        };
+      }
     }
 
-    const data = await res.json();
-    if (data.status !== 'success' || !data.data) {
-      console.error('[Kite] quote API error:', JSON.stringify(data));
-      return { _error: data.message || 'Unknown error' } as any;
-    }
-
-    const quotes: Record<string, KiteQuote> = {};
-    for (const [key, q] of Object.entries(data.data as Record<string, any>)) {
-      // Kite returns the key as the token string (e.g. "256265")
-      // Map it back to the original instrument name (e.g. "NSE:NIFTY 50")
-      const displayKey = tokenToKey[key] || key;
-      quotes[displayKey] = {
-        instrumentToken: q.instrument_token || 0,
-        lastPrice: q.last_price || 0,
-        open: q.ohlc?.open || 0,
-        high: q.ohlc?.high || 0,
-        low: q.ohlc?.low || 0,
-        close: q.ohlc?.close || 0,
-        volume: q.volume || 0,
-        netChange: q.net_change || 0,
-        averagePrice: q.average_price || 0,
-        oi: q.oi || 0,
-        oiDayHigh: q.oi_day_high || 0,
-        oiDayLow: q.oi_day_low || 0,
-        dayHigh: q.ohlc?.high || 0,
-        dayLow: q.ohlc?.low || 0,
-      };
-    }
-    return quotes;
+    return allQuotes;
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
     console.error('[Kite] quote error:', errMsg);
@@ -622,7 +644,7 @@ export const STOCK_SPECS: InstrumentSpec[] = [
   { symbol: 'AXISBANK',   name: 'Axis Bank',            exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTSTK', strikesAround: 4, kiteSymbol: 'NSE:AXISBANK' },
   { symbol: 'BAJFINANCE', name: 'Bajaj Finance',       exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTSTK', strikesAround: 4, kiteSymbol: 'NSE:BAJFINANCE' },
   { symbol: 'MARUTI',     name: 'Maruti Suzuki',       exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTSTK', strikesAround: 4, kiteSymbol: 'NSE:MARUTI' },
-  { symbol: 'TATAMOTORS', name: 'Tata Motors',         exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTSTK', strikesAround: 4, kiteSymbol: 'NSE:TATAMOTORS' },
+  { symbol: 'TATAMOTORS', name: 'Tata Motors (TMCV)', exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTSTK', strikesAround: 4, kiteSymbol: 'NSE:TMCV' },
 ];
 
 // Helper: get spec by symbol
