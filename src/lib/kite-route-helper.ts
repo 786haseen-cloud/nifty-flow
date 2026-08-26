@@ -3,14 +3,16 @@
  * Extracts api_key + access_token from query params and sets the override in kite-api.ts
  * so all downstream functions (getInstruments, getQuotes, etc.) use the user-provided credentials.
  *
- * IMPORTANT: If the incoming credentials differ from the previously-cached ones, we
- * invalidate the in-memory instruments cache. This handles the common scenario where:
- *   1. Vercel cold-start instance had cached an empty instruments list (from an
- *      unauthenticated request, or an expired env-var token returning 403)
- *   2. The user's browser then sends a request with a fresh, valid access_token
- * Without cache invalidation, the user's valid request would keep getting the stale
- * empty list and the Strike Flow / Options Flow tabs would all show "No option
- * instruments found" even though the CSV download would now succeed.
+ * CRITICAL DESIGN: Module-level credential override is cleared when no URL creds are
+ * provided. This prevents a previous request's URL creds from poisoning subsequent
+ * requests that rely on env vars.
+ *
+ * Flow per request:
+ *   - URL has api_key + access_token → set override (URL creds used for this + future requests)
+ *   - URL has NO creds → CLEAR override (env vars used via kiteHeaders fallback)
+ *
+ * Cache invalidation: when URL creds change from previous request, instruments cache
+ * is busted to force re-download with the new creds.
  */
 import { setKiteOverride, isKiteConfigured, invalidateInstrumentsCache } from './kite-api';
 
@@ -27,14 +29,21 @@ export function applyKiteCredsFromRequest(url: string): boolean {
     const apiKey = u.searchParams.get('api_key');
     const accessToken = u.searchParams.get('access_token');
     if (apiKey && accessToken) {
-      // If the creds differ from the previously applied ones, bust the instruments
-      // cache so we re-download the CSV with the new creds.
+      // URL creds provided → set override for this request chain
       if (apiKey !== _lastAppliedApiKey || accessToken !== _lastAppliedAccessToken) {
         invalidateInstrumentsCache();
         _lastAppliedApiKey = apiKey;
         _lastAppliedAccessToken = accessToken;
       }
       setKiteOverride(apiKey, accessToken);
+    } else {
+      // No URL creds → CLEAR override so env vars are used.
+      // Without this, a previous request's URL creds would persist in the
+      // module-level _overrideApiKey/_overrideAccessToken and poison all
+      // subsequent requests that expect to use env vars.
+      setKiteOverride('', '');
+      _lastAppliedApiKey = '';
+      _lastAppliedAccessToken = '';
     }
     return isKiteConfigured();
   } catch {
