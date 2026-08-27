@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { Badge } from '@/components/ui/badge';
 import { withCreds } from '@/lib/kite-creds';
-import { Shield, ShieldAlert, Target, Activity, BarChart3, Wifi, WifiOff, RefreshCw, TrendingUp, TrendingDown } from 'lucide-react';
+import { Target, Activity, BarChart3, Wifi, WifiOff, RefreshCw, TrendingUp, TrendingDown } from 'lucide-react';
 import { INDEX_SPECS, STOCK_SPECS } from '@/lib/kite-api';
 import type { StrikeFlowSnapshot, StrikeFlowData } from '@/lib/kite-api';
 
@@ -11,15 +11,57 @@ import type { StrikeFlowSnapshot, StrikeFlowData } from '@/lib/kite-api';
 // TYPES
 // ═══════════════════════════════════════════
 
+/**
+ * 4-Color OI classification for each bar:
+ *  CE: Buy  = ΔOI>0 & ΔLTP>0 (bullish)  → green
+ *      Write = ΔOI>0 & ΔLTP<0 (bearish)  → red
+ *  PE: Buy  = ΔOI>0 & ΔLTP<0 (bearish)  → red
+ *      Write = ΔOI>0 & ΔLTP>0 (bullish)  → green
+ *  Unwinding (ΔOI<0) → gray
+ *  No prev data       → neutral
+ */
+type OIColor = {
+  bg: string;      // tailwind bg class for the bar
+  text: string;     // tailwind text class for the OI label
+  label?: string;   // short label shown on hover ("Buy", "Write", "Unwind")
+};
+
+function getOIColor(oiChange: number, ltpChange: number, isPE: boolean): OIColor {
+  if (oiChange === 0 && ltpChange === 0) {
+    // No previous data — neutral
+    return { bg: 'bg-zinc-500/25', text: 'text-zinc-400/80' };
+  }
+  if (oiChange < 0) {
+    // Unwinding / short covering
+    return { bg: 'bg-zinc-500/30', text: 'text-zinc-500/70', label: 'Unwind' };
+  }
+  // oiChange > 0 — new positions opened
+  if (isPE) {
+    // PE: Write = bullish (price up + OI up), Buy = bearish (price down + OI up)
+    if (ltpChange > 0) return { bg: 'bg-emerald-500/50', text: 'text-emerald-300', label: 'Write' };
+    if (ltpChange < 0) return { bg: 'bg-red-500/50', text: 'text-red-300', label: 'Buy' };
+    return { bg: 'bg-zinc-500/30', text: 'text-zinc-400/80', label: 'Write' };
+  } else {
+    // CE: Buy = bullish (price up + OI up), Write = bearish (price down + OI up)
+    if (ltpChange > 0) return { bg: 'bg-emerald-500/50', text: 'text-emerald-300', label: 'Buy' };
+    if (ltpChange < 0) return { bg: 'bg-red-500/50', text: 'text-red-300', label: 'Write' };
+    return { bg: 'bg-zinc-500/30', text: 'text-zinc-400/80', label: 'Buy' };
+  }
+}
+
 interface OIWallsStrike {
   strike: number;
   isATM: boolean;
+  isCeITM: boolean;  // strike < ATM → CE is in-the-money
+  isPeITM: boolean;  // strike > ATM → PE is in-the-money
   ceOI: number;
   peOI: number;
   ceLTP: number;
   peLTP: number;
-  pePct: number;   // % of max OI (for bar width)
-  cePct: number;
+  cePct: number;     // % of max OI (for bar width)
+  pePct: number;
+  ceColor: OIColor;  // 4-color classification
+  peColor: OIColor;
 }
 
 interface ComputedMetrics {
@@ -283,16 +325,38 @@ export default function OIWallsTab() {
       1
     );
 
-    const walls: OIWallsStrike[] = data.strikes.map(s => ({
-      strike: s.strike,
-      isATM: s.isATM,
-      ceOI: s.ceOI,
-      peOI: s.peOI,
-      ceLTP: s.ceLTP,
-      peLTP: s.peLTP,
-      pePct: (s.peOI / maxOI) * 100,
-      cePct: (s.ceOI / maxOI) * 100,
-    }));
+    // Find ATM strike for ITM determination
+    const atmStrike = data.atmStrike || data.strikes.find(s => s.isATM)?.strike || 0;
+
+    // Build prev strike map for per-strike diff
+    const prev = prevSnapshotRef.current;
+    const prevMap = new Map<number, StrikeFlowData>();
+    if (prev && prev.symbol === data.symbol) {
+      for (const s of prev.strikes) prevMap.set(s.strike, s);
+    }
+
+    const walls: OIWallsStrike[] = data.strikes.map(s => {
+      const p = prevMap.get(s.strike);
+      const ceOiChg = p ? s.ceOI - p.ceOI : 0;
+      const peOiChg = p ? s.peOI - p.peOI : 0;
+      const ceLtpChg = p ? s.ceLTP - p.ceLTP : 0;
+      const peLtpChg = p ? s.peLTP - p.peLTP : 0;
+
+      return {
+        strike: s.strike,
+        isATM: s.isATM,
+        isCeITM: !s.isATM && s.strike < atmStrike,
+        isPeITM: !s.isATM && s.strike > atmStrike,
+        ceOI: s.ceOI,
+        peOI: s.peOI,
+        ceLTP: s.ceLTP,
+        peLTP: s.peLTP,
+        cePct: (s.ceOI / maxOI) * 100,
+        pePct: (s.peOI / maxOI) * 100,
+        ceColor: getOIColor(ceOiChg, ceLtpChg, false),
+        peColor: getOIColor(peOiChg, peLtpChg, true),
+      };
+    });
 
     const totalCEOI = data.strikes.reduce((sum, s) => sum + s.ceOI, 0);
     const totalPEOI = data.strikes.reduce((sum, s) => sum + s.peOI, 0);
@@ -462,34 +526,57 @@ export default function OIWallsTab() {
       {/* ─── OI Walls Chart ─── */}
       {data && walls.length > 0 ? (
         <div className="bg-card border border-border/30 rounded-lg p-4">
-          {/* Chart header */}
-          <div className="flex items-center justify-between mb-3">
-            <div className="flex items-center gap-4">
+          {/* Chart header — 4-color legend */}
+          <div className="flex items-center justify-between mb-2 flex-wrap gap-y-1">
+            <div className="flex items-center gap-3 flex-wrap">
+              <span className="text-[10px] text-zinc-500 font-medium">CE OI (LEFT)</span>
               <div className="flex items-center gap-1.5">
-                <Shield className="w-3.5 h-3.5 text-emerald-400" />
-                <span className="text-[10px] text-zinc-500">PE OI (Support)</span>
-                <div className="w-3 h-2 rounded-sm bg-emerald-500/40" />
+                <div className="w-3 h-2 rounded-sm bg-emerald-500/50" />
+                <span className="text-[9px] text-zinc-500">Buy</span>
               </div>
               <div className="flex items-center gap-1.5">
-                <ShieldAlert className="w-3.5 h-3.5 text-red-400" />
-                <span className="text-[10px] text-zinc-500">CE OI (Resistance)</span>
-                <div className="w-3 h-2 rounded-sm bg-red-500/40" />
+                <div className="w-3 h-2 rounded-sm bg-red-500/50" />
+                <span className="text-[9px] text-zinc-500">Write</span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <div className="w-3 h-2 rounded-sm bg-zinc-500/30" />
+                <span className="text-[9px] text-zinc-500">Unwind</span>
+              </div>
+              <span className="text-zinc-700">|</span>
+              <span className="text-[10px] text-zinc-500 font-medium">PE OI (RIGHT)</span>
+              <div className="flex items-center gap-1.5">
+                <div className="w-3 h-2 rounded-sm bg-emerald-500/50" />
+                <span className="text-[9px] text-zinc-500">Write</span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <div className="w-3 h-2 rounded-sm bg-red-500/50" />
+                <span className="text-[9px] text-zinc-500">Buy</span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <div className="w-3 h-2 rounded-sm bg-zinc-500/30" />
+                <span className="text-[9px] text-zinc-500">Unwind</span>
               </div>
             </div>
-            <div className="flex items-center gap-1.5">
-              <Target className="w-3 h-3 text-amber-400" />
-              <span className="text-[10px] text-zinc-500">Max Pain</span>
+            <div className="flex items-center gap-3">
+              <div className="flex items-center gap-1">
+                <div className="w-2.5 h-2.5 rounded-sm bg-emerald-500/[0.06] border border-emerald-500/20" />
+                <span className="text-[9px] text-zinc-600">ITM</span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <Target className="w-3 h-3 text-amber-400" />
+                <span className="text-[10px] text-zinc-500">Max Pain</span>
+              </div>
             </div>
           </div>
 
-          {/* Column headers */}
+          {/* Column headers — CE LEFT, Strike CENTER, PE RIGHT */}
           <div className="flex items-center text-[10px] text-zinc-600 mb-1">
-            <div className="flex-1 text-right pr-2">PE OI</div>
+            <div className="flex-1 text-right pr-2">CE OI</div>
             <div className="w-[70px] text-center">Strike</div>
-            <div className="flex-1 text-left pl-2">CE OI</div>
+            <div className="flex-1 text-left pl-2">PE OI</div>
           </div>
 
-          {/* Strike rows — symmetric layout: PE extends LEFT from center, CE extends RIGHT */}
+          {/* Strike rows — CE extends LEFT, PE extends RIGHT, strike CENTER */}
           <div className="relative space-y-px">
             {/* Spot price dashed line overlay — positioned at 50% (center) */}
             <div
@@ -503,26 +590,37 @@ export default function OIWallsTab() {
 
             {walls.map(w => {
               const isMaxPain = metrics && w.strike === metrics.maxPain;
-              let rowClass = 'rounded px-1 py-1';
-              if (isMaxPain) rowClass += ' bg-amber-500/10 border border-amber-500/20';
-              else if (w.isATM) rowClass += ' bg-blue-500/10';
-              else rowClass += ' hover:bg-zinc-800/40';
 
               return (
-                <div key={w.strike} className={`flex items-center ${rowClass}`}>
-                  {/* PE OI bar (extends LEFT from center) */}
-                  <div className="flex-1 flex justify-end items-center pr-2">
-                    <span className="text-[10px] text-emerald-400/80 relative z-10 mr-1.5">
-                      {w.peOI > 0 ? formatLakhs(w.peOI) : ''}
+                <div key={w.strike} className="flex items-center rounded px-1 py-1 relative">
+                  {/* ITM background tints — split left/right */}
+                  {w.isCeITM && (
+                    <div className="absolute left-0 top-0 bottom-0 w-1/2 bg-emerald-500/[0.05] rounded-l pointer-events-none" />
+                  )}
+                  {w.isPeITM && (
+                    <div className="absolute right-0 top-0 bottom-0 w-1/2 bg-red-500/[0.05] rounded-r pointer-events-none" />
+                  )}
+                  {w.isATM && (
+                    <div className="absolute inset-0 bg-blue-500/10 pointer-events-none rounded" />
+                  )}
+                  {isMaxPain && !w.isATM && (
+                    <div className="absolute inset-0 bg-amber-500/10 border border-amber-500/20 pointer-events-none rounded" />
+                  )}
+
+                  {/* CE OI bar (extends LEFT from center) — 4-color */}
+                  <div className="flex-1 flex justify-end items-center pr-2 relative z-[1]">
+                    <span className={`text-[10px] relative z-10 mr-1.5 ${w.ceColor.text}`} title={w.ceColor.label}>
+                      {w.ceOI > 0 ? formatLakhs(w.ceOI) : ''}
                     </span>
                     <div
-                      className="h-5 bg-emerald-500/40 rounded-r-sm"
-                      style={{ width: `${Math.max(w.pePct, 0)}%` }}
+                      className={`h-5 ${w.ceColor.bg} rounded-r-sm`}
+                      style={{ width: `${Math.max(w.cePct, 0)}%` }}
+                      title={w.ceColor.label}
                     />
                   </div>
 
                   {/* Strike label (CENTER) */}
-                  <div className="w-[70px] text-center shrink-0">
+                  <div className="w-[70px] text-center shrink-0 relative z-[1]">
                     <span className={`text-xs font-mono ${w.isATM ? 'text-blue-400 font-bold' : isMaxPain ? 'text-amber-400 font-bold' : 'text-zinc-300'}`}>
                       {w.strike}
                     </span>
@@ -532,16 +630,24 @@ export default function OIWallsTab() {
                     {isMaxPain && !w.isATM && (
                       <div className="text-[9px] text-amber-400/60 font-medium">MP</div>
                     )}
+                    {/* ITM labels */}
+                    {w.isCeITM && !w.isATM && (
+                      <div className="text-[8px] text-emerald-500/40 leading-none">ITM</div>
+                    )}
+                    {w.isPeITM && !w.isATM && (
+                      <div className="text-[8px] text-red-500/40 leading-none">ITM</div>
+                    )}
                   </div>
 
-                  {/* CE OI bar (extends RIGHT from center) */}
-                  <div className="flex-1 flex items-center pl-2">
+                  {/* PE OI bar (extends RIGHT from center) — 4-color */}
+                  <div className="flex-1 flex items-center pl-2 relative z-[1]">
                     <div
-                      className="h-5 bg-red-500/40 rounded-l-sm"
-                      style={{ width: `${Math.max(w.cePct, 0)}%` }}
+                      className={`h-5 ${w.peColor.bg} rounded-l-sm`}
+                      style={{ width: `${Math.max(w.pePct, 0)}%` }}
+                      title={w.peColor.label}
                     />
-                    <span className="text-[10px] text-red-400/80 relative z-10 ml-1.5">
-                      {w.ceOI > 0 ? formatLakhs(w.ceOI) : ''}
+                    <span className={`text-[10px] relative z-10 ml-1.5 ${w.peColor.text}`} title={w.peColor.label}>
+                      {w.peOI > 0 ? formatLakhs(w.peOI) : ''}
                     </span>
                   </div>
                 </div>
@@ -646,7 +752,7 @@ export default function OIWallsTab() {
           {/* Total OI Card */}
           <div className="bg-card border border-border/30 rounded-lg p-4">
             <div className="flex items-center gap-1.5 mb-2">
-              <ShieldAlert className="w-3.5 h-3.5 text-zinc-500" />
+              <Activity className="w-3.5 h-3.5 text-zinc-500" />
               <span className="text-[10px] text-zinc-500 uppercase tracking-wider">Total OI</span>
             </div>
             <div className="flex items-baseline gap-1.5">
