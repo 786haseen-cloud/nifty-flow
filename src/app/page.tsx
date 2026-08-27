@@ -276,11 +276,11 @@ export default function DashboardPage() {
           </TabsContent>
 
           {/* OPTIONS FLOW = THE MAIN THING — Cash → Index Options → Stock Options stacked */}
-          <TabsContent value="options-flow" forceMount className="mt-0" style={{ display: activeTab !== 'options-flow' ? 'none' : undefined }}>
+          <TabsContent value="options-flow" className="mt-0">
             <OptionsFlowTab />
           </TabsContent>
 
-          <TabsContent value="strike-flow" forceMount className="mt-0" style={{ display: activeTab !== 'strike-flow' ? 'none' : undefined }}>
+          <TabsContent value="strike-flow" className="mt-0">
             <StrikeFlowMap />
           </TabsContent>
 

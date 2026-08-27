@@ -148,6 +148,27 @@ interface HistoricalPoint {
   peWrite: number;
 }
 
+// localStorage key includes today's date so it auto-resets each trading day
+function getHistoryKey(symbol: string): string {
+  const today = new Date().toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata' });
+  return `strikeflow_${symbol}_${today}`;
+}
+
+function loadHistoryFromStorage(symbol: string): FlowTotals[] {
+  if (typeof window === 'undefined') return [];
+  try {
+    const raw = localStorage.getItem(getHistoryKey(symbol));
+    return raw ? JSON.parse(raw) : [];
+  } catch { return []; }
+}
+
+function saveHistoryToStorage(symbol: string, data: FlowTotals[]): void {
+  if (typeof window === 'undefined') return;
+  try {
+    localStorage.setItem(getHistoryKey(symbol), JSON.stringify(data.slice(-300)));
+  } catch {}
+}
+
 export default function StrikeFlowMap() {
   const [symbol, setSymbol] = useState('NIFTY');
   const [prevSnapshot, setPrevSnapshot] = useState<StrikeFlowSnapshot | null>(null);
@@ -156,12 +177,13 @@ export default function StrikeFlowMap() {
   const [error, setError] = useState<string | null>(null);
   const [isLive, setIsLive] = useState(false);
   const [lastUpdate, setLastUpdate] = useState<string>('');
-  const [flowHistory, setFlowHistory] = useState<FlowTotals[]>([]);
+  const [flowHistory, setFlowHistory] = useState<FlowTotals[]>(() => loadHistoryFromStorage('NIFTY'));
   const [historicalData, setHistoricalData] = useState<HistoricalPoint[]>([]);
   const [backfillLoading, setBackfillLoading] = useState(false);
   const [backfillDone, setBackfillDone] = useState(false);
   const historicalCacheRef = useRef<Record<string, HistoricalPoint[]> | null>(null);
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
+  const lastSymbolRef = useRef('NIFTY');
 
   const fetchData = useCallback(async () => {
     setLoading(true);
@@ -198,8 +220,10 @@ export default function StrikeFlowMap() {
             const now = new Date().toLocaleTimeString('en-IN', {
               hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
             });
-            const updated = [...h, { ...totals, netFlow: totals.netFlow, time: now }];
-            return updated.slice(-120); // keep last 120 intervals (~1 hour at 30s)
+            const entry = { ...totals, netFlow: totals.netFlow, time: now };
+            const updated = [...h, entry].slice(-300);
+            saveHistoryToStorage(symbol, updated);
+            return updated;
           });
         }
         return currSnapshot;
@@ -211,6 +235,15 @@ export default function StrikeFlowMap() {
       setLoading(false);
     }
   }, [symbol, currSnapshot]);
+
+  // When symbol changes, restore that symbol's history from localStorage
+  useEffect(() => {
+    if (symbol === lastSymbolRef.current) return;
+    lastSymbolRef.current = symbol;
+    setFlowHistory(loadHistoryFromStorage(symbol));
+    setPrevSnapshot(null);
+    setCurrSnapshot(null);
+  }, [symbol]);
 
   // ── Historical Backfill (once per session) ──
   useEffect(() => {
