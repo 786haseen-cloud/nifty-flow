@@ -42,6 +42,7 @@ import {
   getCandles,
   INDEX_SPECS,
   STOCK_SPECS,
+  KITE_FNO_ALT_NAMES,
   type KiteHistoricalCandle,
   type KiteQuote,
 } from '@/lib/kite-api';
@@ -211,12 +212,18 @@ async function fetchHistoricalFlow(): Promise<HistoricalFlowResponse> {
     const isIndex = spec.instrumentType === 'OPTIDX';
     const optExchange = isIndex ? (spec.symbol === 'SENSEX' ? 'BFO' : 'NFO') : 'NFO';
 
-    // Find option instruments for this symbol
+    // CRITICAL FIX: Use KITE_FNO_ALT_NAMES for index symbols to match Kite's
+    // actual CSV names (e.g. 'NIFTY BANK' for BANKNIFTY, 'NIFTY FIN SERVICE' for FINNIFTY).
+    const optAltNames = isIndex
+      ? (KITE_FNO_ALT_NAMES[spec.symbol] || [spec.symbol])
+      : [spec.symbol.toUpperCase()];
     const opts = allInstruments.filter(i =>
       i.exchange === optExchange &&
       i.instrumentType === spec.instrumentType &&
-      (i.name.toUpperCase().includes(spec.symbol.toUpperCase()) ||
-        i.tradingSymbol.toUpperCase().includes(spec.symbol.toUpperCase()))
+      optAltNames.some(n =>
+        i.name.toUpperCase().includes(n.toUpperCase()) ||
+        i.tradingSymbol.toUpperCase().includes(n.toUpperCase())
+      )
     );
 
     if (opts.length === 0) continue;

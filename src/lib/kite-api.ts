@@ -202,7 +202,10 @@ export async function getInstruments(exchange?: string, forceRefresh?: boolean):
     //   - Otherwise (RELIANCE, TCS, HDFCBANK, ...) → OPTSTK / FUTSTK
     // The set below is checked at parse time (cheap Set.has lookup).
     const KNOWN_FNO_INDICES = new Set([
-      'NIFTY', 'BANKNIFTY', 'FINNIFTY', 'SENSEX', 'BANKEX',
+      'NIFTY', 'NIFTY 50',
+      'BANKNIFTY', 'NIFTY BANK',
+      'FINNIFTY', 'NIFTY FIN SERVICE',
+      'SENSEX', 'BANKEX',
       'MIDCPNIFTY', 'NIFTY MID SELECT', 'NIFTY PSE',
     ]);
     const normalizeInstrumentType = (rawType: string, segment: string, name: string): string => {
@@ -600,6 +603,17 @@ export const KITE_INDEX_SYMBOLS: Record<string, string> = {};
 for (const [k, v] of Object.entries(KITE_INDEX_INSTRUMENTS)) {
   KITE_INDEX_SYMBOLS[k] = v.symbol;
 }
+
+// Shared alt-name mapping for Kite index name mismatches.
+// Kite's CSV uses different names than our short symbols:
+//   NIFTY 50, NIFTY BANK, NIFTY FIN SERVICE vs NIFTY, BANKNIFTY, FINNIFTY.
+// Use this in ALL instrument lookups (cash + options + futures).
+export const KITE_FNO_ALT_NAMES: Record<string, string[]> = {
+  'NIFTY':     ['NIFTY 50', 'NIFTY'],
+  'BANKNIFTY': ['NIFTY BANK', 'BANKNIFTY'],
+  'FINNIFTY':  ['NIFTY FIN SERVICE', 'FINNIFTY'],
+  'SENSEX':    ['SENSEX'],
+};
 
 // Nifty 50 instrument token for historical candles
 export const NIFTY50_TOKEN = 256265;

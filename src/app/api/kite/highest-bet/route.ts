@@ -16,6 +16,7 @@ import {
   getQuotes,
   INDEX_SPECS,
   STOCK_SPECS,
+  KITE_FNO_ALT_NAMES,
   type KiteQuote,
   type StrikeFlowData,
 } from '@/lib/kite-api';
@@ -253,23 +254,31 @@ async function fetchLiveData(): Promise<HighestBetResponse> {
     // Stock name mapping: Kite uses underlying name for F&O (e.g. 'LARSEN & TOUBRO'
     // for LT options, 'MARUTI SUZUKI INDIA' for MARUTI options). We map our short
     // symbol to the possible Kite names/tradingSymbol prefixes.
+    // Stock alt-name mapping for F&O underlying name mismatches
     const KITE_STOCK_NAMES: Record<string, string[]> = {
       'LT': ['LARSEN', 'LT'],
       'MARUTI': ['MARUTI SUZUKI', 'MARUTI'],
       'HINDUNILVR': ['HINDUSTAN UNILEVER', 'HINDUNILVR'],
       'TATAMOTORS': ['TATA MOTORS', 'TMCV', 'TMPV'],
     };
-    const stockAltNames = KITE_STOCK_NAMES[prep.symbol.toUpperCase()] || [prep.symbol.toUpperCase()];
+    // CRITICAL FIX: For index symbols, use KITE_FNO_ALT_NAMES which includes
+    // Kite's actual CSV names (e.g. 'NIFTY BANK' for BANKNIFTY options).
+    // Without this, BANKNIFTY/FINNIFTY option lookups find zero instruments.
+    const altNames = prep.isIndex
+      ? (KITE_FNO_ALT_NAMES[prep.symbol] || [prep.symbol])
+      : (KITE_STOCK_NAMES[prep.symbol.toUpperCase()] || [prep.symbol.toUpperCase()]);
     const opts = allInstruments.filter(i =>
       i.exchange === prep.optExchange &&
       i.instrumentType === prep.instrumentType &&
-      stockAltNames.some(n =>
+      altNames.some(n =>
         i.name.toUpperCase().includes(n.toUpperCase()) ||
         i.tradingSymbol.toUpperCase().includes(n.toUpperCase())
       )
     );
-
-    if (opts.length === 0) continue;
+    if (opts.length === 0) {
+      console.warn(`[HighestBet] No options found for ${prep.symbol} (exchange=${prep.optExchange}, type=${prep.instrumentType}, altNames=[${altNames.join(',')}])`);
+      continue;
+    }
 
     const lotSize = opts[0].lotSize || 1;
 
