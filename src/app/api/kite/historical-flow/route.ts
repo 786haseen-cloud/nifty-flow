@@ -152,18 +152,28 @@ async function fetchHistoricalFlow(): Promise<HistoricalFlowResponse> {
 
   // Step 1: Get spot prices for all symbols to determine ATM
   const cashTokenList: string[] = [];
+  // Kite uses different names for index cash instruments vs our short symbols.
+  // e.g. FINNIFTY's cash instrument is named "NIFTY FIN SERVICE".
+  const KITE_INDEX_NAMES: Record<string, string[]> = {
+    'NIFTY': ['NIFTY 50', 'NIFTY'],
+    'BANKNIFTY': ['NIFTY BANK', 'BANKNIFTY'],
+    'FINNIFTY': ['NIFTY FIN SERVICE', 'FINNIFTY'],
+    'SENSEX': ['SENSEX'],
+  };
+
   const specCashTokens: Array<{ spec: typeof allSpecs[0]; cashToken: number }> = [];
 
   for (const spec of allSpecs) {
     const isIndex = spec.instrumentType === 'OPTIDX';
     const cashExchange = spec.symbol === 'SENSEX' ? 'BSE' : 'NSE';
     const cashType = isIndex ? 'INDEX' : 'EQ';
+    const altNames = KITE_INDEX_NAMES[spec.symbol] || [spec.symbol];
 
     const cashInst = allInstruments.find(i =>
       i.exchange === cashExchange &&
       i.instrumentType === cashType &&
-      (i.tradingSymbol.toUpperCase() === spec.symbol.toUpperCase() ||
-        (isIndex && i.name.toUpperCase().includes(spec.symbol.toUpperCase())))
+      (altNames.some(n => i.tradingSymbol.toUpperCase() === n.toUpperCase()) ||
+        altNames.some(n => i.name.toUpperCase().includes(n.toUpperCase())))
     );
 
     if (cashInst) {
