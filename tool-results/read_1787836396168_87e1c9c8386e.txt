@@ -1,0 +1,568 @@
+     1→     1→'use client';
+     2→     2→
+     3→     3→/**
+     4→     4→ * Trend Analysis Tab — Price + Cash + Options Flow visualization.
+     5→     5→ *
+     6→     6→ * ARCHITECTURE
+     7→     7→ * ------------
+     8→     8→ * This component is a PURE VIEW — it contains no state and no polling logic.
+     9→     9→ * All state is held in the global `useTrendStore` Zustand store, which:
+    10→    10→ *   - Persists to localStorage (survives page reload + browser restart)
+    11→    11→ *   - Survives tab switches (because it lives outside the component tree)
+    12→    12→ *   - Is updated by a singleton poller started once at app boot
+    13→    13→ *
+    14→    14→ * This fixes the original bug where switching away from the Trends tab
+    15→    15→ * would unmount the component and destroy all accumulated chart data.
+    16→    16→ *
+    17→    17→ * To add new visualizations: read additional fields from the store, or
+    18→    18→ * extend the store's `pollOnce()` action to fetch new data.
+    19→    19→ */
+    20→    20→
+    21→    21→import { Badge } from '@/components/ui/badge';
+    22→    22→import {
+    23→    23→  LineChart, Line, AreaChart, Area, BarChart, Bar,
+    24→    24→  XAxis, YAxis, CartesianGrid, Tooltip, Legend, ReferenceLine,
+    25→    25→  ResponsiveContainer, ComposedChart,
+    26→    26→} from 'recharts';
+    27→    27→import { TrendingUp, TrendingDown, ArrowUpRight, ArrowDownRight, Activity, Wallet } from 'lucide-react';
+    28→    28→import { useTrendStore } from '@/lib/trend-store';
+    29→    29→import {
+    30→    30→  IDX_COLORS,
+    31→    31→  IDX_NAMES,
+    32→    32→  INDEX_SYMBOLS,
+    33→    33→  type NiftyCandle,
+    34→    34→  type StockCashFlow,
+    35→    35→} from '@/lib/trend-types';
+    36→    36→
+    37→    37→// ─── Custom Tooltips ───
+    38→    38→
+    39→    39→function NiftyTooltip({ active, payload, label }: any) {
+    40→    40→  if (!active || !payload?.length) return null;
+    41→    41→  const d = payload[0]?.payload as NiftyCandle;
+    42→    42→  return (
+    43→    43→    <div className="bg-card border border-border rounded-lg p-2 shadow-xl text-xs">
+    44→    44→      <div className="font-mono text-muted-foreground mb-1">{label}</div>
+    45→    45→      <div className="text-emerald-400 font-semibold">Close: {d?.close?.toLocaleString('en-IN')}</div>
+    46→    46→      {d?.high ? (
+    47→    47→        <div className="text-muted-foreground">
+    48→    48→          H: {d.high.toLocaleString('en-IN')} L: {d.low.toLocaleString('en-IN')}
+    49→    49→        </div>
+    50→    50→      ) : null}
+    51→    51→      {d?.volume ? (
+    52→    52→        <div className="text-muted-foreground">Vol: {(d.volume / 1000000).toFixed(1)}M</div>
+    53→    53→      ) : null}
+    54→    54→    </div>
+    55→    55→  );
+    56→    56→}
+    57→    57→
+    58→    58→function CashFlowTrendTooltip({ active, payload, label }: any) {
+    59→    59→  if (!active || !payload?.length) return null;
+    60→    60→  const d = payload[0]?.payload;
+    61→    61→  return (
+    62→    62→    <div className="bg-card border border-border rounded-lg p-2 shadow-xl text-xs">
+    63→    63→      <div className="font-mono text-muted-foreground mb-1">{label}</div>
+    64→    64→      <div className="text-emerald-400">NSE Cum: {d?.nse?.toFixed(1)} Cr</div>
+    65→    65→      <div className="text-sky-400">BSE Cum: {d?.bse?.toFixed(1)} Cr</div>
+    66→    66→      <div className={d?.net >= 0 ? 'text-amber-400 font-semibold' : 'text-red-400 font-semibold'}>
+    67→    67→        Net Cum: {d?.net?.toFixed(1)} Cr
+    68→    68→      </div>
+    69→    69→      <div className="text-muted-foreground mt-1">
+    70→    70→        This 15s:{' '}
+    71→    71→        <span className={d?.interval >= 0 ? 'text-emerald-300' : 'text-red-300'}>
+    72→    72→          {d?.interval >= 0 ? '+' : ''}{d?.interval?.toFixed(1)} Cr
+    73→    73→        </span>
+    74→    74→      </div>
+    75→    75→    </div>
+    76→    76→  );
+    77→    77→}
+    78→    78→
+    79→    79→function FlowTooltip({ active, payload, label }: any) {
+    80→    80→  if (!active || !payload?.length) return null;
+    81→    81→  return (
+    82→    82→    <div className="bg-card border border-border rounded-lg p-2 shadow-xl text-xs">
+    83→    83→      <div className="font-mono text-muted-foreground mb-1">{label}</div>
+    84→    84→      {payload.map((p: any) => (
+    85→    85→        <div key={p.dataKey} style={{ color: p.color }} className="flex items-center gap-1">
+    86→    86→          <span className="inline-block w-2 h-2 rounded-full" style={{ backgroundColor: p.color }} />
+    87→    87→          {p.dataKey}: {typeof p.value === 'number' ? p.value.toFixed(1) : p.value} Cr
+    88→    88→        </div>
+    89→    89→      ))}
+    90→    90→    </div>
+    91→    91→  );
+    92→    92→}
+    93→    93→
+    94→    94→function CashTooltip({ active, payload, label }: any) {
+    95→    95→  if (!active || !payload?.length) return null;
+    96→    96→  const d = payload[0]?.payload as StockCashFlow;
+    97→    97→  if (!d) return null;
+    98→    98→  return (
+    99→    99→    <div className="bg-card border border-border rounded-lg p-2 shadow-xl text-xs">
+   100→   100→      <div className="font-semibold text-foreground mb-1">{d.symbol}</div>
+   101→   101→      <div className="text-muted-foreground">{d.name}</div>
+   102→   102→      <div className="mt-1 text-emerald-400">NSE: {(d.nseCashFlow / 10000000).toFixed(1)} Cr</div>
+   103→   103→      <div className="text-sky-400">BSE: {(d.bseCashFlow / 10000000).toFixed(1)} Cr</div>
+   104→   104→      <div className={d.combinedFlow >= 0 ? 'text-emerald-300 font-semibold mt-1' : 'text-red-400 font-semibold mt-1'}>
+   105→   105→        Net: {(d.combinedFlow / 10000000).toFixed(1)} Cr
+   106→   106→      </div>
+   107→   107→      <div className="text-muted-foreground">Wt: {d.niftyWeight}%</div>
+   108→   108→    </div>
+   109→   109→  );
+   110→   110→}
+   111→   111→
+   112→   112→// ─── Main Component ───
+   113→   113→
+   114→   114→export default function TrendAnalysisTab() {
+   115→   115→  // Read everything from the global store — no local state, no polling.
+   116→   116→  // The store is updated by a singleton poller started at app boot.
+   117→   117→  const niftyCandles = useTrendStore((s) => s.niftyCandles);
+   118→   118→  const stockCashFlow = useTrendStore((s) => s.stockCashFlow);
+   119→   119→  const trendMode = useTrendStore((s) => s.trendMode);
+   120→   120→  const cashFlowTrend = useTrendStore((s) => s.cashFlowTrend);
+   121→   121→  const flowTrend = useTrendStore((s) => s.flowTrend);
+   122→   122→  const cumulativeFlow = useTrendStore((s) => s.cumulativeFlow);
+   123→   123→  const currentIdxFlows = useTrendStore((s) => s.currentIdxFlows);
+   124→   124→  const currentStockFlow = useTrendStore((s) => s.currentStockFlow);
+   125→   125→  const currentIntervalCashFlow = useTrendStore((s) => s.currentIntervalCashFlow);
+   126→   126→  const prevStockTotals = useTrendStore((s) => s.prevStockTotals);
+   127→   127→  const lastPollAt = useTrendStore((s) => s.lastPollAt);
+   128→   128→
+   129→   129→  // ─── Derived values ───
+   130→   130→
+   131→   131→  const niftyCurrentPrice = niftyCandles.length > 0 ? niftyCandles[niftyCandles.length - 1].close : 0;
+   132→   132→  const niftyOpenPrice = niftyCandles.length > 0 ? niftyCandles[0].close : 0;
+   133→   133→  const niftyChange = niftyOpenPrice > 0 ? niftyCurrentPrice - niftyOpenPrice : 0;
+   134→   134→  const niftyChangePct = niftyOpenPrice > 0 ? (niftyChange / niftyOpenPrice) * 100 : 0;
+   135→   135→
+   136→   136→  // Live cash flow totals — straight from the latest snapshot (these are
+   137→   137→  // cumulative-since-market-open values from the API, no client accumulation)
+   138→   138→  const totalNseFlow = stockCashFlow.reduce((s, v) => s + v.nseCashFlow, 0);
+   139→   139→  const totalBseFlow = stockCashFlow.reduce((s, v) => s + v.bseCashFlow, 0);
+   140→   140→  const totalCombinedFlow = totalNseFlow + totalBseFlow;
+   141→   141→  const totalWeightedFlow = stockCashFlow.reduce((s, v) => s + v.weightedFlow, 0);
+   142→   142→
+   143→   143→  // Cumulative NSE/BSE for header card — comes from the trend's last point
+   144→   144→  // (which IS the cumulative-since-market-open value, not a client-accumulated delta)
+   145→   145→  const lastCashPoint = cashFlowTrend.length > 0 ? cashFlowTrend[cashFlowTrend.length - 1] : null;
+   146→   146→  const cumNseCr = lastCashPoint?.nse ?? 0;
+   147→   147→  const cumBseCr = lastCashPoint?.bse ?? 0;
+   148→   148→  const cumNetCr = lastCashPoint?.net ?? 0;
+   149→   149→
+   150→   150→  // Last poll timestamp display
+   151→   151→  const lastPollStr = lastPollAt > 0
+   152→   152→    ? new Date(lastPollAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })
+   153→   153→    : '—';
+   154→   154→
+   155→   155→  // ─── Format helpers ───
+   156→   156→
+   157→   157→  const fmtCr = (v: number) => {
+   158→   158→    const cr = v / 10000000;
+   159→   159→    if (Math.abs(cr) >= 100) return `${cr.toFixed(0)}`;
+   160→   160→    if (Math.abs(cr) >= 1) return `${cr.toFixed(1)}`;
+   161→   161→    return `${cr.toFixed(2)}`;
+   162→   162→  };
+   163→   163→
+   164→   164→  // ─── Render ───
+   165→   165→
+   166→   166→  return (
+   167→   167→    <div className="space-y-4">
+   168→   168→      {/* Demo mode warning banner — shown prominently when user has no/expired creds */}
+   169→   169→      {trendMode === 'demo' && (
+   170→   170→        <div className="rounded-lg border border-orange-500/40 bg-orange-500/10 p-3 text-xs text-orange-300">
+   171→   171→          <strong className="font-semibold">⚠ Demo Data Active</strong> — Showing simulated prices (e.g. Nifty ~24,350).
+   172→   172→          Real market data requires a valid Kite access token. Open the <strong>Settings</strong> tab → paste your
+   173→   173→          <strong> request_token</strong> → click <strong>Generate Access Token</strong>. The token refreshes daily at midnight IST.
+   174→   174→        </div>
+   175→   175→      )}
+   176→   176→
+   177→   177→      {/* Header with mode badge + summary cards */}
+   178→   178→      <div className="flex items-center justify-between flex-wrap gap-2">
+   179→   179→        <div className="flex items-center gap-2">
+   180→   180→          <Badge variant="outline" className={trendMode === 'live' ? 'border-emerald-500/40 text-emerald-300' : 'border-orange-500/40 text-orange-300'}>
+   181→   181→            {trendMode === 'live' ? 'LIVE' : trendMode === 'error' ? 'Error' : 'Demo'}
+   182→   182→          </Badge>
+   183→   183→          <span className="text-xs text-muted-foreground">Trend Analysis — Price + Cash + Options Flow</span>
+   184→   184→          <span className="text-[10px] text-muted-foreground">Persistent across tab switches</span>
+   185→   185→        </div>
+   186→   186→        <div className="flex items-center gap-3 text-xs">
+   187→   187→          <span className="text-muted-foreground">Last poll: {lastPollStr}</span>
+   188→   188→          <span className="text-muted-foreground">|</span>
+   189→   189→          <span className="text-muted-foreground">Cash pts: {cashFlowTrend.length}</span>
+   190→   190→          <span className="text-muted-foreground">|</span>
+   191→   191→          <span className="text-muted-foreground">Flow pts: {flowTrend.length}</span>
+   192→   192→        </div>
+   193→   193→      </div>
+   194→   194→
+   195→   195→      {/* Section 1: Nifty 50 Spot Price + Cash Flow Trend (stacked) */}
+   196→   196→      <div className="rounded-xl border border-border/50 bg-card/50 p-4">
+   197→   197→        <div className="flex items-center justify-between mb-3">
+   198→   198→          <div className="flex items-center gap-2">
+   199→   199→            <Activity className="h-4 w-4 text-emerald-400" />
+   200→   200→            <h3 className="text-sm font-semibold">Nifty 50 — Intraday Price Trend</h3>
+   201→   201→          </div>
+   202→   202→          <div className="flex items-center gap-3 text-xs">
+   203→   203→            {niftyCurrentPrice > 0 && (
+   204→   204→              <>
+   205→   205→                <span className="font-mono font-semibold text-emerald-400">
+   206→   206→                  {niftyCurrentPrice.toLocaleString('en-IN')}
+   207→   207→                </span>
+   208→   208→                <span className={`flex items-center gap-0.5 font-mono ${niftyChange >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+   209→   209→                  {niftyChange >= 0 ? <ArrowUpRight className="h-3 w-3" /> : <ArrowDownRight className="h-3 w-3" />}
+   210→   210→                  {niftyChange >= 0 ? '+' : ''}{niftyChange.toFixed(1)} ({niftyChangePct >= 0 ? '+' : ''}{niftyChangePct.toFixed(2)}%)
+   211→   211→                </span>
+   212→   212→              </>
+   213→   213→            )}
+   214→   214→          </div>
+   215→   215→        </div>
+   216→   216→        <div className="h-[200px]">
+   217→   217→          {niftyCandles.length > 0 ? (
+   218→   218→            <ResponsiveContainer width="100%" height="100%">
+   219→   219→              <ComposedChart data={niftyCandles} margin={{ top: 5, right: 10, left: 10, bottom: 0 }}>
+   220→   220→                <defs>
+   221→   221→                  <linearGradient id="niftyGrad" x1="0" y1="0" x2="0" y2="1">
+   222→   222→                    <stop offset="0%" stopColor="#10b981" stopOpacity={0.3} />
+   223→   223→                    <stop offset="100%" stopColor="#10b981" stopOpacity={0.02} />
+   224→   224→                  </linearGradient>
+   225→   225→                </defs>
+   226→   226→                <CartesianGrid strokeDasharray="3 3" stroke="#ffffff10" />
+   227→   227→                <XAxis
+   228→   228→                  dataKey="time"
+   229→   229→                  tick={{ fill: '#a1a1aa', fontSize: 10 }}
+   230→   230→                  interval={Math.max(0, Math.floor(niftyCandles.length / 8) - 1)}
+   231→   231→                />
+   232→   232→                <YAxis
+   233→   233→                  domain={['auto', 'auto']}
+   234→   234→                  tick={{ fill: '#a1a1aa', fontSize: 10 }}
+   235→   235→                  tickFormatter={(v: number) => (v / 1000).toFixed(1) + 'K'}
+   236→   236→                  width={55}
+   237→   237→                />
+   238→   238→                <Tooltip content={<NiftyTooltip />} />
+   239→   239→                {niftyOpenPrice > 0 && (
+   240→   240→                  <ReferenceLine y={niftyOpenPrice} stroke="#f59e0b" strokeDasharray="4 4" strokeOpacity={0.5} />
+   241→   241→                )}
+   242→   242→                <Area
+   243→   243→                  type="monotone"
+   244→   244→                  dataKey="close"
+   245→   245→                  stroke="#10b981"
+   246→   246→                  strokeWidth={2}
+   247→   247→                  fill="url(#niftyGrad)"
+   248→   248→                  dot={false}
+   249→   249→                  activeDot={{ r: 4, fill: '#10b981', stroke: '#fff', strokeWidth: 2 }}
+   250→   250→                />
+   251→   251→              </ComposedChart>
+   252→   252→            </ResponsiveContainer>
+   253→   253→          ) : (
+   254→   254→            <div className="h-full flex items-center justify-center text-muted-foreground text-xs">
+   255→   255→              Waiting for candle data...
+   256→   256→            </div>
+   257→   257→          )}
+   258→   258→        </div>
+   259→   259→
+   260→   260→        {/* Net Cash Flow Trend — directly below Nifty price */}
+   261→   261→        <div className="mt-1 pt-3 border-t border-border/30">
+   262→   262→          <div className="flex items-center justify-between mb-2">
+   263→   263→            <div className="flex items-center gap-2">
+   264→   264→              <Wallet className="h-3.5 w-3.5 text-sky-400" />
+   265→   265→              <h4 className="text-xs font-semibold">Net Cash Flow — 15 Stocks (NSE + BSE, Cumulative since open)</h4>
+   266→   266→            </div>
+   267→   267→            <div className="flex items-center gap-3 text-[10px]">
+   268→   268→              <div className="flex items-center gap-1">
+   269→   269→                <span className="inline-block w-2 h-2 rounded-full bg-emerald-500" />
+   270→   270→                <span className="text-muted-foreground">NSE: {cumNseCr.toFixed(1)} Cr</span>
+   271→   271→              </div>
+   272→   272→              <div className="flex items-center gap-1">
+   273→   273→                <span className="inline-block w-2 h-2 rounded-full bg-sky-500" />
+   274→   274→                <span className="text-muted-foreground">BSE: {cumBseCr.toFixed(1)} Cr</span>
+   275→   275→              </div>
+   276→   276→              <div className={`font-mono font-semibold ${cumNetCr >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+   277→   277→                Net: {cumNetCr.toFixed(1)} Cr
+   278→   278→              </div>
+   279→   279→              <span className={`font-mono ${currentIntervalCashFlow >= 0 ? 'text-emerald-300' : 'text-red-300'}`}>
+   280→   280→                15s: {currentIntervalCashFlow >= 0 ? '+' : ''}{fmtCr(currentIntervalCashFlow)} Cr
+   281→   281→              </span>
+   282→   282→            </div>
+   283→   283→          </div>
+   284→   284→          <div className="h-[130px]">
+   285→   285→            {cashFlowTrend.length > 1 ? (
+   286→   286→              <ResponsiveContainer width="100%" height="100%">
+   287→   287→                <ComposedChart data={cashFlowTrend} margin={{ top: 5, right: 10, left: 10, bottom: 0 }}>
+   288→   288→                  <defs>
+   289→   289→                    <linearGradient id="cashNetGrad" x1="0" y1="0" x2="0" y2="1">
+   290→   290→                      <stop offset="0%" stopColor={cumNetCr >= 0 ? '#10b981' : '#ef4444'} stopOpacity={0.35} />
+   291→   291→                      <stop offset="100%" stopColor={cumNetCr >= 0 ? '#10b981' : '#ef4444'} stopOpacity={0.02} />
+   292→   292→                    </linearGradient>
+   293→   293→                  </defs>
+   294→   294→                  <CartesianGrid strokeDasharray="3 3" stroke="#ffffff08" />
+   295→   295→                  <XAxis
+   296→   296→                    dataKey="time"
+   297→   297→                    tick={{ fill: '#a1a1aa', fontSize: 9 }}
+   298→   298→                    interval={Math.max(0, Math.floor(cashFlowTrend.length / 8) - 1)}
+   299→   299→                  />
+   300→   300→                  <YAxis
+   301→   301→                    tick={{ fill: '#a1a1aa', fontSize: 9 }}
+   302→   302→                    tickFormatter={(v: number) => v.toFixed(0)}
+   303→   303→                    width={40}
+   304→   304→                  />
+   305→   305→                  <Tooltip content={<CashFlowTrendTooltip />} />
+   306→   306→                  <ReferenceLine y={0} stroke="#ffffff30" />
+   307→   307→                  {/* NSE cumulative line */}
+   308→   308→                  <Line type="monotone" dataKey="nse" stroke="#22c55e" strokeWidth={1.2} dot={false} strokeOpacity={0.7} />
+   309→   309→                  {/* BSE cumulative line */}
+   310→   310→                  <Line type="monotone" dataKey="bse" stroke="#0ea5e9" strokeWidth={1.2} dot={false} strokeOpacity={0.7} />
+   311→   311→                  {/* Net combined area */}
+   312→   312→                  <Area
+   313→   313→                    type="monotone"
+   314→   314→                    dataKey="net"
+   315→   315→                    stroke="#f59e0b"
+   316→   316→                    strokeWidth={2}
+   317→   317→                    fill="url(#cashNetGrad)"
+   318→   318→                    dot={false}
+   319→   319→                    activeDot={{ r: 3, fill: '#f59e0b', stroke: '#fff', strokeWidth: 1.5 }}
+   320→   320→                  />
+   321→   321→                </ComposedChart>
+   322→   322→              </ResponsiveContainer>
+   323→   323→            ) : (
+   324→   324→              <div className="h-full flex items-center justify-center text-muted-foreground text-xs">
+   325→   325→                Accumulating cash flow trend... (need 2+ polls)
+   326→   326→              </div>
+   327→   327→            )}
+   328→   328→          </div>
+   329→   329→        </div>
+   330→   330→      </div>
+   331→   331→
+   332→   332→      {/* Index Options Flow + Current Flow Cards */}
+   333→   333→      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+   334→   334→        {/* Index Options Money Flow Trend */}
+   335→   335→        <div className="rounded-xl border border-border/50 bg-card/50 p-4">
+   336→   336→          <div className="flex items-center justify-between mb-3">
+   337→   337→            <div className="flex items-center gap-2">
+   338→   338→              <TrendingUp className="h-4 w-4 text-purple-400" />
+   339→   339→              <h3 className="text-sm font-semibold">Index Options Money Flow</h3>
+   340→   340→            </div>
+   341→   341→            <span className="text-[10px] text-muted-foreground">Cumulative Net Flow (Cr)</span>
+   342→   342→          </div>
+   343→   343→          {/* Current interval cards */}
+   344→   344→          <div className="grid grid-cols-4 gap-2 mb-3">
+   345→   345→            {INDEX_SYMBOLS.map((idx) => {
+   346→   346→              const flow = currentIdxFlows[idx] || 0;
+   347→   347→              const cum = cumulativeFlow[idx] || 0;
+   348→   348→              const c = IDX_COLORS[idx];
+   349→   349→              return (
+   350→   350→                <div key={idx} className={`${c.bg} rounded-lg p-1.5 text-center`}>
+   351→   351→                  <div className="text-[9px] text-muted-foreground">{IDX_NAMES[idx]}</div>
+   352→   352→                  <div className={`text-xs font-mono font-semibold ${flow >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+   353→   353→                    {flow >= 0 ? '+' : ''}{fmtCr(flow)}
+   354→   354→                  </div>
+   355→   355→                  <div className="text-[9px] text-muted-foreground font-mono">
+   356→   356→                    cum: {fmtCr(cum)}
+   357→   357→                  </div>
+   358→   358→                </div>
+   359→   359→              );
+   360→   360→            })}
+   361→   361→          </div>
+   362→   362→          <div className="h-[200px]">
+   363→   363→            {flowTrend.length > 1 ? (
+   364→   364→              <ResponsiveContainer width="100%" height="100%">
+   365→   365→                <LineChart data={flowTrend} margin={{ top: 5, right: 10, left: 10, bottom: 0 }}>
+   366→   366→                  <CartesianGrid strokeDasharray="3 3" stroke="#ffffff10" />
+   367→   367→                  <XAxis
+   368→   368→                    dataKey="time"
+   369→   369→                    tick={{ fill: '#a1a1aa', fontSize: 9 }}
+   370→   370→                    interval={Math.max(0, Math.floor(flowTrend.length / 6) - 1)}
+   371→   371→                  />
+   372→   372→                  <YAxis
+   373→   373→                    tick={{ fill: '#a1a1aa', fontSize: 10 }}
+   374→   374→                    tickFormatter={(v: number) => v.toFixed(0)}
+   375→   375→                    width={45}
+   376→   376→                  />
+   377→   377→                  <Tooltip content={<FlowTooltip />} />
+   378→   378→                  <ReferenceLine y={0} stroke="#ffffff30" />
+   379→   379→                  {INDEX_SYMBOLS.map((idx) => (
+   380→   380→                    <Line
+   381→   381→                      key={idx}
+   382→   382→                      type="monotone"
+   383→   383→                      dataKey={idx}
+   384→   384→                      stroke={IDX_COLORS[idx].stroke}
+   385→   385→                      strokeWidth={1.5}
+   386→   386→                      dot={false}
+   387→   387→                      activeDot={{ r: 3, strokeWidth: 0 }}
+   388→   388→                    />
+   389→   389→                  ))}
+   390→   390→                </LineChart>
+   391→   391→              </ResponsiveContainer>
+   392→   392→            ) : (
+   393→   393→              <div className="h-full flex items-center justify-center text-muted-foreground text-xs">
+   394→   394→                Accumulating options flow data... (need 2+ snapshots)
+   395→   395→              </div>
+   396→   396→            )}
+   397→   397→          </div>
+   398→   398→        </div>
+   399→   399→
+   400→   400→        {/* Stock Options Money Flow Trend */}
+   401→   401→        <div className="rounded-xl border border-border/50 bg-card/50 p-4">
+   402→   402→          <div className="flex items-center justify-between mb-3">
+   403→   403→            <div className="flex items-center gap-2">
+   404→   404→              <TrendingDown className="h-4 w-4 text-orange-400" />
+   405→   405→              <h3 className="text-sm font-semibold">Stock Options Money Flow (15 F&O Stocks)</h3>
+   406→   406→            </div>
+   407→   407→            <div className="flex items-center gap-2">
+   408→   408→              <span className={`text-xs font-mono font-semibold ${currentStockFlow >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+   409→   409→                Interval: {currentStockFlow >= 0 ? '+' : ''}{fmtCr(currentStockFlow)} Cr
+   410→   410→              </span>
+   411→   411→              <span className="text-[10px] text-muted-foreground">
+   412→   412→                Cum: {fmtCr(cumulativeFlow.stockAggregate || 0)} Cr
+   413→   413→              </span>
+   414→   414→            </div>
+   415→   415→          </div>
+   416→   416→          <div className="h-[230px]">
+   417→   417→            {flowTrend.length > 1 ? (
+   418→   418→              <ResponsiveContainer width="100%" height="100%">
+   419→   419→                <AreaChart data={flowTrend} margin={{ top: 5, right: 10, left: 10, bottom: 0 }}>
+   420→   420→                  <defs>
+   421→   421→                    <linearGradient id="stockFlowGrad" x1="0" y1="0" x2="0" y2="1">
+   422→   422→                      <stop offset="0%" stopColor="#f97316" stopOpacity={0.4} />
+   423→   423→                      <stop offset="100%" stopColor="#f97316" stopOpacity={0.02} />
+   424→   424→                    </linearGradient>
+   425→   425→                  </defs>
+   426→   426→                  <CartesianGrid strokeDasharray="3 3" stroke="#ffffff10" />
+   427→   427→                  <XAxis
+   428→   428→                    dataKey="time"
+   429→   429→                    tick={{ fill: '#a1a1aa', fontSize: 9 }}
+   430→   430→                    interval={Math.max(0, Math.floor(flowTrend.length / 6) - 1)}
+   431→   431→                  />
+   432→   432→                  <YAxis
+   433→   433→                    tick={{ fill: '#a1a1aa', fontSize: 10 }}
+   434→   434→                    tickFormatter={(v: number) => v.toFixed(0)}
+   435→   435→                    width={45}
+   436→   436→                  />
+   437→   437→                  <Tooltip content={<FlowTooltip />} />
+   438→   438→                  <ReferenceLine y={0} stroke="#ffffff30" />
+   439→   439→                  <Area
+   440→   440→                    type="monotone"
+   441→   441→                    dataKey="stockAggregate"
+   442→   442→                    stroke="#f97316"
+   443→   443→                    strokeWidth={2}
+   444→   444→                    fill="url(#stockFlowGrad)"
+   445→   445→                    dot={false}
+   446→   446→                    activeDot={{ r: 4, fill: '#f97316', stroke: '#fff', strokeWidth: 2 }}
+   447→   447→                  />
+   448→   448→                </AreaChart>
+   449→   449→              </ResponsiveContainer>
+   450→   450→            ) : (
+   451→   451→              <div className="h-full flex items-center justify-center text-muted-foreground text-xs">
+   452→   452→                Accumulating stock options flow data... (need 2+ snapshots)
+   453→   453→              </div>
+   454→   454→            )}
+   455→   455→          </div>
+   456→   456→        </div>
+   457→   457→      </div>
+   458→   458→
+   459→   459→      {/* Section 4: Dual Exchange Cash Flow */}
+   460→   460→      <div className="rounded-xl border border-border/50 bg-card/50 p-4">
+   461→   461→        <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+   462→   462→          <div className="flex items-center gap-2">
+   463→   463→            <TrendingUp className="h-4 w-4 text-sky-400" />
+   464→   464→            <h3 className="text-sm font-semibold">Dual Exchange Cash Flow — 15 F&O Stocks (NSE + BSE)</h3>
+   465→   465→          </div>
+   466→   466→          <div className="flex items-center gap-3 text-xs">
+   467→   467→            <div className="flex items-center gap-1">
+   468→   468→              <span className="inline-block w-2 h-2 rounded-full bg-emerald-500" />
+   469→   469→              <span className="text-muted-foreground">NSE: {fmtCr(totalNseFlow)} Cr</span>
+   470→   470→            </div>
+   471→   471→            <div className="flex items-center gap-1">
+   472→   472→              <span className="inline-block w-2 h-2 rounded-full bg-sky-500" />
+   473→   473→              <span className="text-muted-foreground">BSE: {fmtCr(totalBseFlow)} Cr</span>
+   474→   474→            </div>
+   475→   475→            <div className={`font-mono font-semibold ${totalCombinedFlow >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+   476→   476→              Net: {fmtCr(totalCombinedFlow)} Cr
+   477→   477→            </div>
+   478→   478→            <div className="text-muted-foreground">
+   479→   479→              Weighted: {fmtCr(totalWeightedFlow)} Cr
+   480→   480→            </div>
+   481→   481→          </div>
+   482→   482→        </div>
+   483→   483→        <div className="h-[280px]">
+   484→   484→          {stockCashFlow.length > 0 ? (
+   485→   485→            <ResponsiveContainer width="100%" height="100%">
+   486→   486→              <BarChart
+   487→   487→                data={stockCashFlow}
+   488→   488→                margin={{ top: 5, right: 10, left: 10, bottom: 60 }}
+   489→   489→                layout="vertical"
+   490→   490→              >
+   491→   491→                <CartesianGrid strokeDasharray="3 3" stroke="#ffffff10" horizontal={false} />
+   492→   492→                <XAxis
+   493→   493→                  type="number"
+   494→   494→                  tick={{ fill: '#a1a1aa', fontSize: 10 }}
+   495→   495→                  tickFormatter={(v: number) => `${(v / 10000000).toFixed(0)}Cr`}
+   496→   496→                />
+   497→   497→                <YAxis
+   498→   498→                  type="category"
+   499→   499→                  dataKey="symbol"
+   500→   500→                  tick={{ fill: '#a1a1aa', fontSize: 10 }}
+   501→   501→                  width={85}
+   502→   502→                />
+   503→   503→                <Tooltip content={<CashTooltip />} />
+   504→   504→                <ReferenceLine x={0} stroke="#ffffff30" />
+   505→   505→                <Bar dataKey="nseCashFlow" fill="#22c55e" radius={[0, 3, 3, 0]} maxBarSize={12} />
+   506→   506→                <Bar dataKey="bseCashFlow" fill="#0ea5e9" radius={[0, 3, 3, 0]} maxBarSize={12} />
+   507→   507→              </BarChart>
+   508→   508→            </ResponsiveContainer>
+   509→   509→          ) : (
+   510→   510→            <div className="h-full flex items-center justify-center text-muted-foreground text-xs">
+   511→   511→              Waiting for stock cash flow data...
+   512→   512→            </div>
+   513→   513→          )}
+   514→   514→        </div>
+   515→   515→        {/* Cash flow summary table */}
+   516→   516→        {stockCashFlow.length > 0 && (
+   517→   517→          <div className="mt-3 overflow-x-auto">
+   518→   518→            <table className="w-full text-[10px]">
+   519→   519→              <thead>
+   520→   520→                <tr className="text-muted-foreground border-b border-border/30">
+   521→   521→                  <th className="text-left py-1 pr-2">Symbol</th>
+   522→   522→                  <th className="text-right py-1 px-1">Wt%</th>
+   523→   523→                  <th className="text-right py-1 px-1">NSE LTP</th>
+   524→   524→                  <th className="text-right py-1 px-1">NSE Chg%</th>
+   525→   525→                  <th className="text-right py-1 px-1">NSE Flow</th>
+   526→   526→                  <th className="text-right py-1 px-1">BSE LTP</th>
+   527→   527→                  <th className="text-right py-1 px-1">BSE Chg%</th>
+   528→   528→                  <th className="text-right py-1 px-1">BSE Flow</th>
+   529→   529→                  <th className="text-right py-1 px-1">Combined</th>
+   530→   530→                  <th className="text-right py-1 pl-1">Weighted</th>
+   531→   531→                </tr>
+   532→   532→              </thead>
+   533→   533→              <tbody>
+   534→   534→                {stockCashFlow.map((s) => (
+   535→   535→                  <tr key={s.symbol} className="border-b border-border/10 hover:bg-muted/20">
+   536→   536→                    <td className="py-1 pr-2 font-medium">{s.symbol}</td>
+   537→   537→                    <td className="text-right py-1 px-1 text-muted-foreground">{s.niftyWeight}%</td>
+   538→   538→                    <td className="text-right py-1 px-1 font-mono">{s.nseLtp.toLocaleString('en-IN')}</td>
+   539→   539→                    <td className={`text-right py-1 px-1 font-mono ${s.nseChange >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+   540→   540→                      {s.nseChange >= 0 ? '+' : ''}{s.nseChange}%
+   541→   541→                    </td>
+   542→   542→                    <td className={`text-right py-1 px-1 font-mono ${s.nseCashFlow >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+   543→   543→                      {fmtCr(s.nseCashFlow)}
+   544→   544→                    </td>
+   545→   545→                    <td className="text-right py-1 px-1 font-mono">{s.bseLtp > 0 ? s.bseLtp.toLocaleString('en-IN') : '-'}</td>
+   546→   546→                    <td className={`text-right py-1 px-1 font-mono ${s.bseChange >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+   547→   547→                      {s.bseLtp > 0 ? `${s.bseChange >= 0 ? '+' : ''}${s.bseChange}%` : '-'}
+   548→   548→                    </td>
+   549→   549→                    <td className={`text-right py-1 px-1 font-mono ${s.bseCashFlow >= 0 ? 'text-sky-400' : 'text-red-400'}`}>
+   550→   550→                      {s.bseLtp > 0 ? fmtCr(s.bseCashFlow) : '-'}
+   551→   551→                    </td>
+   552→   552→                    <td className={`text-right py-1 px-1 font-mono font-semibold ${s.combinedFlow >= 0 ? 'text-emerald-300' : 'text-red-400'}`}>
+   553→   553→                      {fmtCr(s.combinedFlow)}
+   554→   554→                    </td>
+   555→   555→                    <td className={`text-right py-1 pl-1 font-mono ${s.weightedFlow >= 0 ? 'text-emerald-300' : 'text-red-400'}`}>
+   556→   556→                      {fmtCr(s.weightedFlow)}
+   557→   557→                    </td>
+   558→   558→                  </tr>
+   559→   559→                ))}
+   560→   560→              </tbody>
+   561→   561→            </table>
+   562→   562→          </div>
+   563→   563→        )}
+   564→   564→      </div>
+   565→   565→    </div>
+   566→   566→  );
+   567→   567→}
+   568→   568→
