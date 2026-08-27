@@ -334,16 +334,6 @@ export default function OIWallsTab() {
     return { text: 'Extreme Bullish', color: 'text-red-500' };
   }
 
-  // Spot price position (0-100%) within strike range for the dashed line
-  const spotPosition = (() => {
-    if (!data || walls.length < 2) return 50;
-    const minStrike = walls[0].strike;
-    const maxStrike = walls[walls.length - 1].strike;
-    const range = maxStrike - minStrike;
-    if (range === 0) return 50;
-    return Math.max(0, Math.min(100, ((data.spotPrice - minStrike) / range) * 100));
-  })();
-
   // ═══════════════════════════════════════════
   // PCR SPARKLINE (SVG)
   // ═══════════════════════════════════════════
@@ -494,18 +484,17 @@ export default function OIWallsTab() {
 
           {/* Column headers */}
           <div className="flex items-center text-[10px] text-zinc-600 mb-1">
-            <div className="w-[60px] text-right pr-2">PE OI</div>
-            <div className="w-[60px] text-center">Strike</div>
-            <div className="flex-1" />
-            <div className="w-[60px] text-left pl-2">CE OI</div>
+            <div className="flex-1 text-right pr-2">PE OI</div>
+            <div className="w-[70px] text-center">Strike</div>
+            <div className="flex-1 text-left pl-2">CE OI</div>
           </div>
 
-          {/* Strike rows */}
+          {/* Strike rows — symmetric layout: PE extends LEFT from center, CE extends RIGHT */}
           <div className="relative space-y-px">
-            {/* Spot price dashed line overlay */}
+            {/* Spot price dashed line overlay — positioned at 50% (center) */}
             <div
               className="absolute top-0 bottom-0 w-px bg-foreground/30 pointer-events-none z-10"
-              style={{ left: `calc(50% + ${((spotPosition - 50) / 100) * 100}%)` }}
+              style={{ left: '50%' }}
             >
               <div className="absolute -top-4 -left-[30px] text-[9px] text-foreground/50 whitespace-nowrap font-medium">
                 ▼ {formatNumber(data.spotPrice)}
@@ -521,19 +510,19 @@ export default function OIWallsTab() {
 
               return (
                 <div key={w.strike} className={`flex items-center ${rowClass}`}>
-                  {/* PE OI bar (extends left) */}
-                  <div className="w-[60px] flex justify-end pr-2 items-center">
-                    <span className="text-[10px] text-emerald-400/80 relative z-10 mr-1">
+                  {/* PE OI bar (extends LEFT from center) */}
+                  <div className="flex-1 flex justify-end items-center pr-2">
+                    <span className="text-[10px] text-emerald-400/80 relative z-10 mr-1.5">
                       {w.peOI > 0 ? formatLakhs(w.peOI) : ''}
                     </span>
                     <div
-                      className="h-5 bg-emerald-500/40 rounded-r-sm relative"
+                      className="h-5 bg-emerald-500/40 rounded-r-sm"
                       style={{ width: `${Math.max(w.pePct, 0)}%` }}
                     />
                   </div>
 
-                  {/* Strike label */}
-                  <div className="w-[60px] text-center shrink-0">
+                  {/* Strike label (CENTER) */}
+                  <div className="w-[70px] text-center shrink-0">
                     <span className={`text-xs font-mono ${w.isATM ? 'text-blue-400 font-bold' : isMaxPain ? 'text-amber-400 font-bold' : 'text-zinc-300'}`}>
                       {w.strike}
                     </span>
@@ -545,13 +534,13 @@ export default function OIWallsTab() {
                     )}
                   </div>
 
-                  {/* CE OI bar (extends right) */}
-                  <div className="flex-1 flex items-center">
+                  {/* CE OI bar (extends RIGHT from center) */}
+                  <div className="flex-1 flex items-center pl-2">
                     <div
                       className="h-5 bg-red-500/40 rounded-l-sm"
                       style={{ width: `${Math.max(w.cePct, 0)}%` }}
                     />
-                    <span className="text-[10px] text-red-400/80 relative z-10 ml-1">
+                    <span className="text-[10px] text-red-400/80 relative z-10 ml-1.5">
                       {w.ceOI > 0 ? formatLakhs(w.ceOI) : ''}
                     </span>
                   </div>
