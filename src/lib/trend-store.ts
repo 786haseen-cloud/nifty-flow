@@ -99,7 +99,10 @@ interface TrendState {
 // ─── Constants ───
 
 const POLL_INTERVAL_MS = 15000;
-const MAX_TREND_POINTS = 600;       // 2.5 hours @ 15s — keeps memory bounded
+// 9:15 → 15:40 IST = 6h25m = 385min = 1540 × 15s polls. Round up to 1600 for headroom.
+// Previously 600 (2.5h) was too small — the chart would lose its morning data
+// once the user kept the page open past ~11:45. Now it holds the full session.
+const MAX_TREND_POINTS = 1600;
 const STALE_GAP_MS = 4 * 60 * 60 * 1000;  // 4h gap = treat as new session
 
 const INITIAL_FLOW: Record<string, number> = {
@@ -378,8 +381,26 @@ export const useTrendStore = create<TrendState>()(
        *
        * Safe to call even if a previous poll is still in-flight — Zustand
        * merges updates atomically.
+       *
+       * DATE BOUNDARY (in-poll check): If the IST date has changed since the
+       * last poll (e.g. user kept the page open overnight), clear all
+       * accumulated data before appending the new poll. This guarantees the
+       * chart always shows ONLY the current trading day's data — yesterday's
+       * flow is wiped automatically the moment the new IST day begins.
        */
       pollOnce: async () => {
+        // ─── In-poll date boundary check ───
+        // If the IST date has changed since the last poll, clear the trend
+        // data so the new day starts fresh. Without this, a user who leaves
+        // the page open overnight would see yesterday's flow bleed into the
+        // new day's chart.
+        const prevDate = get().istDate;
+        const todayDate = getISTDate();
+        if (prevDate !== todayDate) {
+          console.log(`[TrendStore] Date rollover detected during poll (${prevDate} → ${todayDate}), clearing accumulated data`);
+          get().clearTrendData();
+        }
+
         // Run both fetches in parallel
         const [trendsRes, betRes] = await Promise.allSettled([
           fetch(withCreds('/api/kite/trends')).then((r) => r.json()),

@@ -32,16 +32,57 @@ import {
   INDEX_SYMBOLS,
   type NiftyCandle,
   type StockCashFlow,
+  type CashFlowTrendPoint,
+  type FlowTrendPoint,
 } from '@/lib/trend-types';
+
+// ─── Trading Session X-Axis Helpers ───
+// Charts display a fixed trading-session window 09:15 → 15:40 IST.
+// The x-axis is a numeric "minutes since midnight" axis with this fixed domain,
+// so the chart always shows the full trading session — even when only a few
+// data points have arrived (e.g. user opens at 11 AM and the morning portion
+// fills in via historical backfill, while the post-11 AM portion fills live).
+
+const SESSION_START_MIN = 9 * 60 + 15;   // 9:15 AM  = 555
+const SESSION_END_MIN   = 15 * 60 + 40;  // 3:40 PM  = 940
+
+// Hourly tick marks at 9:15, 10:00, 11:00, 12:00, 13:00, 14:00, 15:00, 15:40
+const SESSION_TICKS = [
+  SESSION_START_MIN,
+  10 * 60, 11 * 60, 12 * 60, 13 * 60, 14 * 60, 15 * 60,
+  SESSION_END_MIN,
+];
+
+/**
+ * Convert a time string ("HH:MM" or "HH:MM:SS") to minutes since midnight.
+ * Returns NaN if the string is unparseable — Recharts will skip those points.
+ */
+function timeStrToMinutes(t: string | undefined | null): number {
+  if (!t) return NaN;
+  const parts = t.split(':');
+  if (parts.length < 2) return NaN;
+  const h = parseInt(parts[0], 10);
+  const m = parseInt(parts[1], 10);
+  if (isNaN(h) || isNaN(m)) return NaN;
+  return h * 60 + m;
+}
+
+/** Format minutes-since-midnight back to "HH:MM" for axis tick labels. */
+function minutesToTimeStr(min: number): string {
+  const h = Math.floor(min / 60);
+  const m = Math.round(min % 60);
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+}
 
 // ─── Custom Tooltips ───
 
 function NiftyTooltip({ active, payload, label }: any) {
   if (!active || !payload?.length) return null;
   const d = payload[0]?.payload as NiftyCandle;
+  const labelStr = typeof label === 'number' ? minutesToTimeStr(label) : (d?.time || String(label ?? ''));
   return (
     <div className="bg-card border border-border rounded-lg p-2 shadow-xl text-xs">
-      <div className="font-mono text-muted-foreground mb-1">{label}</div>
+      <div className="font-mono text-muted-foreground mb-1">{labelStr}</div>
       <div className="text-emerald-400 font-semibold">Close: {d?.close?.toLocaleString('en-IN')}</div>
       {d?.high ? (
         <div className="text-muted-foreground">
@@ -58,9 +99,10 @@ function NiftyTooltip({ active, payload, label }: any) {
 function CashFlowTrendTooltip({ active, payload, label }: any) {
   if (!active || !payload?.length) return null;
   const d = payload[0]?.payload;
+  const labelStr = typeof label === 'number' ? minutesToTimeStr(label) : (d?.time || String(label ?? ''));
   return (
     <div className="bg-card border border-border rounded-lg p-2 shadow-xl text-xs">
-      <div className="font-mono text-muted-foreground mb-1">{label}</div>
+      <div className="font-mono text-muted-foreground mb-1">{labelStr}</div>
       <div className="text-emerald-400">NSE Cum: {d?.nse?.toFixed(1)} Cr</div>
       <div className="text-sky-400">BSE Cum: {d?.bse?.toFixed(1)} Cr</div>
       <div className={d?.net >= 0 ? 'text-amber-400 font-semibold' : 'text-red-400 font-semibold'}>
@@ -78,9 +120,10 @@ function CashFlowTrendTooltip({ active, payload, label }: any) {
 
 function FlowTooltip({ active, payload, label }: any) {
   if (!active || !payload?.length) return null;
+  const labelStr = typeof label === 'number' ? minutesToTimeStr(label) : String(label ?? '');
   return (
     <div className="bg-card border border-border rounded-lg p-2 shadow-xl text-xs">
-      <div className="font-mono text-muted-foreground mb-1">{label}</div>
+      <div className="font-mono text-muted-foreground mb-1">{labelStr}</div>
       {payload.map((p: any) => (
         <div key={p.dataKey} style={{ color: p.color }} className="flex items-center gap-1">
           <span className="inline-block w-2 h-2 rounded-full" style={{ backgroundColor: p.color }} />
@@ -225,9 +268,13 @@ export default function TrendAnalysisTab() {
                 </defs>
                 <CartesianGrid strokeDasharray="3 3" stroke="#ffffff10" />
                 <XAxis
-                  dataKey="time"
+                  dataKey={(d: NiftyCandle) => timeStrToMinutes(d.time)}
+                  type="number"
+                  domain={[SESSION_START_MIN, SESSION_END_MIN]}
+                  ticks={SESSION_TICKS}
+                  tickFormatter={(v: number) => minutesToTimeStr(v)}
                   tick={{ fill: '#a1a1aa', fontSize: 10 }}
-                  interval={Math.max(0, Math.floor(niftyCandles.length / 8) - 1)}
+                  allowDataOverflow
                 />
                 <YAxis
                   domain={['auto', 'auto']}
@@ -293,9 +340,13 @@ export default function TrendAnalysisTab() {
                   </defs>
                   <CartesianGrid strokeDasharray="3 3" stroke="#ffffff08" />
                   <XAxis
-                    dataKey="time"
+                    dataKey={(d: CashFlowTrendPoint) => timeStrToMinutes(d.time)}
+                    type="number"
+                    domain={[SESSION_START_MIN, SESSION_END_MIN]}
+                    ticks={SESSION_TICKS}
+                    tickFormatter={(v: number) => minutesToTimeStr(v)}
                     tick={{ fill: '#a1a1aa', fontSize: 9 }}
-                    interval={Math.max(0, Math.floor(cashFlowTrend.length / 8) - 1)}
+                    allowDataOverflow
                   />
                   <YAxis
                     tick={{ fill: '#a1a1aa', fontSize: 9 }}
@@ -365,9 +416,13 @@ export default function TrendAnalysisTab() {
                 <LineChart data={flowTrend} margin={{ top: 5, right: 10, left: 10, bottom: 0 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#ffffff10" />
                   <XAxis
-                    dataKey="time"
+                    dataKey={(d: FlowTrendPoint) => timeStrToMinutes(d.time)}
+                    type="number"
+                    domain={[SESSION_START_MIN, SESSION_END_MIN]}
+                    ticks={SESSION_TICKS}
+                    tickFormatter={(v: number) => minutesToTimeStr(v)}
                     tick={{ fill: '#a1a1aa', fontSize: 9 }}
-                    interval={Math.max(0, Math.floor(flowTrend.length / 6) - 1)}
+                    allowDataOverflow
                   />
                   <YAxis
                     tick={{ fill: '#a1a1aa', fontSize: 10 }}
@@ -425,9 +480,13 @@ export default function TrendAnalysisTab() {
                   </defs>
                   <CartesianGrid strokeDasharray="3 3" stroke="#ffffff10" />
                   <XAxis
-                    dataKey="time"
+                    dataKey={(d: FlowTrendPoint) => timeStrToMinutes(d.time)}
+                    type="number"
+                    domain={[SESSION_START_MIN, SESSION_END_MIN]}
+                    ticks={SESSION_TICKS}
+                    tickFormatter={(v: number) => minutesToTimeStr(v)}
                     tick={{ fill: '#a1a1aa', fontSize: 9 }}
-                    interval={Math.max(0, Math.floor(flowTrend.length / 6) - 1)}
+                    allowDataOverflow
                   />
                   <YAxis
                     tick={{ fill: '#a1a1aa', fontSize: 10 }}
