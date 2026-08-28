@@ -286,7 +286,9 @@ export default function OptionsFlowTab() {
     setNiftyPrice(spotPrice);
     setNiftyPrices([...priceHistoryRef.current]);
 
-    const ts = curr.timestamp || new Date().toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour12: false });
+    const ts = curr.timestamp
+      ? new Date(curr.timestamp).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })
+      : new Date().toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
 
     // Only compute flow bars when we have a previous snapshot to diff against
     if (prev && prev.symbols.length > 0) {
@@ -613,6 +615,19 @@ export default function OptionsFlowTab() {
               viewBox={`0 0 ${Math.max(1, visPrices.length) * BAR_WIDTH} ${chartSettings.priceHeight}`}
               preserveAspectRatio="none"
             >
+              {/* Vertical time grid lines (at 0%, 25%, 50%, 75%, 100%) */}
+              {visOpt.length > 1 && [0, 0.25, 0.5, 0.75, 1].map((frac, i) => {
+                const x = Math.round(frac * (visOpt.length - 1)) * BAR_WIDTH;
+                return (
+                  <line key={`vgrid-${i}`}
+                    x1={x} y1="0"
+                    x2={x} y2={chartSettings.priceHeight}
+                    stroke="#1e293b" strokeWidth="0.3" strokeDasharray="2,4"
+                    vectorEffect="non-scaling-stroke"
+                  />
+                );
+              })}
+
               {/* Horizontal grid lines */}
               {[0.2, 0.4, 0.5, 0.6, 0.8].map(frac => (
                 <line key={frac}
@@ -834,6 +849,24 @@ export default function OptionsFlowTab() {
                   );
                 })}
               </FlowChartRow>
+
+              {/* Time axis for flow bars — IST markers */}
+              <div className="flex items-center text-[8px] font-mono text-muted-foreground mt-0.5" style={{ paddingLeft: '2rem' }}>
+                {visOpt.length > 1 ? (() => {
+                  const labels = 6;
+                  const step = Math.max(1, Math.floor((visOpt.length - 1) / (labels - 1)));
+                  return Array.from({ length: labels }, (_, i) => {
+                    const idx = Math.min(i * step, visOpt.length - 1);
+                    return (
+                      <span key={i} className="flex-1 text-center">
+                        {visOpt[idx]?.timestamp || ''}
+                      </span>
+                    );
+                  });
+                })() : (
+                  <span className="flex-1 text-center">Waiting for data...</span>
+                )}
+              </div>
 
               {/* Timestamp + summary */}
               {latestOpt && (
