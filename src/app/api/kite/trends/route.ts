@@ -211,10 +211,16 @@ async function fetchTrendData(): Promise<TrendResponse> {
   stockCashFlow.sort((a, b) => Math.abs(b.weightedFlow) - Math.abs(a.weightedFlow));
 
   // Step 6: Process candles
+  // Kite timestamps are always IST (e.g. "2026-08-28T09:15:00+0530").
+  // We must extract HH:MM directly from the string — using toLocaleTimeString
+  // on Vercel (UTC) would shift times by -5:30, pushing all data outside
+  // the chart domain [555, 940] and making the chart appear empty.
   let niftyCandles: NiftyCandle[] = candles.map((c) => {
-    const d = new Date(c.timestamp);
+    const ts = String(c.timestamp);
+    const m = ts.match(/T(\d{2}):(\d{2})/);
+    const time = m ? `${m[1]}:${m[2]}` : '';
     return {
-      time: d.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: false }),
+      time,
       close: c.close,
       high: c.high,
       low: c.low,
@@ -233,9 +239,9 @@ async function fetchTrendData(): Promise<TrendResponse> {
         const q = niftyQ[String(NIFTY50_TOKEN)] as KiteQuote | undefined;
         if (q && q.lastPrice > 0) {
           const open = q.open || q.lastPrice;
-          const now = new Date().toLocaleTimeString('en-IN', {
-            hour: '2-digit', minute: '2-digit', hour12: false,
-          });
+          // Get current IST time without relying on system timezone
+          const istNow = new Date(Date.now() + 5.5 * 60 * 60 * 1000);
+          const now = `${String(istNow.getUTCHours()).padStart(2, '0')}:${String(istNow.getUTCMinutes()).padStart(2, '0')}`;
           niftyCandles = [
             { time: '09:15', close: open, high: open, low: open, volume: 0 },
             { time: now, close: q.lastPrice, high: q.high || q.lastPrice, low: q.low || q.lastPrice, volume: q.volume || 0 },

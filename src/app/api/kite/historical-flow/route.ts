@@ -345,9 +345,10 @@ async function fetchHistoricalFlow(): Promise<HistoricalFlowResponse> {
       }
 
       totalFlow += intervalFlow;
-      const timeStr = new Date(currTime).toLocaleTimeString('en-IN', {
-        hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
-      });
+      // Extract HH:MM:SS directly from Kite IST timestamp (avoids UTC shift on Vercel)
+      const currTS = String(currTime);
+      const tm = currTS.match(/T(\d{2}:\d{2}:\d{2})/);
+      const timeStr = tm ? tm[1] : '';
       flowPerTimestamp.set(timeStr, totalFlow);
     }
 
