@@ -12,41 +12,43 @@ import type { StrikeFlowSnapshot, StrikeFlowData } from '@/lib/kite-api';
 // ═══════════════════════════════════════════
 
 /**
- * 4-Color OI classification for each bar:
- *  CE: Buy  = ΔOI>0 & ΔLTP>0 (bullish)  → green
- *      Write = ΔOI>0 & ΔLTP<0 (bearish)  → red
- *  PE: Buy  = ΔOI>0 & ΔLTP<0 (bearish)  → red
- *      Write = ΔOI>0 & ΔLTP>0 (bullish)  → green
- *  Unwinding (ΔOI<0) → gray
- *  No prev data       → neutral
+ * 4-Color OI classification (matches Strike Flow Map convention):
+ *
+ *  CE  Buy   = ΔOI>0 & ΔLTP≥0  → bright green  #00B050
+ *  CE  Write = ΔOI>0 & ΔLTP<0  → light red     #FFCCCC (dark red border)
+ *  CE  Close = ΔOI<0           → grey          #6b7280
+ *  PE  Write = ΔOI>0 & ΔLTP≥0  → light green   #C6EFCE (dark green border)
+ *  PE  Buy   = ΔOI>0 & ΔLTP<0  → bright red    #BD2130
+ *  PE  Close = ΔOI<0           → grey          #6b7280
  */
 type OIColor = {
-  bg: string;      // tailwind bg class for the bar
-  text: string;     // tailwind text class for the OI label
-  label?: string;   // short label shown on hover ("Buy", "Write", "Unwind")
+  bg: string;        // inline background color
+  border?: string;   // inline border color (for Write classes)
+  text: string;      // tailwind text class for the OI label
+  label?: string;    // short label: "Buy", "Write", "Close"
 };
 
 function getOIColor(oiChange: number, ltpChange: number, isPE: boolean): OIColor {
+  // No previous data — neutral
   if (oiChange === 0 && ltpChange === 0) {
-    // No previous data — neutral
-    return { bg: 'bg-zinc-500/25', text: 'text-zinc-400/80' };
+    return { bg: '#3f3f46', text: 'text-zinc-400/80' };
   }
+  // Unwinding / short covering (ΔOI < 0)
   if (oiChange < 0) {
-    // Unwinding / short covering
-    return { bg: 'bg-zinc-500/30', text: 'text-zinc-500/70', label: 'Unwind' };
+    return { bg: '#6b7280', text: 'text-zinc-400', label: 'Close' };
   }
   // oiChange > 0 — new positions opened
   if (isPE) {
-    // PE: Write = bullish (price up + OI up), Buy = bearish (price down + OI up)
-    if (ltpChange > 0) return { bg: 'bg-emerald-500/50', text: 'text-emerald-300', label: 'Write' };
-    if (ltpChange < 0) return { bg: 'bg-red-500/50', text: 'text-red-300', label: 'Buy' };
-    return { bg: 'bg-zinc-500/30', text: 'text-zinc-400/80', label: 'Write' };
+    // PE: Write = bullish (price up/stable + OI up), Buy = bearish (price down + OI up)
+    if (ltpChange >= 0) return { bg: '#C6EFCE', border: '#16a34a', text: 'text-emerald-700', label: 'Write' };
+    if (ltpChange < 0)  return { bg: '#BD2130', text: 'text-red-100', label: 'Buy' };
   } else {
-    // CE: Buy = bullish (price up + OI up), Write = bearish (price down + OI up)
-    if (ltpChange > 0) return { bg: 'bg-emerald-500/50', text: 'text-emerald-300', label: 'Buy' };
-    if (ltpChange < 0) return { bg: 'bg-red-500/50', text: 'text-red-300', label: 'Write' };
-    return { bg: 'bg-zinc-500/30', text: 'text-zinc-400/80', label: 'Buy' };
+    // CE: Buy = bullish (price up/stable + OI up), Write = bearish (price down + OI up)
+    if (ltpChange >= 0) return { bg: '#00B050', text: 'text-green-100', label: 'Buy' };
+    if (ltpChange < 0)  return { bg: '#FFCCCC', border: '#dc2626', text: 'text-red-700', label: 'Write' };
   }
+  // Fallback (shouldn't reach here)
+  return { bg: '#3f3f46', text: 'text-zinc-400/80' };
 }
 
 interface OIWallsStrike {
@@ -60,6 +62,8 @@ interface OIWallsStrike {
   peLTP: number;
   cePct: number;     // % of max OI (for bar width)
   pePct: number;
+  ceOiChange: number; // per-strike ΔOI for badge
+  peOiChange: number;
   ceColor: OIColor;  // 4-color classification
   peColor: OIColor;
 }
@@ -353,6 +357,8 @@ export default function OIWallsTab() {
         peLTP: s.peLTP,
         cePct: (s.ceOI / maxOI) * 100,
         pePct: (s.peOI / maxOI) * 100,
+        ceOiChange: ceOiChg,
+        peOiChange: peOiChg,
         ceColor: getOIColor(ceOiChg, ceLtpChg, false),
         peColor: getOIColor(peOiChg, peLtpChg, true),
       };
@@ -531,30 +537,30 @@ export default function OIWallsTab() {
             <div className="flex items-center gap-3 flex-wrap">
               <span className="text-[10px] text-zinc-500 font-medium">CE OI (LEFT)</span>
               <div className="flex items-center gap-1.5">
-                <div className="w-3 h-2 rounded-sm bg-emerald-500/50" />
+                <div className="w-3 h-2 rounded-sm" style={{ backgroundColor: '#00B050' }} />
                 <span className="text-[9px] text-zinc-500">Buy</span>
               </div>
               <div className="flex items-center gap-1.5">
-                <div className="w-3 h-2 rounded-sm bg-red-500/50" />
+                <div className="w-3 h-2 rounded-sm" style={{ backgroundColor: '#FFCCCC', borderRight: '2px solid #dc2626' }} />
                 <span className="text-[9px] text-zinc-500">Write</span>
               </div>
               <div className="flex items-center gap-1.5">
-                <div className="w-3 h-2 rounded-sm bg-zinc-500/30" />
-                <span className="text-[9px] text-zinc-500">Unwind</span>
+                <div className="w-3 h-2 rounded-sm" style={{ backgroundColor: '#6b7280' }} />
+                <span className="text-[9px] text-zinc-500">Close</span>
               </div>
               <span className="text-zinc-700">|</span>
               <span className="text-[10px] text-zinc-500 font-medium">PE OI (RIGHT)</span>
               <div className="flex items-center gap-1.5">
-                <div className="w-3 h-2 rounded-sm bg-emerald-500/50" />
+                <div className="w-3 h-2 rounded-sm" style={{ backgroundColor: '#C6EFCE', borderLeft: '2px solid #16a34a' }} />
                 <span className="text-[9px] text-zinc-500">Write</span>
               </div>
               <div className="flex items-center gap-1.5">
-                <div className="w-3 h-2 rounded-sm bg-red-500/50" />
+                <div className="w-3 h-2 rounded-sm" style={{ backgroundColor: '#BD2130' }} />
                 <span className="text-[9px] text-zinc-500">Buy</span>
               </div>
               <div className="flex items-center gap-1.5">
-                <div className="w-3 h-2 rounded-sm bg-zinc-500/30" />
-                <span className="text-[9px] text-zinc-500">Unwind</span>
+                <div className="w-3 h-2 rounded-sm" style={{ backgroundColor: '#6b7280' }} />
+                <span className="text-[9px] text-zinc-500">Close</span>
               </div>
             </div>
             <div className="flex items-center gap-3">
@@ -613,10 +619,21 @@ export default function OIWallsTab() {
                       {w.ceOI > 0 ? formatLakhs(w.ceOI) : ''}
                     </span>
                     <div
-                      className={`h-5 ${w.ceColor.bg} rounded-r-sm`}
-                      style={{ width: `${Math.max(w.cePct, 0)}%` }}
+                      className="h-5 rounded-r-sm relative overflow-hidden"
+                      style={{
+                        width: `${Math.max(w.cePct, 0)}%`,
+                        backgroundColor: w.ceColor.bg,
+                        borderRight: w.ceColor.border ? `2px solid ${w.ceColor.border}` : undefined,
+                      }}
                       title={w.ceColor.label}
-                    />
+                    >
+                      {w.cePct > 12 && w.ceOiChange !== 0 && (
+                        <span className="absolute inset-0 flex items-center justify-center text-[9px] font-semibold pointer-events-none"
+                          style={{ color: w.ceColor.border || w.ceColor.bg }}>
+                          {w.ceOiChange > 0 ? '+' : ''}{formatLakhs(w.ceOiChange)}
+                        </span>
+                      )}
+                    </div>
                   </div>
 
                   {/* Strike label (CENTER) */}
@@ -642,10 +659,21 @@ export default function OIWallsTab() {
                   {/* PE OI bar (extends RIGHT from center) — 4-color */}
                   <div className="flex-1 flex items-center pl-2 relative z-[1]">
                     <div
-                      className={`h-5 ${w.peColor.bg} rounded-l-sm`}
-                      style={{ width: `${Math.max(w.pePct, 0)}%` }}
+                      className="h-5 rounded-l-sm relative overflow-hidden"
+                      style={{
+                        width: `${Math.max(w.pePct, 0)}%`,
+                        backgroundColor: w.peColor.bg,
+                        borderLeft: w.peColor.border ? `2px solid ${w.peColor.border}` : undefined,
+                      }}
                       title={w.peColor.label}
-                    />
+                    >
+                      {w.pePct > 12 && w.peOiChange !== 0 && (
+                        <span className="absolute inset-0 flex items-center justify-center text-[9px] font-semibold pointer-events-none"
+                          style={{ color: w.peColor.border || w.peColor.bg }}>
+                          {w.peOiChange > 0 ? '+' : ''}{formatLakhs(w.peOiChange)}
+                        </span>
+                      )}
+                    </div>
                     <span className={`text-[10px] relative z-10 ml-1.5 ${w.peColor.text}`} title={w.peColor.label}>
                       {w.peOI > 0 ? formatLakhs(w.peOI) : ''}
                     </span>
