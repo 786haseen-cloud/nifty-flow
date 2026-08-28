@@ -47,6 +47,7 @@ import {
   type KiteQuote,
 } from '@/lib/kite-api';
 import { applyKiteCredsFromRequest } from '@/lib/kite-route-helper';
+import { istTodayISO, extractTimeSecFromKiteTS } from '@/lib/ist';
 
 // ─── Types ───
 
@@ -243,9 +244,9 @@ async function fetchHistoricalFlow(): Promise<HistoricalFlowResponse> {
     }
 
     // Nearest expiry
-    const todayStr = new Date().toDateString();
+    const todayStr = istTodayISO();
     const nearestExpiry = [...new Set(opts.map(o => o.expiry))].sort()
-      .find(e => new Date(e) >= new Date(todayStr)) || opts[0].expiry;
+      .find(e => e >= todayStr) || opts[0].expiry;
 
     const expiryOpts = opts.filter(o => o.expiry === nearestExpiry);
     const atmStrike = Math.round(spotPrice / strikeStep) * strikeStep;
@@ -345,10 +346,7 @@ async function fetchHistoricalFlow(): Promise<HistoricalFlowResponse> {
       }
 
       totalFlow += intervalFlow;
-      // Extract HH:MM:SS directly from Kite IST timestamp (avoids UTC shift on Vercel)
-      const currTS = String(currTime);
-      const tm = currTS.match(/T(\d{2}:\d{2}:\d{2})/);
-      const timeStr = tm ? tm[1] : '';
+      const timeStr = extractTimeSecFromKiteTS(currTime);
       flowPerTimestamp.set(timeStr, totalFlow);
     }
 

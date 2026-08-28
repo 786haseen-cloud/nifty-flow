@@ -9,6 +9,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getCandles, NIFTY50_TOKEN, kiteHeaders } from '@/lib/kite-api';
 import { applyKiteCredsFromRequest } from '@/lib/kite-route-helper';
+import { toIST, istKiteDateFormat } from '@/lib/ist';
 
 const KITE_BASE = 'https://api.kite.trade';
 
@@ -32,14 +33,10 @@ export async function GET(req: NextRequest) {
   let debugInfo: any = undefined;
   if (debug && candles.length === 0) {
     try {
-      const IST_OFFSET = 5.5 * 60 * 60 * 1000;
-      const toIST = (d: Date) => new Date(d.getTime() + IST_OFFSET);
       const toDate = toIST(new Date());
       const fromDate = toIST(new Date());
       fromDate.setDate(fromDate.getDate() - days);
-      const fmt = (d: Date) =>
-        `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}:00`;
-      const url = `${KITE_BASE}/instruments/historical/${token}/${interval}?from=${encodeURIComponent(fmt(fromDate))}&to=${encodeURIComponent(fmt(toDate))}&continuous=0`;
+      const url = `${KITE_BASE}/instruments/historical/${token}/${interval}?from=${encodeURIComponent(istKiteDateFormat(fromDate))}&to=${encodeURIComponent(istKiteDateFormat(toDate))}&continuous=0`;
       const res = await fetch(url, { headers: kiteHeaders() });
       const body = await res.text();
       debugInfo = {

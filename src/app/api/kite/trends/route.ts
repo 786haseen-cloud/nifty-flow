@@ -19,6 +19,7 @@ import {
   type KiteQuote,
 } from '@/lib/kite-api';
 import { applyKiteCredsFromRequest } from '@/lib/kite-route-helper';
+import { extractTimeFromKiteTS, istTimeShort } from '@/lib/ist';
 
 // ─── Types ───
 
@@ -216,9 +217,7 @@ async function fetchTrendData(): Promise<TrendResponse> {
   // on Vercel (UTC) would shift times by -5:30, pushing all data outside
   // the chart domain [555, 940] and making the chart appear empty.
   let niftyCandles: NiftyCandle[] = candles.map((c) => {
-    const ts = String(c.timestamp);
-    const m = ts.match(/T(\d{2}):(\d{2})/);
-    const time = m ? `${m[1]}:${m[2]}` : '';
+    const time = extractTimeFromKiteTS(c.timestamp);
     return {
       time,
       close: c.close,
@@ -239,9 +238,7 @@ async function fetchTrendData(): Promise<TrendResponse> {
         const q = niftyQ[String(NIFTY50_TOKEN)] as KiteQuote | undefined;
         if (q && q.lastPrice > 0) {
           const open = q.open || q.lastPrice;
-          // Get current IST time without relying on system timezone
-          const istNow = new Date(Date.now() + 5.5 * 60 * 60 * 1000);
-          const now = `${String(istNow.getUTCHours()).padStart(2, '0')}:${String(istNow.getUTCMinutes()).padStart(2, '0')}`;
+          const now = istTimeShort();
           niftyCandles = [
             { time: '09:15', close: open, high: open, low: open, volume: 0 },
             { time: now, close: q.lastPrice, high: q.high || q.lastPrice, low: q.low || q.lastPrice, volume: q.volume || 0 },

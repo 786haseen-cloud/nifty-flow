@@ -19,6 +19,8 @@
 
 const KITE_BASE = 'https://api.kite.trade';
 
+import { toIST, istKiteDateFormat } from './ist';
+
 // ─── Config ───
 
 // Module-level credential override (set by API routes from query params)
@@ -387,23 +389,14 @@ export async function getCandles(
 ): Promise<KiteHistoricalCandle[]> {
   if (!isKiteConfigured()) return [];
 
-  // Kite historical API expects IST dates.
-  // On Vercel (UTC), we must convert to IST before formatting.
-  const IST_OFFSET = 5.5 * 60 * 60 * 1000;
-  const toIST = (d: Date) => new Date(d.getTime() + IST_OFFSET);
-
+  // Kite historical API expects IST dates. Use centralized IST helpers.
   const toDate = toIST(new Date());
   const fromDate = toIST(new Date());
   fromDate.setDate(fromDate.getDate() - days);
 
-  // Kite historical API requires format "YYYY-MM-DD HH:MM:SS" (WITH seconds).
-  // Sending "YYYY-MM-DD HH:MM" (no seconds) returns HTTP 400 "invalid from date".
-  const fmt = (d: Date) =>
-    `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}:00`;
-
   try {
-    const fromStr = fmt(fromDate);
-    const toStr = fmt(toDate);
+    const fromStr = istKiteDateFormat(fromDate);
+    const toStr = istKiteDateFormat(toDate);
     // URL-encode the date strings (they contain a space: "2026-08-25 09:15")
     const url = `${KITE_BASE}/instruments/historical/${instrumentToken}/${interval}?from=${encodeURIComponent(fromStr)}&to=${encodeURIComponent(toStr)}&continuous=0`;
 

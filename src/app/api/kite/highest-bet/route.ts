@@ -21,6 +21,7 @@ import {
   type StrikeFlowData,
 } from '@/lib/kite-api';
 import { applyKiteCredsFromRequest } from '@/lib/kite-route-helper';
+import { istTodayISO } from '@/lib/ist';
 
 // ─── Types ───
 
@@ -155,10 +156,9 @@ async function fetchLiveData(): Promise<HighestBetResponse> {
         i.tradingSymbol.toUpperCase().includes(n.toUpperCase())
       )
     );
-    const today = new Date();
-    const todayStr = today.toDateString();
+    const todayStr = istTodayISO();
     const nearestExpiry = [...new Set(futures.map(f => f.expiry))].sort()
-      .find(e => new Date(e) >= new Date(todayStr));
+      .find(e => e >= todayStr);
     const futInst = nearestExpiry
       ? futures.find(f => f.expiry === nearestExpiry) || null
       : null;
@@ -295,9 +295,9 @@ async function fetchLiveData(): Promise<HighestBetResponse> {
     }
 
     // Nearest expiry
-    const todayStr = new Date().toDateString();
+    const todayStr = istTodayISO();
     const nearestExpiry = [...new Set(opts.map(o => o.expiry))].sort()
-      .find(e => new Date(e) >= new Date(todayStr)) || opts[0].expiry;
+      .find(e => e >= todayStr) || opts[0].expiry;
 
     const expiryOpts = opts.filter(o => o.expiry === nearestExpiry);
     const atmStrike = Math.round(spotPrice / strikeStep) * strikeStep;
