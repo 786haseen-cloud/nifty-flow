@@ -186,9 +186,38 @@ export const useTrendStore = create<TrendState>()(
 
         // Start interval
         const timer = setInterval(() => {
-          get().pollOnce().catch((e) => console.error('[TrendStore] poll error:', e));
+          try {
+            get().pollOnce().catch((e) => console.error('[TrendStore] poll error:', e));
+          } catch (e) {
+            console.error('[TrendStore] poll sync error:', e);
+          }
         }, POLL_INTERVAL_MS);
+
+        // Self-healing watchdog: if lastPollAt becomes stale (> 90s),
+        // the main poller likely died (browser throttled background tab,
+        // unhandled edge case, etc.). Detect and restart.
+        const watchdog = setInterval(() => {
+          const s = get();
+          const gap = Date.now() - s.lastPollAt;
+          if (s.lastPollAt > 0 && gap > 90_000 && s.trendMode === 'live') {
+            console.warn(`[TrendStore] Watchdog: no poll for ${Math.round(gap / 1000)}s, restarting`);
+            if (s._pollTimer) clearInterval(s._pollTimer);
+            const newTimer = setInterval(() => {
+              try {
+                get().pollOnce().catch((e) => console.error('[TrendStore] poll error:', e));
+              } catch (e) {
+                console.error('[TrendStore] poll sync error:', e);
+              }
+            }, POLL_INTERVAL_MS);
+            set({ _pollTimer: newTimer });
+            get().pollOnce().catch((e) => console.error('[TrendStore] watchdog poll error:', e));
+          }
+        }, 60_000);
+
+        // Store timers — _pollTimer is in state (not persisted),
+        // watchdog is stored off-band to avoid extending the interface.
         set({ _pollTimer: timer });
+        (get() as any)._watchdogTimer = watchdog;
       },
 
       /**
@@ -197,9 +226,9 @@ export const useTrendStore = create<TrendState>()(
        */
       stopPolling: () => {
         const state = get();
-        if (state._pollTimer) {
-          clearInterval(state._pollTimer);
-        }
+        if (state._pollTimer) clearInterval(state._pollTimer);
+        const wd = (get() as any)._watchdogTimer;
+        if (wd) clearInterval(wd);
         set({ _pollTimer: null, _pollingStarted: false });
       },
 
