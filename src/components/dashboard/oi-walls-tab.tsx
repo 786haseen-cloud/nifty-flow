@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { Badge } from '@/components/ui/badge';
 import { withCreds } from '@/lib/kite-creds';
-import { Target, Activity, BarChart3, Wifi, WifiOff, RefreshCw, TrendingUp, TrendingDown } from 'lucide-react';
+import { Target, Activity, BarChart3, Wifi, WifiOff, RefreshCw, TrendingUp, TrendingDown, Gauge, ArrowDownToLine } from 'lucide-react';
 import { INDEX_SPECS, STOCK_SPECS } from '@/lib/kite-api';
 import type { StrikeFlowSnapshot, StrikeFlowData } from '@/lib/kite-api';
 
@@ -77,6 +77,28 @@ interface ComputedMetrics {
   totalOI: number;
   ceOIChange: number;
   peOIChange: number;
+}
+
+interface MaxPainScanItem {
+  symbol: string;
+  name: string;
+  type: 'index' | 'stock';
+  spot: number;
+  maxPain: number;
+  dist: number;
+  distPct: number;
+  totalCEOI: number;
+  totalPEOI: number;
+}
+
+interface GravitySignal {
+  indicesAbove: number;
+  indicesTotal: number;
+  stocksAbove: number;
+  stocksTotal: number;
+  avgIndexDistPct: number;
+  avgStockDistPct: number;
+  strength: 'strong' | 'moderate' | 'weak' | 'divergent';
 }
 
 // ═══════════════════════════════════════════
@@ -237,6 +259,10 @@ export default function OIWallsTab() {
   const [lastUpdate, setLastUpdate] = useState<string>('');
   const [pcrHistory, setPcrHistory] = useState<number[]>([]);
   const [demoData, setDemoData] = useState<StrikeFlowSnapshot | null>(null);
+  const [scanData, setScanData] = useState<MaxPainScanItem[]>([]);
+  const [scanLoading, setScanLoading] = useState(false);
+  const [scanError, setScanError] = useState<string | null>(null);
+  const [gravitySignal, setGravitySignal] = useState<GravitySignal | null>(null);
 
   const prevSnapshotRef = useRef<StrikeFlowSnapshot | null>(null);
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
@@ -285,7 +311,7 @@ export default function OIWallsTab() {
     }
   }, [symbol]);
 
-  // Initial fetch + polling
+  // Initial fetch + polling for per-symbol OI walls
   useEffect(() => {
     fetchData();
     intervalRef.current = setInterval(fetchData, REFRESH_INTERVAL);
@@ -293,6 +319,66 @@ export default function OIWallsTab() {
       if (intervalRef.current) clearInterval(intervalRef.current);
     };
   }, [fetchData]);
+
+  // Fetch max pain scan for all symbols (longer interval — 120s)
+  const scanIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const fetchScan = useCallback(async () => {
+    setScanLoading(true);
+    setScanError(null);
+    try {
+      const res = await fetch(withCreds('/api/kite/max-pain-scan'));
+      const json = await res.json();
+
+      if (json.mode === 'live' && json.symbols?.length > 0) {
+        const items: MaxPainScanItem[] = json.symbols;
+        setScanData(items);
+
+        // Compute gravity signal
+        const indices = items.filter(s => s.type === 'index');
+        const stocks = items.filter(s => s.type === 'stock');
+        const indicesAbove = indices.filter(s => s.dist > 0).length;
+        const stocksAbove = stocks.filter(s => s.dist > 0).length;
+        const avgIdxDist = indices.length > 0 ? indices.reduce((s, i) => s + i.distPct, 0) / indices.length : 0;
+        const avgStkDist = stocks.length > 0 ? stocks.reduce((s, i) => s + i.distPct, 0) / stocks.length : 0;
+
+        let strength: GravitySignal['strength'] = 'divergent';
+        if (indicesAbove === 4 && avgStkDist > 0.2) {
+          strength = 'strong';
+        } else if (indicesAbove >= 3 && avgStkDist > 0) {
+          strength = 'moderate';
+        } else if (indicesAbove >= 2) {
+          strength = 'weak';
+        }
+
+        setGravitySignal({
+          indicesAbove,
+          indicesTotal: indices.length,
+          stocksAbove,
+          stocksTotal: stocks.length,
+          avgIndexDistPct: avgIdxDist,
+          avgStockDistPct: avgStkDist,
+          strength,
+        });
+      } else if (json.mode === 'demo') {
+        setScanData([]);
+        setGravitySignal(null);
+      } else if (json.error) {
+        setScanError(json.error);
+      }
+    } catch (err) {
+      setScanError(err instanceof Error ? err.message : 'Scan failed');
+    } finally {
+      setScanLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchScan();
+    scanIntervalRef.current = setInterval(fetchScan, 120000); // every 2 min
+    return () => {
+      if (scanIntervalRef.current) clearInterval(scanIntervalRef.current);
+    };
+  }, [fetchScan]);
 
   // Compute OI change using ref to prev snapshot
   const oiChange = (() => {
@@ -816,6 +902,186 @@ export default function OIWallsTab() {
           <span>PCR = 1.0 (dashed)</span>
           <span>PCR &gt; 1 = Bearish</span>
         </div>
+      </div>
+
+      {/* ─── Max Pain Gravity Meter ─── */}
+      <div className="bg-card border border-border/30 rounded-lg p-4">
+        <div className="flex items-center justify-between mb-3">
+          <div className="flex items-center gap-1.5">
+            <Gauge className="w-3.5 h-3.5 text-amber-500" />
+            <span className="text-[10px] text-zinc-500 uppercase tracking-wider">Max Pain Gravity Meter</span>
+          </div>
+          <div className="flex items-center gap-2">
+            {scanLoading && <RefreshCw className="w-3 h-3 text-zinc-600 animate-spin" />}
+            <button
+              onClick={fetchScan}
+              disabled={scanLoading}
+              className="p-1 rounded hover:bg-zinc-800 transition-colors disabled:opacity-50 cursor-pointer"
+            >
+              <RefreshCw className={`w-3 h-3 text-zinc-500 ${scanLoading ? 'animate-spin' : ''}`} />
+            </button>
+          </div>
+        </div>
+
+        {scanError && (
+          <div className="text-[10px] text-red-400/80 mb-2">Scan error: {scanError}</div>
+        )}
+
+        {gravitySignal ? (
+          <>
+            {/* Gauge visualization */}
+            <div className="flex items-center gap-4 mb-4">
+              {/* Strength indicator */}
+              <div className="flex-shrink-0 w-16 h-16 rounded-full border-2 flex items-center justify-center relative"
+                style={{
+                  borderColor: gravitySignal.strength === 'strong' ? '#22c55e'
+                    : gravitySignal.strength === 'moderate' ? '#eab308'
+                    : gravitySignal.strength === 'weak' ? '#f97316'
+                    : '#ef4444',
+                }}
+              >
+                <div className="text-center">
+                  <div className="text-[9px] text-zinc-500 leading-none">Signal</div>
+                  <div className={`text-xs font-bold mt-0.5 ${
+                    gravitySignal.strength === 'strong' ? 'text-emerald-400'
+                    : gravitySignal.strength === 'moderate' ? 'text-yellow-400'
+                    : gravitySignal.strength === 'weak' ? 'text-orange-400'
+                    : 'text-red-400'
+                  }`}>
+                    {gravitySignal.strength === 'strong' ? 'STRONG' : gravitySignal.strength.toUpperCase().slice(0, 4)}
+                  </div>
+                </div>
+              </div>
+
+              {/* Index + Stock summary */}
+              <div className="flex-1 space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] text-zinc-500">Indices above Max Pain</span>
+                  <span className="text-sm font-bold text-foreground">
+                    {gravitySignal.indicesAbove}<span className="text-zinc-600 font-normal">/{gravitySignal.indicesTotal}</span>
+                  </span>
+                </div>
+                <div className="w-full h-1.5 bg-zinc-800 rounded-full overflow-hidden">
+                  <div
+                    className="h-full rounded-full transition-all duration-500"
+                    style={{
+                      width: `${(gravitySignal.indicesAbove / gravitySignal.indicesTotal) * 100}%`,
+                      backgroundColor: gravitySignal.indicesAbove === 4 ? '#22c55e'
+                        : gravitySignal.indicesAbove >= 3 ? '#eab308'
+                        : gravitySignal.indicesAbove >= 2 ? '#f97316' : '#ef4444',
+                    }}
+                  />
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] text-zinc-500">Stocks above Max Pain</span>
+                  <span className="text-sm font-bold text-foreground">
+                    {gravitySignal.stocksAbove}<span className="text-zinc-600 font-normal">/{gravitySignal.stocksTotal}</span>
+                  </span>
+                </div>
+                <div className="w-full h-1.5 bg-zinc-800 rounded-full overflow-hidden">
+                  <div
+                    className="h-full rounded-full transition-all duration-500"
+                    style={{
+                      width: `${gravitySignal.stocksTotal > 0 ? (gravitySignal.stocksAbove / gravitySignal.stocksTotal) * 100 : 0}%`,
+                      backgroundColor: gravitySignal.stocksAbove >= 12 ? '#22c55e'
+                        : gravitySignal.stocksAbove >= 9 ? '#eab308'
+                        : gravitySignal.stocksAbove >= 6 ? '#f97316' : '#ef4444',
+                    }}
+                  />
+                </div>
+              </div>
+            </div>
+
+            {/* Thesis callout */}
+            {gravitySignal.strength === 'strong' && (
+              <div className="bg-emerald-500/10 border border-emerald-500/20 rounded-md px-3 py-2 mb-3">
+                <div className="flex items-start gap-1.5">
+                  <ArrowDownToLine className="w-3 h-3 text-emerald-400 mt-0.5 flex-shrink-0" />
+                  <p className="text-[10px] text-emerald-300/90 leading-relaxed">
+                    <span className="font-semibold">Gravity Pull Active</span> — All {gravitySignal.indicesTotal} indices above max pain + stock avg positive.
+                    Big money may pull market toward <span className="font-semibold">average max pain</span> of all indices.
+                    Watch for Mean Reversion after 2 PM on expiry day.
+                  </p>
+                </div>
+              </div>
+            )}
+
+            {/* Breakdown Table */}
+            <div className="border border-border/20 rounded-md overflow-hidden">
+              {/* Table header */}
+              <div className="grid grid-cols-[1fr_72px_72px_60px_48px] gap-0 bg-zinc-900/50 px-3 py-1.5 text-[9px] text-zinc-500 uppercase tracking-wider">
+                <span>Symbol</span>
+                <span className="text-right">Spot</span>
+                <span className="text-right">Max Pain</span>
+                <span className="text-right">Diff</span>
+                <span className="text-right">PCR</span>
+              </div>
+
+              {/* Index rows */}
+              {scanData.filter(s => s.type === 'index').map(s => (
+                <div key={s.symbol} className="grid grid-cols-[1fr_72px_72px_60px_48px] gap-0 px-3 py-1.5 border-t border-border/10 hover:bg-zinc-800/30 transition-colors">
+                  <div className="flex items-center gap-1.5">
+                    <span className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{
+                      backgroundColor: s.dist > 0 ? '#22c55e' : '#ef4444',
+                    }} />
+                    <span className="text-[11px] font-semibold text-foreground truncate">{s.symbol}</span>
+                  </div>
+                  <span className="text-[10px] text-zinc-300 text-right font-mono">{formatNumber(Math.round(s.spot))}</span>
+                  <span className="text-[10px] text-amber-400 text-right font-mono">{formatNumber(s.maxPain)}</span>
+                  <span className={`text-[10px] text-right font-mono font-semibold ${s.dist > 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                    {s.dist > 0 ? '+' : ''}{Math.round(s.dist)}
+                  </span>
+                  <span className="text-[10px] text-zinc-400 text-right font-mono">
+                    {s.totalCEOI > 0 ? (s.totalPEOI / s.totalCEOI).toFixed(1) : '—'}
+                  </span>
+                </div>
+              ))}
+
+              {/* Separator between indices and stocks */}
+              {scanData.some(s => s.type === 'index') && scanData.some(s => s.type === 'stock') && (
+                <div className="border-t border-border/20 px-3 py-1 bg-zinc-900/30">
+                  <span className="text-[9px] text-zinc-600 uppercase tracking-wider">F&O Stocks</span>
+                </div>
+              )}
+
+              {/* Stock rows */}
+              {scanData.filter(s => s.type === 'stock').map(s => (
+                <div key={s.symbol} className="grid grid-cols-[1fr_72px_72px_60px_48px] gap-0 px-3 py-1.5 border-t border-border/10 hover:bg-zinc-800/30 transition-colors">
+                  <div className="flex items-center gap-1.5">
+                    <span className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{
+                      backgroundColor: s.dist > 0 ? '#22c55e' : '#ef4444',
+                    }} />
+                    <span className="text-[10px] text-zinc-300 truncate">{s.symbol}</span>
+                  </div>
+                  <span className="text-[10px] text-zinc-400 text-right font-mono">{formatNumber(Math.round(s.spot))}</span>
+                  <span className="text-[10px] text-amber-400/70 text-right font-mono">{formatNumber(s.maxPain)}</span>
+                  <span className={`text-[10px] text-right font-mono ${s.dist > 0 ? 'text-emerald-400/80' : 'text-red-400/80'}`}>
+                    {s.dist > 0 ? '+' : ''}{Math.round(s.dist)}
+                  </span>
+                  <span className="text-[10px] text-zinc-500 text-right font-mono">
+                    {s.totalCEOI > 0 ? (s.totalPEOI / s.totalCEOI).toFixed(1) : '—'}
+                  </span>
+                </div>
+              ))}
+            </div>
+
+            {/* Footer note */}
+            <div className="mt-2 text-[9px] text-zinc-600 leading-relaxed">
+              Spot above Max Pain = option writers (sellers) in profit → gravitational pull toward MP at expiry.
+              Refreshes every 2 min. Best signal on monthly expiry after 2 PM in low volatility.
+            </div>
+          </>
+        ) : !scanError && scanData.length === 0 && !scanLoading ? (
+          <div className="text-center py-4">
+            <Gauge className="w-5 h-5 text-zinc-600 mx-auto mb-1.5" />
+            <p className="text-[10px] text-zinc-500">Connect Kite API to see Max Pain Gravity Meter</p>
+          </div>
+        ) : scanLoading && scanData.length === 0 ? (
+          <div className="text-center py-4">
+            <RefreshCw className="w-5 h-5 text-zinc-600 animate-spin mx-auto mb-1.5" />
+            <p className="text-[10px] text-zinc-500">Scanning all {INDEX_SPECS.length + STOCK_SPECS.length} symbols...</p>
+          </div>
+        ) : null}
       </div>
     </div>
   );
