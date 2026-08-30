@@ -303,12 +303,24 @@ export async function getQuotes(instruments: string[]): Promise<Record<string, K
         );
         if (found) {
           const tok = String(found[1].token);
-          tokenToKey[tok] = inst; // map token back to symbol name
+          tokenToKey[tok] = inst;
           tokenList.push(tok);
         } else {
-          // Fallback: use the instrument string as-is with encodeURI
-          tokenToKey[inst] = inst;
-          tokenList.push(inst);
+          // Fallback 1: look up from cached instruments CSV
+          const cachedInsts = await getInstruments();
+          const csvMatch = cachedInsts.find(
+            i => i.tradingSymbol === inst.replace(/^[A-Z]+:/, '') ||
+                 `${i.exchange}:${i.tradingSymbol}` === inst
+          );
+          if (csvMatch) {
+            const tok = String(csvMatch.instrumentToken);
+            tokenToKey[tok] = inst;
+            tokenList.push(tok);
+          } else {
+            // Fallback 2: use the instrument string as-is
+            tokenToKey[inst] = inst;
+            tokenList.push(inst);
+          }
         }
       }
     }
@@ -595,7 +607,7 @@ export const KITE_INDEX_INSTRUMENTS: Record<string, { symbol: string; token: num
   NIFTY:      { symbol: 'NSE:NIFTY 50',           token: 256265 },
   SENSEX:     { symbol: 'BSE:SENSEX',              token: 265 },
   BANKNIFTY:  { symbol: 'NSE:NIFTY BANK',         token: 260105 },
-  FINNIFTY:   { symbol: 'NSE:NIFTY FIN SERVICE',  token: 64033 },
+  FINNIFTY:   { symbol: 'NSE:NIFTY FIN SERVICE',  token: 257801 },
 };
 
 // Legacy string map (used by quote route)
