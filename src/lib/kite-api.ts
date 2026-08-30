@@ -466,13 +466,20 @@ export async function getOptionInstruments(
   //
   // So we use a "starts with" match on segment (so 'NFO' matches both 'NFO' and 'NFO-OPT'),
   // and an equality match on instrumentType (we've already normalized new → legacy).
+  // Also check searchAliases for symbols whose Kite names don't contain the symbol
+  // (e.g. FINNIFTY → Kite uses "NIFTY FIN SERVICE" / "NIFTYFIN" in trading symbols).
   const symUpper = symbol.toUpperCase();
-  const indexOptions = instruments.filter(i =>
-    i.segment.startsWith(spec.segment) &&
-    i.instrumentType === spec.instrumentType &&
-    (i.name.toUpperCase().includes(symUpper) ||
-     i.tradingSymbol.toUpperCase().includes(symUpper))
-  );
+  const aliases = (spec.searchAliases || []).map(a => a.toUpperCase());
+  const searchTerms = [symUpper, ...aliases];
+
+  const indexOptions = instruments.filter(i => {
+    if (!(i.segment.startsWith(spec.segment) && i.instrumentType === spec.instrumentType)) {
+      return false;
+    }
+    const nameUp = i.name.toUpperCase();
+    const tsUp = i.tradingSymbol.toUpperCase();
+    return searchTerms.some(term => nameUp.includes(term) || tsUp.includes(term));
+  });
 
   if (indexOptions.length === 0) return { instruments: [], meta: { lotSize: 1, strikeStep: 50 } };
 
@@ -624,6 +631,7 @@ export interface InstrumentSpec {
   instrumentType: string;    // OPTIDX / OPTSTK
   strikesAround: number;     // How many strikes around ATM (±N)
   kiteSymbol: string;        // Kite quote symbol
+  searchAliases?: string[];  // Extra strings to match Kite option names/tradingSymbols
 }
 
 // ═══ INDEX SPECIFICATIONS ═══
@@ -631,7 +639,7 @@ export const INDEX_SPECS: InstrumentSpec[] = [
   { symbol: 'NIFTY',      name: 'Nifty 50',          exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTIDX', strikesAround: 5, kiteSymbol: 'NSE:NIFTY 50' },
   { symbol: 'SENSEX',     name: 'Sensex',            exchange: 'BSE', segment: 'BFO', instrumentType: 'OPTIDX', strikesAround: 5, kiteSymbol: 'BSE:SENSEX' },
   { symbol: 'BANKNIFTY',  name: 'Bank Nifty',        exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTIDX', strikesAround: 5, kiteSymbol: 'NSE:NIFTY BANK' },
-  { symbol: 'FINNIFTY',   name: 'Fin Nifty',         exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTIDX', strikesAround: 5, kiteSymbol: 'NSE:NIFTY FIN SERVICE' },
+  { symbol: 'FINNIFTY',   name: 'Fin Nifty',         exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTIDX', strikesAround: 5, kiteSymbol: 'NSE:NIFTY FIN SERVICE', searchAliases: ['NIFTYFIN', 'NIFTY FIN SERVICE'] },
 ];
 
 // ═══ STOCK F&O SPECIFICATIONS ═══
@@ -642,14 +650,14 @@ export const STOCK_SPECS: InstrumentSpec[] = [
   { symbol: 'HDFCBANK',   name: 'HDFC Bank',           exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTSTK', strikesAround: 4, kiteSymbol: 'NSE:HDFCBANK' },
   { symbol: 'INFY',       name: 'Infosys',             exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTSTK', strikesAround: 4, kiteSymbol: 'NSE:INFY' },
   { symbol: 'ICICIBANK',  name: 'ICICI Bank',          exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTSTK', strikesAround: 4, kiteSymbol: 'NSE:ICICIBANK' },
-  { symbol: 'HINDUNILVR', name: 'Hindustan Unilever',  exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTSTK', strikesAround: 4, kiteSymbol: 'NSE:HINDUNILVR' },
+  { symbol: 'HINDUNILVR', name: 'Hindustan Unilever',  exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTSTK', strikesAround: 4, kiteSymbol: 'NSE:HINDUNILVR', searchAliases: ['HINDUSTAN UNILEVER'] },
   { symbol: 'SBIN',       name: 'State Bank of India', exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTSTK', strikesAround: 4, kiteSymbol: 'NSE:SBIN' },
   { symbol: 'BHARTIARTL', name: 'Bharti Airtel',       exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTSTK', strikesAround: 4, kiteSymbol: 'NSE:BHARTIARTL' },
   { symbol: 'ITC',        name: 'ITC Limited',          exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTSTK', strikesAround: 4, kiteSymbol: 'NSE:ITC' },
   { symbol: 'KOTAKBANK',  name: 'Kotak Mahindra Bank', exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTSTK', strikesAround: 4, kiteSymbol: 'NSE:KOTAKBANK' },
   { symbol: 'LT',         name: 'Larsen & Toubro',     exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTSTK', strikesAround: 4, kiteSymbol: 'NSE:LT' },
   { symbol: 'AXISBANK',   name: 'Axis Bank',            exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTSTK', strikesAround: 4, kiteSymbol: 'NSE:AXISBANK' },
-  { symbol: 'BAJFINANCE', name: 'Bajaj Finance',       exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTSTK', strikesAround: 4, kiteSymbol: 'NSE:BAJFINANCE' },
+  { symbol: 'BAJFINANCE', name: 'Bajaj Finance',       exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTSTK', strikesAround: 4, kiteSymbol: 'NSE:BAJFINANCE', searchAliases: ['BAJAJ FINANCE'] },
   { symbol: 'MARUTI',     name: 'Maruti Suzuki',       exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTSTK', strikesAround: 4, kiteSymbol: 'NSE:MARUTI' },
   { symbol: 'TATAMOTORS', name: 'Tata Motors (TMCV)', exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTSTK', strikesAround: 4, kiteSymbol: 'NSE:TMCV' },
 ];
