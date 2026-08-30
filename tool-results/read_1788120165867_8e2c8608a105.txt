@@ -1,0 +1,1128 @@
+     1→'use client';
+     2→
+     3→import { useState, useEffect, useRef, useCallback } from 'react';
+     4→import { Badge } from '@/components/ui/badge';
+     5→import { withCreds } from '@/lib/kite-creds';
+     6→import { Target, Activity, BarChart3, Wifi, WifiOff, RefreshCw, TrendingUp, TrendingDown, Gauge } from 'lucide-react';
+     7→import { INDEX_SPECS, STOCK_SPECS } from '@/lib/kite-api';
+     8→import type { StrikeFlowSnapshot, StrikeFlowData } from '@/lib/kite-api';
+     9→
+    10→// ═══════════════════════════════════════════
+    11→// TYPES
+    12→// ═══════════════════════════════════════════
+    13→
+    14→/**
+    15→ * 4-Color OI classification (matches Strike Flow Map convention):
+    16→ *
+    17→ *  CE  Buy   = ΔOI>0 & ΔLTP≥0  → bright green  #00B050
+    18→ *  CE  Write = ΔOI>0 & ΔLTP<0  → light red     #FFCCCC (dark red border)
+    19→ *  CE  Close = ΔOI<0           → grey          #6b7280
+    20→ *  PE  Write = ΔOI>0 & ΔLTP≥0  → light green   #C6EFCE (dark green border)
+    21→ *  PE  Buy   = ΔOI>0 & ΔLTP<0  → bright red    #BD2130
+    22→ *  PE  Close = ΔOI<0           → grey          #6b7280
+    23→ */
+    24→type OIColor = {
+    25→  bg: string;        // inline background color
+    26→  border?: string;   // inline border color (for Write classes)
+    27→  text: string;      // tailwind text class for the OI label
+    28→  label?: string;    // short label: "Buy", "Write", "Close"
+    29→};
+    30→
+    31→function getOIColor(oiChange: number, ltpChange: number, isPE: boolean): OIColor {
+    32→  // No previous data — neutral
+    33→  if (oiChange === 0 && ltpChange === 0) {
+    34→    return { bg: '#3f3f46', text: 'text-zinc-400/80' };
+    35→  }
+    36→  // Unwinding / short covering (ΔOI < 0)
+    37→  if (oiChange < 0) {
+    38→    return { bg: '#6b7280', text: 'text-zinc-400', label: 'Close' };
+    39→  }
+    40→  // oiChange > 0 — new positions opened
+    41→  if (isPE) {
+    42→    // PE: Write = bullish (price up/stable + OI up), Buy = bearish (price down + OI up)
+    43→    if (ltpChange >= 0) return { bg: '#C6EFCE', border: '#16a34a', text: 'text-emerald-700', label: 'Write' };
+    44→    if (ltpChange < 0)  return { bg: '#BD2130', text: 'text-red-100', label: 'Buy' };
+    45→  } else {
+    46→    // CE: Buy = bullish (price up/stable + OI up), Write = bearish (price down + OI up)
+    47→    if (ltpChange >= 0) return { bg: '#00B050', text: 'text-green-100', label: 'Buy' };
+    48→    if (ltpChange < 0)  return { bg: '#FFCCCC', border: '#dc2626', text: 'text-red-700', label: 'Write' };
+    49→  }
+    50→  // Fallback (shouldn't reach here)
+    51→  return { bg: '#3f3f46', text: 'text-zinc-400/80' };
+    52→}
+    53→
+    54→interface OIWallsStrike {
+    55→  strike: number;
+    56→  isATM: boolean;
+    57→  isCeITM: boolean;  // strike < ATM → CE is in-the-money
+    58→  isPeITM: boolean;  // strike > ATM → PE is in-the-money
+    59→  ceOI: number;
+    60→  peOI: number;
+    61→  ceLTP: number;
+    62→  peLTP: number;
+    63→  cePct: number;     // % of max OI (for bar width)
+    64→  pePct: number;
+    65→  ceOiChange: number; // per-strike ΔOI for badge
+    66→  peOiChange: number;
+    67→  ceColor: OIColor;  // 4-color classification
+    68→  peColor: OIColor;
+    69→}
+    70→
+    71→interface ComputedMetrics {
+    72→  pcr: number;
+    73→  maxPain: number;
+    74→  maxPainDist: number;
+    75→  totalCEOI: number;
+    76→  totalPEOI: number;
+    77→  totalOI: number;
+    78→  ceOIChange: number;
+    79→  peOIChange: number;
+    80→}
+    81→
+    82→interface MaxPainScanItem {
+    83→  symbol: string;
+    84→  name: string;
+    85→  type: 'index' | 'stock';
+    86→  spot: number;
+    87→  maxPain: number;
+    88→  dist: number;
+    89→  distPct: number;
+    90→  totalCEOI: number;
+    91→  totalPEOI: number;
+    92→}
+    93→
+    94→interface GravitySignal {
+    95→  indicesAbove: number;
+    96→  indicesBelow: number;
+    97→  indicesTotal: number;
+    98→  stocksAbove: number;
+    99→  stocksBelow: number;
+   100→  stocksTotal: number;
+   101→  avgIndexDistPct: number;
+   102→  avgStockDistPct: number;
+   103→  direction: 'down' | 'up' | 'mixed'; // gravity pulls DOWN (spot above MP) or UP (spot below MP)
+   104→  strength: 'strong' | 'moderate' | 'weak' | 'divergent';
+   105→}
+   106→
+   107→// ═══════════════════════════════════════════
+   108→// CONSTANTS
+   109→// ═══════════════════════════════════════════
+   110→
+   111→const REFRESH_INTERVAL = 30000;
+   112→const ALL_SYMBOLS = [
+   113→  ...INDEX_SPECS.map(s => ({ symbol: s.symbol, name: s.name, type: 'index' as const })),
+   114→  ...STOCK_SPECS.map(s => ({ symbol: s.symbol, name: s.name, type: 'stock' as const })),
+   115→];
+   116→
+   117→// Demo base prices per symbol
+   118→const DEMO_BASE_PRICES: Record<string, number> = {
+   119→  NIFTY: 24350, BANKNIFTY: 52400, SENSEX: 80200, FINNIFTY: 23100,
+   120→  RELIANCE: 2950, TCS: 4120, HDFCBANK: 1720, INFY: 1910,
+   121→  ICICIBANK: 1285, HINDUNILVR: 2480, SBIN: 825, BHARTIARTL: 1620,
+   122→  ITC: 465, KOTAKBANK: 1790, LT: 3580, AXISBANK: 1145,
+   123→  BAJFINANCE: 7280, MARUTI: 12450, TATAMOTORS: 960,
+   124→};
+   125→
+   126→const DEMO_STRIKE_STEPS: Record<string, number> = {
+   127→  NIFTY: 50, BANKNIFTY: 100, SENSEX: 100, FINNIFTY: 50,
+   128→  RELIANCE: 20, TCS: 20, HDFCBANK: 10, INFY: 20,
+   129→  ICICIBANK: 10, HINDUNILVR: 20, SBIN: 5, BHARTIARTL: 10,
+   130→  ITC: 5, KOTAKBANK: 10, LT: 20, AXISBANK: 10,
+   131→  BAJFINANCE: 50, MARUTI: 50, TATAMOTORS: 10,
+   132→};
+   133→
+   134→// ═══════════════════════════════════════════
+   135→// HELPERS
+   136→// ═══════════════════════════════════════════
+   137→
+   138→function formatLakhs(n: number): string {
+   139→  if (n >= 10000000) return (n / 10000000).toFixed(2) + ' Cr';
+   140→  if (n >= 100000) return (n / 100000).toFixed(2) + ' L';
+   141→  if (n >= 1000) return (n / 1000).toFixed(1) + 'K';
+   142→  return n.toLocaleString('en-IN');
+   143→}
+   144→
+   145→function formatNumber(n: number): string {
+   146→  return n.toLocaleString('en-IN');
+   147→}
+   148→
+   149→// Compute Max Pain: strike where option buyers lose the most
+   150→function computeMaxPain(strikes: StrikeFlowData[]): number {
+   151→  if (strikes.length === 0) return 0;
+   152→  let minLoss = Infinity;
+   153→  let maxPainStrike = strikes[0].strike;
+   154→
+   155→  for (const k of strikes) {
+   156→    let totalLoss = 0;
+   157→    for (const s of strikes) {
+   158→      // CE buyer loses if spot expires at K below the CE strike: CE worthless
+   159→      // Actually: CE buyer loss = max(0, K_expiry - S_strike) * CE_OI... no.
+   160→      // At expiry price K, CE with strike S > K is worthless → buyer loses premium paid.
+   161→      // But we only have OI, not premium. Standard Max Pain uses:
+   162→      // CE buyer loss at expiry K = Σ max(0, strike_i - K) * CE_OI_i
+   163→      // (CE is ITM and worth (strike - K), but buyer already paid more than intrinsic...)
+   164→      // Simplified: use intrinsic value approach
+   165→      totalLoss += Math.max(0, s.strike - k.strike) * s.ceOI;
+   166→      totalLoss += Math.max(0, k.strike - s.strike) * s.peOI;
+   167→    }
+   168→    if (totalLoss < minLoss) {
+   169→      minLoss = totalLoss;
+   170→      maxPainStrike = k.strike;
+   171→    }
+   172→  }
+   173→  return maxPainStrike;
+   174→}
+   175→
+   176→// Generate demo data for 11 strikes
+   177→function generateDemoData(symbol: string): StrikeFlowSnapshot {
+   178→  const spot = DEMO_BASE_PRICES[symbol] || 24350;
+   179→  const step = DEMO_STRIKE_STEPS[symbol] || 50;
+   180→  const atmStrike = Math.round(spot / step) * step;
+   181→  const strikes: StrikeFlowData[] = [];
+   182→
+   183→  for (let i = -5; i <= 5; i++) {
+   184→    const strike = atmStrike + i * step;
+   185→    const dist = Math.abs(i);
+   186→    // Heavier OI near ATM, with some randomness
+   187→    const baseFactor = Math.max(0.15, 1 - dist * 0.15);
+   188→    const noise = 0.6 + Math.random() * 0.8;
+   189→    const ceOI = Math.round(800000 * baseFactor * noise * (0.8 + Math.random() * 0.4));
+   190→    const peOI = Math.round(700000 * baseFactor * noise * (0.8 + Math.random() * 0.4));
+   191→    const moneyness = (spot - strike) / spot;
+   192→    const iv = 0.12 + Math.abs(moneyness) * 0.3;
+   193→    const ceITM = spot > strike;
+   194→    const peITM = spot < strike;
+   195→
+   196→    strikes.push({
+   197→      strike,
+   198→      isATM: i === 0,
+   199→      ceLTP: ceITM ? (spot - strike) + iv * spot * 0.1 : iv * spot * 0.05 * (1 - dist * 0.1),
+   200→      peLTP: peITM ? (strike - spot) + iv * spot * 0.1 : iv * spot * 0.05 * (1 - dist * 0.1),
+   201→      ceOI,
+   202→      peOI,
+   203→      ceVol: Math.round(ceOI * (0.02 + Math.random() * 0.08)),
+   204→      peVol: Math.round(peOI * (0.02 + Math.random() * 0.08)),
+   205→      ceDelta: 0.5 + (i === 0 ? 0 : (spot > strike ? 0.15 : -0.15)),
+   206→      peDelta: 0.5 + (i === 0 ? 0 : (spot < strike ? 0.15 : -0.15)),
+   207→      ceToken: 100 + i,
+   208→      peToken: 200 + i,
+   209→    });
+   210→  }
+   211→
+   212→  return {
+   213→    timestamp: new Date().toISOString(),
+   214→    symbol,
+   215→    spotPrice: spot + Math.round((Math.random() - 0.5) * step),
+   216→    atmStrike,
+   217→    lotSize: symbol === 'BANKNIFTY' ? 30 : symbol === 'NIFTY' ? 75 : 1,
+   218→    strikeStep: step,
+   219→    expiry: new Date(Date.now() + 3 * 86400000).toISOString().split('T')[0],
+   220→    strikes,
+   221→  };
+   222→}
+   223→
+   224→// ═══════════════════════════════════════════
+   225→// PCR HISTORY (localStorage)
+   226→// ═══════════════════════════════════════════
+   227→
+   228→function getPCRHistoryKey(symbol: string): string {
+   229→  const today = new Date().toISOString().split('T')[0];
+   230→  return `oi-walls-pcr-history-${today}-${symbol}`;
+   231→}
+   232→
+   233→function loadPCRHistory(symbol: string): number[] {
+   234→  if (typeof window === 'undefined') return [];
+   235→  try {
+   236→    const raw = localStorage.getItem(getPCRHistoryKey(symbol));
+   237→    return raw ? JSON.parse(raw) : [];
+   238→  } catch {
+   239→    return [];
+   240→  }
+   241→}
+   242→
+   243→function savePCRHistory(symbol: string, history: number[]) {
+   244→  if (typeof window === 'undefined') return;
+   245→  try {
+   246→    localStorage.setItem(getPCRHistoryKey(symbol), JSON.stringify(history.slice(-60)));
+   247→  } catch {
+   248→    // localStorage full or unavailable
+   249→  }
+   250→}
+   251→
+   252→// ═══════════════════════════════════════════
+   253→// COMPONENT
+   254→// ═══════════════════════════════════════════
+   255→
+   256→export default function OIWallsTab() {
+   257→  const [symbol, setSymbol] = useState('NIFTY');
+   258→  const [snapshot, setSnapshot] = useState<StrikeFlowSnapshot | null>(null);
+   259→  const [loading, setLoading] = useState(false);
+   260→  const [error, setError] = useState<string | null>(null);
+   261→  const [isLive, setIsLive] = useState(false);
+   262→  const [lastUpdate, setLastUpdate] = useState<string>('');
+   263→  const [pcrHistory, setPcrHistory] = useState<number[]>([]);
+   264→  const [demoData, setDemoData] = useState<StrikeFlowSnapshot | null>(null);
+   265→  const [scanData, setScanData] = useState<MaxPainScanItem[]>([]);
+   266→  const [scanLoading, setScanLoading] = useState(false);
+   267→  const [scanError, setScanError] = useState<string | null>(null);
+   268→  const [gravitySignal, setGravitySignal] = useState<GravitySignal | null>(null);
+   269→
+   270→  const prevSnapshotRef = useRef<StrikeFlowSnapshot | null>(null);
+   271→  const intervalRef = useRef<NodeJS.Timeout | null>(null);
+   272→
+   273→  // Load PCR history on mount / symbol change
+   274→  useEffect(() => {
+   275→    setPcrHistory(loadPCRHistory(symbol));
+   276→  }, [symbol]);
+   277→
+   278→  const fetchData = useCallback(async () => {
+   279→    setLoading(true);
+   280→    setError(null);
+   281→    try {
+   282→      const res = await fetch(withCreds(`/api/kite/strike-flow?symbol=${symbol}`));
+   283→      const data = await res.json();
+   284→
+   285→      if (data.mode !== 'live') {
+   286→        // Generate demo data
+   287→        setIsLive(false);
+   288→        const demo = generateDemoData(symbol);
+   289→        setDemoData(demo);
+   290→        setLastUpdate(new Date().toLocaleTimeString('en-IN', {
+   291→          hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+   292→        }));
+   293→        setLoading(false);
+   294→        return;
+   295→      }
+   296→
+   297→      setIsLive(true);
+   298→      setDemoData(null);
+   299→      setLastUpdate(new Date(data.timestamp).toLocaleTimeString('en-IN', {
+   300→        hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+   301→      }));
+   302→
+   303→      // Compute OI change before updating ref
+   304→      const prev = prevSnapshotRef.current;
+   305→      if (prev && prev.symbol === data.symbol) {
+   306→        // OI change is computed in metrics; we just need to store prev for diff
+   307→      }
+   308→      prevSnapshotRef.current = data;
+   309→      setSnapshot(data);
+   310→    } catch (err) {
+   311→      setError(err instanceof Error ? err.message : 'Fetch failed');
+   312→    } finally {
+   313→      setLoading(false);
+   314→    }
+   315→  }, [symbol]);
+   316→
+   317→  // Initial fetch + polling for per-symbol OI walls
+   318→  useEffect(() => {
+   319→    fetchData();
+   320→    intervalRef.current = setInterval(fetchData, REFRESH_INTERVAL);
+   321→    return () => {
+   322→      if (intervalRef.current) clearInterval(intervalRef.current);
+   323→    };
+   324→  }, [fetchData]);
+   325→
+   326→  // Fetch max pain scan for all symbols (longer interval — 120s)
+   327→  const scanIntervalRef = useRef<NodeJS.Timeout | null>(null);
+   328→  const fetchScan = useCallback(async () => {
+   329→    setScanLoading(true);
+   330→    setScanError(null);
+   331→    try {
+   332→      const res = await fetch(withCreds('/api/kite/max-pain-scan'));
+   333→      const json = await res.json();
+   334→
+   335→      if (json.mode === 'live' && json.symbols?.length > 0) {
+   336→        const items: MaxPainScanItem[] = json.symbols;
+   337→        setScanData(items);
+   338→
+   339→        // Compute gravity signal — works BOTH directions
+   340→        const indices = items.filter(s => s.type === 'index');
+   341→        const stocks = items.filter(s => s.type === 'stock');
+   342→        const indicesAbove = indices.filter(s => s.dist > 0).length;
+   343→        const indicesBelow = indices.filter(s => s.dist < 0).length;
+   344→        const stocksAbove = stocks.filter(s => s.dist > 0).length;
+   345→        const stocksBelow = stocks.filter(s => s.dist < 0).length;
+   346→        const avgIdxDist = indices.length > 0 ? indices.reduce((s, i) => s + i.distPct, 0) / indices.length : 0;
+   347→        const avgStkDist = stocks.length > 0 ? stocks.reduce((s, i) => s + i.distPct, 0) / stocks.length : 0;
+   348→
+   349→        // Determine direction: which side has more index alignment?
+   350→        let direction: GravitySignal['direction'] = 'mixed';
+   351→        if (indicesAbove > indicesBelow) direction = 'down';   // spot above MP → gravity pulls DOWN
+   352→        else if (indicesBelow > indicesAbove) direction = 'up'; // spot below MP → gravity pulls UP
+   353→
+   354→        // Determine aligned count (whichever direction is dominant)
+   355→        const alignedIndices = Math.max(indicesAbove, indicesBelow);
+   356→        const alignedStocks = direction === 'down' ? stocksAbove : stocksBelow;
+   357→        const stockAvgConfirms = direction === 'down' ? avgStkDist > 0.1 : avgStkDist < -0.1;
+   358→
+   359→        let strength: GravitySignal['strength'] = 'divergent';
+   360→        if (alignedIndices === 4 && stockAvgConfirms) {
+   361→          strength = 'strong';
+   362→        } else if (alignedIndices >= 3 && stockAvgConfirms) {
+   363→          strength = 'moderate';
+   364→        } else if (alignedIndices >= 2 && direction !== 'mixed') {
+   365→          strength = 'weak';
+   366→        }
+   367→
+   368→        setGravitySignal({
+   369→          indicesAbove,
+   370→          indicesBelow,
+   371→          indicesTotal: indices.length,
+   372→          stocksAbove,
+   373→          stocksBelow,
+   374→          stocksTotal: stocks.length,
+   375→          avgIndexDistPct: avgIdxDist,
+   376→          avgStockDistPct: avgStkDist,
+   377→          direction,
+   378→          strength,
+   379→        });
+   380→      } else if (json.mode === 'demo') {
+   381→        setScanData([]);
+   382→        setGravitySignal(null);
+   383→      } else if (json.error) {
+   384→        setScanError(json.error);
+   385→      }
+   386→    } catch (err) {
+   387→      setScanError(err instanceof Error ? err.message : 'Scan failed');
+   388→    } finally {
+   389→      setScanLoading(false);
+   390→    }
+   391→  }, []);
+   392→
+   393→  useEffect(() => {
+   394→    fetchScan();
+   395→    scanIntervalRef.current = setInterval(fetchScan, 120000); // every 2 min
+   396→    return () => {
+   397→      if (scanIntervalRef.current) clearInterval(scanIntervalRef.current);
+   398→    };
+   399→  }, [fetchScan]);
+   400→
+   401→  // Compute OI change using ref to prev snapshot
+   402→  const oiChange = (() => {
+   403→    const prev = prevSnapshotRef.current;
+   404→    const curr = snapshot;
+   405→    if (!prev || !curr || prev.symbol !== curr.symbol) {
+   406→      // Check demo data diff
+   407→      if (demoData) return { ce: 0, pe: 0 };
+   408→      return { ce: 0, pe: 0 };
+   409→    }
+   410→    let ceChange = 0, peChange = 0;
+   411→    const prevMap = new Map(prev.strikes.map(s => [s.strike, s]));
+   412→    for (const s of curr.strikes) {
+   413→      const p = prevMap.get(s.strike);
+   414→      if (p) {
+   415→        ceChange += s.ceOI - p.ceOI;
+   416→        peChange += s.peOI - p.peOI;
+   417→      }
+   418→    }
+   419→    return { ce: ceChange, pe: peChange };
+   420→  })();
+   421→
+   422→  // Use demo or live data
+   423→  const data = isLive ? snapshot : demoData;
+   424→
+   425→  // Compute walls and metrics
+   426→  const { walls, metrics } = (() => {
+   427→    if (!data || !data.strikes?.length) {
+   428→      return { walls: [] as OIWallsStrike[], metrics: null as ComputedMetrics | null };
+   429→    }
+   430→
+   431→    const maxOI = Math.max(
+   432→      ...data.strikes.map(s => Math.max(s.ceOI, s.peOI)),
+   433→      1
+   434→    );
+   435→
+   436→    // Find ATM strike for ITM determination
+   437→    const atmStrike = data.atmStrike || data.strikes.find(s => s.isATM)?.strike || 0;
+   438→
+   439→    // Build prev strike map for per-strike diff
+   440→    const prev = prevSnapshotRef.current;
+   441→    const prevMap = new Map<number, StrikeFlowData>();
+   442→    if (prev && prev.symbol === data.symbol) {
+   443→      for (const s of prev.strikes) prevMap.set(s.strike, s);
+   444→    }
+   445→
+   446→    const walls: OIWallsStrike[] = data.strikes.map(s => {
+   447→      const p = prevMap.get(s.strike);
+   448→      const ceOiChg = p ? s.ceOI - p.ceOI : 0;
+   449→      const peOiChg = p ? s.peOI - p.peOI : 0;
+   450→      const ceLtpChg = p ? s.ceLTP - p.ceLTP : 0;
+   451→      const peLtpChg = p ? s.peLTP - p.peLTP : 0;
+   452→
+   453→      return {
+   454→        strike: s.strike,
+   455→        isATM: s.isATM,
+   456→        isCeITM: !s.isATM && s.strike < atmStrike,
+   457→        isPeITM: !s.isATM && s.strike > atmStrike,
+   458→        ceOI: s.ceOI,
+   459→        peOI: s.peOI,
+   460→        ceLTP: s.ceLTP,
+   461→        peLTP: s.peLTP,
+   462→        cePct: (s.ceOI / maxOI) * 100,
+   463→        pePct: (s.peOI / maxOI) * 100,
+   464→        ceOiChange: ceOiChg,
+   465→        peOiChange: peOiChg,
+   466→        ceColor: getOIColor(ceOiChg, ceLtpChg, false),
+   467→        peColor: getOIColor(peOiChg, peLtpChg, true),
+   468→      };
+   469→    });
+   470→
+   471→    const totalCEOI = data.strikes.reduce((sum, s) => sum + s.ceOI, 0);
+   472→    const totalPEOI = data.strikes.reduce((sum, s) => sum + s.peOI, 0);
+   473→    const pcr = totalCEOI > 0 ? totalPEOI / totalCEOI : 0;
+   474→    const maxPain = computeMaxPain(data.strikes);
+   475→    const maxPainDist = data.spotPrice - maxPain;
+   476→
+   477→    const m: ComputedMetrics = {
+   478→      pcr,
+   479→      maxPain,
+   480→      maxPainDist,
+   481→      totalCEOI,
+   482→      totalPEOI,
+   483→      totalOI: totalCEOI + totalPEOI,
+   484→      ceOIChange: oiChange.ce,
+   485→      peOIChange: oiChange.pe,
+   486→    };
+   487→
+   488→    return { walls, metrics: m };
+   489→  })();
+   490→
+   491→  // Append PCR to history when metrics change
+   492→  useEffect(() => {
+   493→    if (!metrics) return;
+   494→    setPcrHistory(prev => {
+   495→      const updated = [...prev, metrics.pcr];
+   496→      const trimmed = updated.slice(-60);
+   497→      savePCRHistory(symbol, trimmed);
+   498→      return trimmed;
+   499→    });
+   500→  }, [isLive ? snapshot?.timestamp : demoData?.timestamp, metrics?.pcr, symbol]);
+   501→
+   502→  // PCR label
+   503→  function getPCRLabel(pcr: number): { text: string; color: string } {
+   504→    if (pcr >= 1.5) return { text: 'Extreme Bearish', color: 'text-emerald-400' };
+   505→    if (pcr >= 1.1) return { text: 'Bearish', color: 'text-emerald-300' };
+   506→    if (pcr >= 0.9) return { text: 'Neutral', color: 'text-zinc-400' };
+   507→    if (pcr >= 0.6) return { text: 'Bullish', color: 'text-red-400' };
+   508→    return { text: 'Extreme Bullish', color: 'text-red-500' };
+   509→  }
+   510→
+   511→  // ═══════════════════════════════════════════
+   512→  // PCR SPARKLINE (SVG)
+   513→  // ═══════════════════════════════════════════
+   514→  function PCRSparkline() {
+   515→    if (pcrHistory.length < 2) {
+   516→      return (
+   517→        <div className="flex items-center justify-center h-10 text-zinc-600 text-[10px]">
+   518→          Waiting for data points...
+   519→        </div>
+   520→      );
+   521→    }
+   522→
+   523→    const w = 280, h = 36;
+   524→    const vals = pcrHistory;
+   525→    const minV = Math.min(...vals) * 0.95;
+   526→    const maxV = Math.max(...vals) * 1.05;
+   527→    const rangeV = maxV - minV || 1;
+   528→    const step = w / (vals.length - 1);
+   529→
+   530→    const points = vals.map((v, i) => {
+   531→      const x = i * step;
+   532→      const y = h - 2 - ((v - minV) / rangeV) * (h - 4);
+   533→      return `${x},${y}`;
+   534→    }).join(' ');
+   535→
+   536→    // PCR = 1 reference line
+   537→    const pcr1Y = h - 2 - ((1 - minV) / rangeV) * (h - 4);
+   538→    const lastVal = vals[vals.length - 1];
+   539→    const lastX = (vals.length - 1) * step;
+   540→    const lastY = h - 2 - ((lastVal - minV) / rangeV) * (h - 4);
+   541→    const lineColor = lastVal >= 1 ? '#34d399' : '#f87171';
+   542→
+   543→    return (
+   544→      <svg width="100%" height={h} viewBox={`0 0 ${w} ${h}`} className="overflow-visible">
+   545→        {/* PCR = 1 line */}
+   546→        {pcr1Y > 0 && pcr1Y < h && (
+   547→          <line x1="0" y1={pcr1Y} x2={w} y2={pcr1Y}
+   548→            stroke="#525252" strokeWidth="0.5" strokeDasharray="3,3" />
+   549→        )}
+   550→        {/* Area fill */}
+   551→        <polygon
+   552→          points={`0,${h} ${points} ${lastX},${h}`}
+   553→          fill={lastVal >= 1 ? 'rgba(52,211,153,0.1)' : 'rgba(248,113,113,0.1)'}
+   554→        />
+   555→        {/* Line */}
+   556→        <polyline points={points} fill="none" stroke={lineColor} strokeWidth="1.5" />
+   557→        {/* End dot */}
+   558→        <circle cx={lastX} cy={lastY} r="2.5" fill={lineColor} />
+   559→      </svg>
+   560→    );
+   561→  }
+   562→
+   563→  // ═══════════════════════════════════════════
+   564→  // RENDER
+   565→  // ═══════════════════════════════════════════
+   566→
+   567→  return (
+   568→    <div className="space-y-4">
+   569→      {/* ─── Symbol Selector ─── */}
+   570→      <div className="flex flex-wrap gap-1.5">
+   571→        {ALL_SYMBOLS.map(s => (
+   572→          <button
+   573→            key={s.symbol}
+   574→            onClick={() => {
+   575→              setSymbol(s.symbol);
+   576→              setSnapshot(null);
+   577→              setDemoData(null);
+   578→              prevSnapshotRef.current = null;
+   579→            }}
+   580→            className={
+   581→              `text-[10px] px-2 py-1 rounded border transition-all duration-150 cursor-pointer whitespace-nowrap ` +
+   582→              (symbol === s.symbol
+   583→                ? 'bg-primary/20 border-primary/50 text-primary-foreground font-semibold'
+   584→                : 'bg-card border-border/30 text-zinc-400 hover:border-zinc-500 hover:text-zinc-300')
+   585→            }
+   586→          >
+   587→            {s.symbol}
+   588→          </button>
+   589→        ))}
+   590→      </div>
+   591→
+   592→      {/* ─── Status Bar ─── */}
+   593→      <div className="flex items-center justify-between">
+   594→        <div className="flex items-center gap-2">
+   595→          {isLive ? (
+   596→            <Badge variant="outline" className="gap-1 text-emerald-400 border-emerald-500/30 bg-emerald-500/5">
+   597→              <Wifi className="w-3 h-3" /> LIVE
+   598→            </Badge>
+   599→          ) : (
+   600→            <Badge variant="outline" className="gap-1 text-zinc-500 border-zinc-700 bg-zinc-800/50">
+   601→              <WifiOff className="w-3 h-3" /> DEMO
+   602→            </Badge>
+   603→          )}
+   604→          {data && (
+   605→            <span className="text-[10px] text-zinc-500">
+   606→              Expiry: {data.expiry} · Lot: {data.lotSize} · Step: {data.strikeStep}
+   607→            </span>
+   608→          )}
+   609→        </div>
+   610→        <div className="flex items-center gap-3">
+   611→          {data && (
+   612→            <span className="text-xs text-zinc-400">
+   613→              Spot: <span className="text-foreground font-semibold">{formatNumber(data.spotPrice)}</span>
+   614→            </span>
+   615→          )}
+   616→          {lastUpdate && (
+   617→            <span className="text-[10px] text-zinc-600">{lastUpdate}</span>
+   618→          )}
+   619→          <button
+   620→            onClick={fetchData}
+   621→            disabled={loading}
+   622→            className="p-1 rounded hover:bg-zinc-800 transition-colors disabled:opacity-50 cursor-pointer"
+   623→          >
+   624→            <RefreshCw className={`w-3 h-3 text-zinc-500 ${loading ? 'animate-spin' : ''}`} />
+   625→          </button>
+   626→        </div>
+   627→      </div>
+   628→
+   629→      {/* ─── Error ─── */}
+   630→      {error && (
+   631→        <div className="bg-red-500/10 border border-red-500/20 rounded-lg px-4 py-2 text-xs text-red-400">
+   632→          {error}
+   633→        </div>
+   634→      )}
+   635→
+   636→      {/* ─── OI Walls Chart ─── */}
+   637→      {data && walls.length > 0 ? (
+   638→        <div className="bg-card border border-border/30 rounded-lg p-4">
+   639→          {/* Chart header — 4-color legend */}
+   640→          <div className="flex items-center justify-between mb-2 flex-wrap gap-y-1">
+   641→            <div className="flex items-center gap-3 flex-wrap">
+   642→              <span className="text-[10px] text-zinc-500 font-medium">CE OI (LEFT)</span>
+   643→              <div className="flex items-center gap-1.5">
+   644→                <div className="w-3 h-2 rounded-sm" style={{ backgroundColor: '#00B050' }} />
+   645→                <span className="text-[9px] text-zinc-500">Buy</span>
+   646→              </div>
+   647→              <div className="flex items-center gap-1.5">
+   648→                <div className="w-3 h-2 rounded-sm" style={{ backgroundColor: '#FFCCCC', borderRight: '2px solid #dc2626' }} />
+   649→                <span className="text-[9px] text-zinc-500">Write</span>
+   650→              </div>
+   651→              <div className="flex items-center gap-1.5">
+   652→                <div className="w-3 h-2 rounded-sm" style={{ backgroundColor: '#6b7280' }} />
+   653→                <span className="text-[9px] text-zinc-500">Close</span>
+   654→              </div>
+   655→              <span className="text-zinc-700">|</span>
+   656→              <span className="text-[10px] text-zinc-500 font-medium">PE OI (RIGHT)</span>
+   657→              <div className="flex items-center gap-1.5">
+   658→                <div className="w-3 h-2 rounded-sm" style={{ backgroundColor: '#C6EFCE', borderLeft: '2px solid #16a34a' }} />
+   659→                <span className="text-[9px] text-zinc-500">Write</span>
+   660→              </div>
+   661→              <div className="flex items-center gap-1.5">
+   662→                <div className="w-3 h-2 rounded-sm" style={{ backgroundColor: '#BD2130' }} />
+   663→                <span className="text-[9px] text-zinc-500">Buy</span>
+   664→              </div>
+   665→              <div className="flex items-center gap-1.5">
+   666→                <div className="w-3 h-2 rounded-sm" style={{ backgroundColor: '#6b7280' }} />
+   667→                <span className="text-[9px] text-zinc-500">Close</span>
+   668→              </div>
+   669→            </div>
+   670→            <div className="flex items-center gap-3">
+   671→              <div className="flex items-center gap-1">
+   672→                <div className="w-2.5 h-2.5 rounded-sm bg-emerald-500/[0.06] border border-emerald-500/20" />
+   673→                <span className="text-[9px] text-zinc-600">ITM</span>
+   674→              </div>
+   675→              <div className="flex items-center gap-1.5">
+   676→                <Target className="w-3 h-3 text-amber-400" />
+   677→                <span className="text-[10px] text-zinc-500">Max Pain</span>
+   678→              </div>
+   679→            </div>
+   680→          </div>
+   681→
+   682→          {/* Column headers — CE LEFT, Strike CENTER, PE RIGHT */}
+   683→          <div className="flex items-center text-[10px] text-zinc-600 mb-1">
+   684→            <div className="flex-1 text-right pr-2">CE OI</div>
+   685→            <div className="w-[70px] text-center">Strike</div>
+   686→            <div className="flex-1 text-left pl-2">PE OI</div>
+   687→          </div>
+   688→
+   689→          {/* Strike rows — CE extends LEFT, PE extends RIGHT, strike CENTER */}
+   690→          <div className="relative space-y-px">
+   691→            {/* Spot price dashed line overlay — positioned at 50% (center) */}
+   692→            <div
+   693→              className="absolute top-0 bottom-0 w-px bg-foreground/30 pointer-events-none z-10"
+   694→              style={{ left: '50%' }}
+   695→            >
+   696→              <div className="absolute -top-4 -left-[30px] text-[9px] text-foreground/50 whitespace-nowrap font-medium">
+   697→                ▼ {formatNumber(data.spotPrice)}
+   698→              </div>
+   699→            </div>
+   700→
+   701→            {walls.map(w => {
+   702→              const isMaxPain = metrics && w.strike === metrics.maxPain;
+   703→
+   704→              return (
+   705→                <div key={w.strike} className="flex items-center rounded px-1 py-1 relative">
+   706→                  {/* ITM background tints — split left/right */}
+   707→                  {w.isCeITM && (
+   708→                    <div className="absolute left-0 top-0 bottom-0 w-1/2 bg-emerald-500/[0.05] rounded-l pointer-events-none" />
+   709→                  )}
+   710→                  {w.isPeITM && (
+   711→                    <div className="absolute right-0 top-0 bottom-0 w-1/2 bg-red-500/[0.05] rounded-r pointer-events-none" />
+   712→                  )}
+   713→                  {w.isATM && (
+   714→                    <div className="absolute inset-0 bg-blue-500/10 pointer-events-none rounded" />
+   715→                  )}
+   716→                  {isMaxPain && !w.isATM && (
+   717→                    <div className="absolute inset-0 bg-amber-500/10 border border-amber-500/20 pointer-events-none rounded" />
+   718→                  )}
+   719→
+   720→                  {/* CE OI bar (extends LEFT from center) — 4-color */}
+   721→                  <div className="flex-1 flex justify-end items-center pr-2 relative z-[1]">
+   722→                    <span className={`text-[10px] relative z-10 mr-1.5 ${w.ceColor.text}`} title={w.ceColor.label}>
+   723→                      {w.ceOI > 0 ? formatLakhs(w.ceOI) : ''}
+   724→                    </span>
+   725→                    <div
+   726→                      className="h-5 rounded-r-sm relative overflow-hidden"
+   727→                      style={{
+   728→                        width: `${Math.max(w.cePct, 0)}%`,
+   729→                        backgroundColor: w.ceColor.bg,
+   730→                        borderRight: w.ceColor.border ? `2px solid ${w.ceColor.border}` : undefined,
+   731→                      }}
+   732→                      title={w.ceColor.label}
+   733→                    >
+   734→                      {w.cePct > 12 && w.ceOiChange !== 0 && (
+   735→                        <span className="absolute inset-0 flex items-center justify-center text-[9px] font-semibold pointer-events-none"
+   736→                          style={{ color: w.ceColor.border || w.ceColor.bg }}>
+   737→                          {w.ceOiChange > 0 ? '+' : ''}{formatLakhs(w.ceOiChange)}
+   738→                        </span>
+   739→                      )}
+   740→                    </div>
+   741→                  </div>
+   742→
+   743→                  {/* Strike label (CENTER) */}
+   744→                  <div className="w-[70px] text-center shrink-0 relative z-[1]">
+   745→                    <span className={`text-xs font-mono ${w.isATM ? 'text-blue-400 font-bold' : isMaxPain ? 'text-amber-400 font-bold' : 'text-zinc-300'}`}>
+   746→                      {w.strike}
+   747→                    </span>
+   748→                    {w.isATM && (
+   749→                      <div className="text-[9px] text-blue-400/60 font-medium">ATM</div>
+   750→                    )}
+   751→                    {isMaxPain && !w.isATM && (
+   752→                      <div className="text-[9px] text-amber-400/60 font-medium">MP</div>
+   753→                    )}
+   754→                    {/* ITM labels */}
+   755→                    {w.isCeITM && !w.isATM && (
+   756→                      <div className="text-[8px] text-emerald-500/40 leading-none">ITM</div>
+   757→                    )}
+   758→                    {w.isPeITM && !w.isATM && (
+   759→                      <div className="text-[8px] text-red-500/40 leading-none">ITM</div>
+   760→                    )}
+   761→                  </div>
+   762→
+   763→                  {/* PE OI bar (extends RIGHT from center) — 4-color */}
+   764→                  <div className="flex-1 flex items-center pl-2 relative z-[1]">
+   765→                    <div
+   766→                      className="h-5 rounded-l-sm relative overflow-hidden"
+   767→                      style={{
+   768→                        width: `${Math.max(w.pePct, 0)}%`,
+   769→                        backgroundColor: w.peColor.bg,
+   770→                        borderLeft: w.peColor.border ? `2px solid ${w.peColor.border}` : undefined,
+   771→                      }}
+   772→                      title={w.peColor.label}
+   773→                    >
+   774→                      {w.pePct > 12 && w.peOiChange !== 0 && (
+   775→                        <span className="absolute inset-0 flex items-center justify-center text-[9px] font-semibold pointer-events-none"
+   776→                          style={{ color: w.peColor.border || w.peColor.bg }}>
+   777→                          {w.peOiChange > 0 ? '+' : ''}{formatLakhs(w.peOiChange)}
+   778→                        </span>
+   779→                      )}
+   780→                    </div>
+   781→                    <span className={`text-[10px] relative z-10 ml-1.5 ${w.peColor.text}`} title={w.peColor.label}>
+   782→                      {w.peOI > 0 ? formatLakhs(w.peOI) : ''}
+   783→                    </span>
+   784→                  </div>
+   785→                </div>
+   786→              );
+   787→            })}
+   788→          </div>
+   789→        </div>
+   790→      ) : (
+   791→        <div className="bg-card border border-border/30 rounded-lg p-8 flex items-center justify-center">
+   792→          <div className="text-center">
+   793→            {loading ? (
+   794→              <>
+   795→                <RefreshCw className="w-6 h-6 text-zinc-500 animate-spin mx-auto mb-2" />
+   796→                <p className="text-xs text-zinc-500">Loading OI data...</p>
+   797→              </>
+   798→            ) : (
+   799→              <>
+   800→                <BarChart3 className="w-6 h-6 text-zinc-600 mx-auto mb-2" />
+   801→                <p className="text-xs text-zinc-500">No data available</p>
+   802→              </>
+   803→            )}
+   804→          </div>
+   805→        </div>
+   806→      )}
+   807→
+   808→      {/* ─── Info Cards ─── */}
+   809→      {metrics && (
+   810→        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+   811→          {/* PCR Card */}
+   812→          <div className="bg-card border border-border/30 rounded-lg p-4">
+   813→            <div className="flex items-center gap-1.5 mb-2">
+   814→              <Activity className="w-3.5 h-3.5 text-zinc-500" />
+   815→              <span className="text-[10px] text-zinc-500 uppercase tracking-wider">PCR (Put-Call Ratio)</span>
+   816→            </div>
+   817→            <div className="flex items-baseline gap-2">
+   818→              <span className={`text-lg font-bold ${metrics.pcr >= 1 ? 'text-emerald-400' : 'text-red-400'}`}>
+   819→                {metrics.pcr.toFixed(3)}
+   820→              </span>
+   821→              <span className={`text-[10px] ${getPCRLabel(metrics.pcr).color}`}>
+   822→                {getPCRLabel(metrics.pcr).text}
+   823→              </span>
+   824→            </div>
+   825→            <div className="flex justify-between mt-2 text-[10px] text-zinc-600">
+   826→              <span>PE: {formatLakhs(metrics.totalPEOI)}</span>
+   827→              <span>CE: {formatLakhs(metrics.totalCEOI)}</span>
+   828→            </div>
+   829→          </div>
+   830→
+   831→          {/* Max Pain Card */}
+   832→          <div className="bg-card border border-border/30 rounded-lg p-4">
+   833→            <div className="flex items-center gap-1.5 mb-2">
+   834→              <Target className="w-3.5 h-3.5 text-amber-500" />
+   835→              <span className="text-[10px] text-zinc-500 uppercase tracking-wider">Max Pain</span>
+   836→            </div>
+   837→            <div className="flex items-baseline gap-2">
+   838→              <span className="text-lg font-bold text-amber-400">
+   839→                {formatNumber(metrics.maxPain)}
+   840→              </span>
+   841→              {metrics.maxPainDist !== 0 && (
+   842→                <span className={`text-[10px] flex items-center gap-0.5 ${metrics.maxPainDist > 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+   843→                  {metrics.maxPainDist > 0 ? (
+   844→                    <><TrendingUp className="w-3 h-3" />+{Math.abs(metrics.maxPainDist)} pts above</>
+   845→                  ) : (
+   846→                    <><TrendingDown className="w-3 h-3" />{Math.abs(metrics.maxPainDist)} pts below</>
+   847→                  )}
+   848→                </span>
+   849→              )}
+   850→            </div>
+   851→            <div className="mt-2 text-[10px] text-zinc-600">
+   852→              Spot: {formatNumber(data?.spotPrice || 0)}
+   853→            </div>
+   854→          </div>
+   855→
+   856→          {/* OI Change Card */}
+   857→          <div className="bg-card border border-border/30 rounded-lg p-4">
+   858→            <div className="flex items-center gap-1.5 mb-2">
+   859→              <BarChart3 className="w-3.5 h-3.5 text-zinc-500" />
+   860→              <span className="text-[10px] text-zinc-500 uppercase tracking-wider">OI Change</span>
+   861→            </div>
+   862→            <div className="space-y-1">
+   863→              <div className="flex items-center justify-between">
+   864→                <span className="text-[10px] text-red-400">CE Δ</span>
+   865→                <span className={`text-xs font-semibold ${metrics.ceOIChange >= 0 ? 'text-red-400' : 'text-emerald-400'}`}>
+   866→                  {metrics.ceOIChange >= 0 ? '+' : ''}{formatLakhs(metrics.ceOIChange)}
+   867→                </span>
+   868→              </div>
+   869→              <div className="flex items-center justify-between">
+   870→                <span className="text-[10px] text-emerald-400">PE Δ</span>
+   871→                <span className={`text-xs font-semibold ${metrics.peOIChange >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+   872→                  {metrics.peOIChange >= 0 ? '+' : ''}{formatLakhs(metrics.peOIChange)}
+   873→                </span>
+   874→              </div>
+   875→              <div className="border-t border-border/20 pt-1 flex items-center justify-between">
+   876→                <span className="text-[10px] text-zinc-500">Net Δ</span>
+   877→                <span className={`text-xs font-bold ${metrics.peOIChange - metrics.ceOIChange >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+   878→                  {metrics.peOIChange - metrics.ceOIChange >= 0 ? '+' : ''}{formatLakhs(metrics.peOIChange - metrics.ceOIChange)}
+   879→                </span>
+   880→              </div>
+   881→            </div>
+   882→          </div>
+   883→
+   884→          {/* Total OI Card */}
+   885→          <div className="bg-card border border-border/30 rounded-lg p-4">
+   886→            <div className="flex items-center gap-1.5 mb-2">
+   887→              <Activity className="w-3.5 h-3.5 text-zinc-500" />
+   888→              <span className="text-[10px] text-zinc-500 uppercase tracking-wider">Total OI</span>
+   889→            </div>
+   890→            <div className="flex items-baseline gap-1.5">
+   891→              <span className="text-lg font-bold text-foreground">
+   892→                {formatLakhs(metrics.totalOI)}
+   893→              </span>
+   894→              <span className="text-[10px] text-zinc-600">Lakhs</span>
+   895→            </div>
+   896→            <div className="flex justify-between mt-2 text-[10px] text-zinc-600">
+   897→              <span className="text-red-400/70">CE: {formatLakhs(metrics.totalCEOI)}</span>
+   898→              <span className="text-emerald-400/70">PE: {formatLakhs(metrics.totalPEOI)}</span>
+   899→            </div>
+   900→          </div>
+   901→        </div>
+   902→      )}
+   903→
+   904→      {/* ─── PCR History Sparkline ─── */}
+   905→      <div className="bg-card border border-border/30 rounded-lg p-4">
+   906→        <div className="flex items-center justify-between mb-2">
+   907→          <div className="flex items-center gap-1.5">
+   908→            <Activity className="w-3.5 h-3.5 text-zinc-500" />
+   909→            <span className="text-[10px] text-zinc-500 uppercase tracking-wider">PCR History (Today)</span>
+   910→          </div>
+   911→          {pcrHistory.length > 0 && (
+   912→            <span className={`text-xs font-semibold ${pcrHistory[pcrHistory.length - 1] >= 1 ? 'text-emerald-400' : 'text-red-400'}`}>
+   913→              {pcrHistory[pcrHistory.length - 1].toFixed(3)}
+   914→            </span>
+   915→          )}
+   916→        </div>
+   917→        <PCRSparkline />
+   918→        <div className="flex justify-between mt-1 text-[9px] text-zinc-600">
+   919→          <span>PCR &lt; 1 = Bullish</span>
+   920→          <span>PCR = 1.0 (dashed)</span>
+   921→          <span>PCR &gt; 1 = Bearish</span>
+   922→        </div>
+   923→      </div>
+   924→
+   925→      {/* ─── Max Pain Gravity Meter ─── */}
+   926→      <div className="bg-card border border-border/30 rounded-lg p-4">
+   927→        <div className="flex items-center justify-between mb-3">
+   928→          <div className="flex items-center gap-1.5">
+   929→            <Gauge className="w-3.5 h-3.5 text-amber-500" />
+   930→            <span className="text-[10px] text-zinc-500 uppercase tracking-wider">Max Pain Gravity Meter</span>
+   931→          </div>
+   932→          <div className="flex items-center gap-2">
+   933→            {scanLoading && <RefreshCw className="w-3 h-3 text-zinc-600 animate-spin" />}
+   934→            <button
+   935→              onClick={fetchScan}
+   936→              disabled={scanLoading}
+   937→              className="p-1 rounded hover:bg-zinc-800 transition-colors disabled:opacity-50 cursor-pointer"
+   938→            >
+   939→              <RefreshCw className={`w-3 h-3 text-zinc-500 ${scanLoading ? 'animate-spin' : ''}`} />
+   940→            </button>
+   941→          </div>
+   942→        </div>
+   943→
+   944→        {scanError && (
+   945→          <div className="text-[10px] text-red-400/80 mb-2">Scan error: {scanError}</div>
+   946→        )}
+   947→
+   948→        {gravitySignal ? (
+   949→          <>
+   950→            {/* Gauge visualization */}
+   951→            <div className="flex items-center gap-4 mb-4">
+   952→              {/* Strength + Direction indicator */}
+   953→              <div className="flex-shrink-0 w-16 h-16 rounded-full border-2 flex items-center justify-center relative"
+   954→                style={{
+   955→                  borderColor: gravitySignal.strength === 'strong' ? '#22c55e'
+   956→                    : gravitySignal.strength === 'moderate' ? '#eab308'
+   957→                    : gravitySignal.strength === 'weak' ? '#f97316'
+   958→                    : '#ef4444',
+   959→                }}
+   960→              >
+   961→                <div className="text-center">
+   962→                  <div className="text-[9px] text-zinc-500 leading-none">Signal</div>
+   963→                  <div className={`text-xs font-bold mt-0.5 ${
+   964→                    gravitySignal.strength === 'strong' ? 'text-emerald-400'
+   965→                    : gravitySignal.strength === 'moderate' ? 'text-yellow-400'
+   966→                    : gravitySignal.strength === 'weak' ? 'text-orange-400'
+   967→                    : 'text-red-400'
+   968→                  }`}>
+   969→                    {gravitySignal.strength === 'strong' ? 'STRONG' : gravitySignal.strength.toUpperCase().slice(0, 4)}
+   970→                  </div>
+   971→                  <div className={`text-[8px] mt-0.5 ${gravitySignal.direction === 'down' ? 'text-red-400' : gravitySignal.direction === 'up' ? 'text-emerald-400' : 'text-zinc-500'}`}>
+   972→                    {gravitySignal.direction === 'down' ? '▼ PULL DN' : gravitySignal.direction === 'up' ? '▲ PULL UP' : '— MIXED'}
+   973→                  </div>
+   974→                </div>
+   975→              </div>
+   976→
+   977→              {/* Index + Stock summary — direction-aware */}
+   978→              <div className="flex-1 space-y-2">
+   979→                <div className="flex items-center justify-between">
+   980→                  <span className="text-[10px] text-zinc-500">
+   981→                    Indices {gravitySignal.direction === 'down' ? 'above' : gravitySignal.direction === 'up' ? 'below' : 'above'} MP
+   982→                  </span>
+   983→                  <span className="text-sm font-bold text-foreground">
+   984→                    {gravitySignal.direction === 'up' ? gravitySignal.indicesBelow : gravitySignal.indicesAbove}<span className="text-zinc-600 font-normal">/{gravitySignal.indicesTotal}</span>
+   985→                  </span>
+   986→                </div>
+   987→                <div className="w-full h-1.5 bg-zinc-800 rounded-full overflow-hidden">
+   988→                  <div
+   989→                    className="h-full rounded-full transition-all duration-500"
+   990→                    style={{
+   991→                      width: `${((gravitySignal.direction === 'up' ? gravitySignal.indicesBelow : gravitySignal.indicesAbove) / gravitySignal.indicesTotal) * 100}%`,
+   992→                      backgroundColor: gravitySignal.strength === 'strong' ? '#22c55e'
+   993→                        : gravitySignal.strength === 'moderate' ? '#eab308'
+   994→                        : gravitySignal.strength === 'weak' ? '#f97316' : '#ef4444',
+   995→                    }}
+   996→                  />
+   997→                </div>
+   998→                <div className="flex items-center justify-between">
+   999→                  <span className="text-[10px] text-zinc-500">
+  1000→                    Stocks {gravitySignal.direction === 'down' ? 'above' : gravitySignal.direction === 'up' ? 'below' : 'above'} MP
+  1001→                  </span>
+  1002→                  <span className="text-sm font-bold text-foreground">
+  1003→                    {gravitySignal.direction === 'up' ? gravitySignal.stocksBelow : gravitySignal.stocksAbove}<span className="text-zinc-600 font-normal">/{gravitySignal.stocksTotal}</span>
+  1004→                  </span>
+  1005→                </div>
+  1006→                <div className="w-full h-1.5 bg-zinc-800 rounded-full overflow-hidden">
+  1007→                  <div
+  1008→                    className="h-full rounded-full transition-all duration-500"
+  1009→                    style={{
+  1010→                      width: `${gravitySignal.stocksTotal > 0 ? ((gravitySignal.direction === 'up' ? gravitySignal.stocksBelow : gravitySignal.stocksAbove) / gravitySignal.stocksTotal) * 100 : 0}%`,
+  1011→                      backgroundColor: gravitySignal.strength === 'strong' ? '#22c55e'
+  1012→                        : gravitySignal.strength === 'moderate' ? '#eab308'
+  1013→                        : gravitySignal.strength === 'weak' ? '#f97316' : '#ef4444',
+  1014→                    }}
+  1015→                  />
+  1016→                </div>
+  1017→              </div>
+  1018→            </div>
+  1019→
+  1020→            {/* Thesis callout — direction-aware */}
+  1021→            {gravitySignal.strength === 'strong' && (
+  1022→              <div className={`rounded-md px-3 py-2 mb-3 ${
+  1023→                gravitySignal.direction === 'down'
+  1024→                  ? 'bg-red-500/10 border border-red-500/20'
+  1025→                  : 'bg-emerald-500/10 border border-emerald-500/20'
+  1026→              }`}>
+  1027→                <div className="flex items-start gap-1.5">
+  1028→                  {gravitySignal.direction === 'down' ? (
+  1029→                    <TrendingDown className="w-3 h-3 text-red-400 mt-0.5 flex-shrink-0" />
+  1030→                  ) : (
+  1031→                    <TrendingUp className="w-3 h-3 text-emerald-400 mt-0.5 flex-shrink-0" />
+  1032→                  )}
+  1033→                  <p className={`text-[10px] leading-relaxed ${
+  1034→                    gravitySignal.direction === 'down' ? 'text-red-300/90' : 'text-emerald-300/90'
+  1035→                  }`}>
+  1036→                    <span className="font-semibold">
+  1037→                      {gravitySignal.direction === 'down' ? 'Gravity Pull DOWN' : 'Gravity Pull UP'}
+  1038→                    </span> — All {gravitySignal.indicesTotal} indices {gravitySignal.direction === 'down' ? 'above' : 'below'} max pain + stock avg confirms.
+  1039→                    Big money may pull market <span className="font-semibold">
+  1040→                      {gravitySignal.direction === 'down' ? 'down toward' : 'up toward'} average max pain
+  1041→                    </span> of all indices.
+  1042→                    Watch for Mean Reversion after 2 PM on expiry day.
+  1043→                  </p>
+  1044→                </div>
+  1045→              </div>
+  1046→            )}
+  1047→
+  1048→            {/* Breakdown Table */}
+  1049→            <div className="border border-border/20 rounded-md overflow-hidden">
+  1050→              {/* Table header */}
+  1051→              <div className="grid grid-cols-[1fr_72px_72px_60px_48px] gap-0 bg-zinc-900/50 px-3 py-1.5 text-[9px] text-zinc-500 uppercase tracking-wider">
+  1052→                <span>Symbol</span>
+  1053→                <span className="text-right">Spot</span>
+  1054→                <span className="text-right">Max Pain</span>
+  1055→                <span className="text-right">Diff</span>
+  1056→                <span className="text-right">PCR</span>
+  1057→              </div>
+  1058→
+  1059→              {/* Index rows */}
+  1060→              {scanData.filter(s => s.type === 'index').map(s => (
+  1061→                <div key={s.symbol} className="grid grid-cols-[1fr_72px_72px_60px_48px] gap-0 px-3 py-1.5 border-t border-border/10 hover:bg-zinc-800/30 transition-colors">
+  1062→                  <div className="flex items-center gap-1.5">
+  1063→                    <span className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{
+  1064→                      backgroundColor: s.dist > 0 ? '#22c55e' : '#ef4444',
+  1065→                    }} />
+  1066→                    <span className="text-[11px] font-semibold text-foreground truncate">{s.symbol}</span>
+  1067→                  </div>
+  1068→                  <span className="text-[10px] text-zinc-300 text-right font-mono">{formatNumber(Math.round(s.spot))}</span>
+  1069→                  <span className="text-[10px] text-amber-400 text-right font-mono">{formatNumber(s.maxPain)}</span>
+  1070→                  <span className={`text-[10px] text-right font-mono font-semibold ${s.dist > 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+  1071→                    {s.dist > 0 ? '+' : ''}{Math.round(s.dist)}
+  1072→                  </span>
+  1073→                  <span className="text-[10px] text-zinc-400 text-right font-mono">
+  1074→                    {s.totalCEOI > 0 ? (s.totalPEOI / s.totalCEOI).toFixed(1) : '—'}
+  1075→                  </span>
+  1076→                </div>
+  1077→              ))}
+  1078→
+  1079→              {/* Separator between indices and stocks */}
+  1080→              {scanData.some(s => s.type === 'index') && scanData.some(s => s.type === 'stock') && (
+  1081→                <div className="border-t border-border/20 px-3 py-1 bg-zinc-900/30">
+  1082→                  <span className="text-[9px] text-zinc-600 uppercase tracking-wider">F&O Stocks</span>
+  1083→                </div>
+  1084→              )}
+  1085→
+  1086→              {/* Stock rows */}
+  1087→              {scanData.filter(s => s.type === 'stock').map(s => (
+  1088→                <div key={s.symbol} className="grid grid-cols-[1fr_72px_72px_60px_48px] gap-0 px-3 py-1.5 border-t border-border/10 hover:bg-zinc-800/30 transition-colors">
+  1089→                  <div className="flex items-center gap-1.5">
+  1090→                    <span className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{
+  1091→                      backgroundColor: s.dist > 0 ? '#22c55e' : '#ef4444',
+  1092→                    }} />
+  1093→                    <span className="text-[10px] text-zinc-300 truncate">{s.symbol}</span>
+  1094→                  </div>
+  1095→                  <span className="text-[10px] text-zinc-400 text-right font-mono">{formatNumber(Math.round(s.spot))}</span>
+  1096→                  <span className="text-[10px] text-amber-400/70 text-right font-mono">{formatNumber(s.maxPain)}</span>
+  1097→                  <span className={`text-[10px] text-right font-mono ${s.dist > 0 ? 'text-emerald-400/80' : 'text-red-400/80'}`}>
+  1098→                    {s.dist > 0 ? '+' : ''}{Math.round(s.dist)}
+  1099→                  </span>
+  1100→                  <span className="text-[10px] text-zinc-500 text-right font-mono">
+  1101→                    {s.totalCEOI > 0 ? (s.totalPEOI / s.totalCEOI).toFixed(1) : '—'}
+  1102→                  </span>
+  1103→                </div>
+  1104→              ))}
+  1105→            </div>
+  1106→
+  1107→            {/* Footer note */}
+  1108→            <div className="mt-2 text-[9px] text-zinc-600 leading-relaxed">
+  1109→              Spot above Max Pain = option writers (sellers) in profit → gravitational pull toward MP at expiry.
+  1110→              Refreshes every 2 min. Best signal on monthly expiry after 2 PM in low volatility.
+  1111→            </div>
+  1112→          </>
+  1113→        ) : !scanError && scanData.length === 0 && !scanLoading ? (
+  1114→          <div className="text-center py-4">
+  1115→            <Gauge className="w-5 h-5 text-zinc-600 mx-auto mb-1.5" />
+  1116→            <p className="text-[10px] text-zinc-500">Connect Kite API to see Max Pain Gravity Meter</p>
+  1117→          </div>
+  1118→        ) : scanLoading && scanData.length === 0 ? (
+  1119→          <div className="text-center py-4">
+  1120→            <RefreshCw className="w-5 h-5 text-zinc-600 animate-spin mx-auto mb-1.5" />
+  1121→            <p className="text-[10px] text-zinc-500">Scanning all {INDEX_SPECS.length + STOCK_SPECS.length} symbols...</p>
+  1122→          </div>
+  1123→        ) : null}
+  1124→      </div>
+  1125→    </div>
+  1126→  );
+  1127→}
+  1128→
