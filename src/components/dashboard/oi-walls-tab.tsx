@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { Badge } from '@/components/ui/badge';
 import { withCreds } from '@/lib/kite-creds';
-import { Target, Activity, BarChart3, Wifi, WifiOff, RefreshCw, TrendingUp, TrendingDown, Gauge, ArrowDownToLine } from 'lucide-react';
+import { Target, Activity, BarChart3, Wifi, WifiOff, RefreshCw, TrendingUp, TrendingDown, Gauge } from 'lucide-react';
 import { INDEX_SPECS, STOCK_SPECS } from '@/lib/kite-api';
 import type { StrikeFlowSnapshot, StrikeFlowData } from '@/lib/kite-api';
 
@@ -93,11 +93,14 @@ interface MaxPainScanItem {
 
 interface GravitySignal {
   indicesAbove: number;
+  indicesBelow: number;
   indicesTotal: number;
   stocksAbove: number;
+  stocksBelow: number;
   stocksTotal: number;
   avgIndexDistPct: number;
   avgStockDistPct: number;
+  direction: 'down' | 'up' | 'mixed'; // gravity pulls DOWN (spot above MP) or UP (spot below MP)
   strength: 'strong' | 'moderate' | 'weak' | 'divergent';
 }
 
@@ -333,30 +336,45 @@ export default function OIWallsTab() {
         const items: MaxPainScanItem[] = json.symbols;
         setScanData(items);
 
-        // Compute gravity signal
+        // Compute gravity signal — works BOTH directions
         const indices = items.filter(s => s.type === 'index');
         const stocks = items.filter(s => s.type === 'stock');
         const indicesAbove = indices.filter(s => s.dist > 0).length;
+        const indicesBelow = indices.filter(s => s.dist < 0).length;
         const stocksAbove = stocks.filter(s => s.dist > 0).length;
+        const stocksBelow = stocks.filter(s => s.dist < 0).length;
         const avgIdxDist = indices.length > 0 ? indices.reduce((s, i) => s + i.distPct, 0) / indices.length : 0;
         const avgStkDist = stocks.length > 0 ? stocks.reduce((s, i) => s + i.distPct, 0) / stocks.length : 0;
 
+        // Determine direction: which side has more index alignment?
+        let direction: GravitySignal['direction'] = 'mixed';
+        if (indicesAbove > indicesBelow) direction = 'down';   // spot above MP → gravity pulls DOWN
+        else if (indicesBelow > indicesAbove) direction = 'up'; // spot below MP → gravity pulls UP
+
+        // Determine aligned count (whichever direction is dominant)
+        const alignedIndices = Math.max(indicesAbove, indicesBelow);
+        const alignedStocks = direction === 'down' ? stocksAbove : stocksBelow;
+        const stockAvgConfirms = direction === 'down' ? avgStkDist > 0.1 : avgStkDist < -0.1;
+
         let strength: GravitySignal['strength'] = 'divergent';
-        if (indicesAbove === 4 && avgStkDist > 0.2) {
+        if (alignedIndices === 4 && stockAvgConfirms) {
           strength = 'strong';
-        } else if (indicesAbove >= 3 && avgStkDist > 0) {
+        } else if (alignedIndices >= 3 && stockAvgConfirms) {
           strength = 'moderate';
-        } else if (indicesAbove >= 2) {
+        } else if (alignedIndices >= 2 && direction !== 'mixed') {
           strength = 'weak';
         }
 
         setGravitySignal({
           indicesAbove,
+          indicesBelow,
           indicesTotal: indices.length,
           stocksAbove,
+          stocksBelow,
           stocksTotal: stocks.length,
           avgIndexDistPct: avgIdxDist,
           avgStockDistPct: avgStkDist,
+          direction,
           strength,
         });
       } else if (json.mode === 'demo') {
@@ -931,7 +949,7 @@ export default function OIWallsTab() {
           <>
             {/* Gauge visualization */}
             <div className="flex items-center gap-4 mb-4">
-              {/* Strength indicator */}
+              {/* Strength + Direction indicator */}
               <div className="flex-shrink-0 w-16 h-16 rounded-full border-2 flex items-center justify-center relative"
                 style={{
                   borderColor: gravitySignal.strength === 'strong' ? '#22c55e'
@@ -950,56 +968,77 @@ export default function OIWallsTab() {
                   }`}>
                     {gravitySignal.strength === 'strong' ? 'STRONG' : gravitySignal.strength.toUpperCase().slice(0, 4)}
                   </div>
+                  <div className={`text-[8px] mt-0.5 ${gravitySignal.direction === 'down' ? 'text-red-400' : gravitySignal.direction === 'up' ? 'text-emerald-400' : 'text-zinc-500'}`}>
+                    {gravitySignal.direction === 'down' ? '▼ PULL DN' : gravitySignal.direction === 'up' ? '▲ PULL UP' : '— MIXED'}
+                  </div>
                 </div>
               </div>
 
-              {/* Index + Stock summary */}
+              {/* Index + Stock summary — direction-aware */}
               <div className="flex-1 space-y-2">
                 <div className="flex items-center justify-between">
-                  <span className="text-[10px] text-zinc-500">Indices above Max Pain</span>
+                  <span className="text-[10px] text-zinc-500">
+                    Indices {gravitySignal.direction === 'down' ? 'above' : gravitySignal.direction === 'up' ? 'below' : 'above'} MP
+                  </span>
                   <span className="text-sm font-bold text-foreground">
-                    {gravitySignal.indicesAbove}<span className="text-zinc-600 font-normal">/{gravitySignal.indicesTotal}</span>
+                    {gravitySignal.direction === 'up' ? gravitySignal.indicesBelow : gravitySignal.indicesAbove}<span className="text-zinc-600 font-normal">/{gravitySignal.indicesTotal}</span>
                   </span>
                 </div>
                 <div className="w-full h-1.5 bg-zinc-800 rounded-full overflow-hidden">
                   <div
                     className="h-full rounded-full transition-all duration-500"
                     style={{
-                      width: `${(gravitySignal.indicesAbove / gravitySignal.indicesTotal) * 100}%`,
-                      backgroundColor: gravitySignal.indicesAbove === 4 ? '#22c55e'
-                        : gravitySignal.indicesAbove >= 3 ? '#eab308'
-                        : gravitySignal.indicesAbove >= 2 ? '#f97316' : '#ef4444',
+                      width: `${((gravitySignal.direction === 'up' ? gravitySignal.indicesBelow : gravitySignal.indicesAbove) / gravitySignal.indicesTotal) * 100}%`,
+                      backgroundColor: gravitySignal.strength === 'strong' ? '#22c55e'
+                        : gravitySignal.strength === 'moderate' ? '#eab308'
+                        : gravitySignal.strength === 'weak' ? '#f97316' : '#ef4444',
                     }}
                   />
                 </div>
                 <div className="flex items-center justify-between">
-                  <span className="text-[10px] text-zinc-500">Stocks above Max Pain</span>
+                  <span className="text-[10px] text-zinc-500">
+                    Stocks {gravitySignal.direction === 'down' ? 'above' : gravitySignal.direction === 'up' ? 'below' : 'above'} MP
+                  </span>
                   <span className="text-sm font-bold text-foreground">
-                    {gravitySignal.stocksAbove}<span className="text-zinc-600 font-normal">/{gravitySignal.stocksTotal}</span>
+                    {gravitySignal.direction === 'up' ? gravitySignal.stocksBelow : gravitySignal.stocksAbove}<span className="text-zinc-600 font-normal">/{gravitySignal.stocksTotal}</span>
                   </span>
                 </div>
                 <div className="w-full h-1.5 bg-zinc-800 rounded-full overflow-hidden">
                   <div
                     className="h-full rounded-full transition-all duration-500"
                     style={{
-                      width: `${gravitySignal.stocksTotal > 0 ? (gravitySignal.stocksAbove / gravitySignal.stocksTotal) * 100 : 0}%`,
-                      backgroundColor: gravitySignal.stocksAbove >= 12 ? '#22c55e'
-                        : gravitySignal.stocksAbove >= 9 ? '#eab308'
-                        : gravitySignal.stocksAbove >= 6 ? '#f97316' : '#ef4444',
+                      width: `${gravitySignal.stocksTotal > 0 ? ((gravitySignal.direction === 'up' ? gravitySignal.stocksBelow : gravitySignal.stocksAbove) / gravitySignal.stocksTotal) * 100 : 0}%`,
+                      backgroundColor: gravitySignal.strength === 'strong' ? '#22c55e'
+                        : gravitySignal.strength === 'moderate' ? '#eab308'
+                        : gravitySignal.strength === 'weak' ? '#f97316' : '#ef4444',
                     }}
                   />
                 </div>
               </div>
             </div>
 
-            {/* Thesis callout */}
+            {/* Thesis callout — direction-aware */}
             {gravitySignal.strength === 'strong' && (
-              <div className="bg-emerald-500/10 border border-emerald-500/20 rounded-md px-3 py-2 mb-3">
+              <div className={`rounded-md px-3 py-2 mb-3 ${
+                gravitySignal.direction === 'down'
+                  ? 'bg-red-500/10 border border-red-500/20'
+                  : 'bg-emerald-500/10 border border-emerald-500/20'
+              }`}>
                 <div className="flex items-start gap-1.5">
-                  <ArrowDownToLine className="w-3 h-3 text-emerald-400 mt-0.5 flex-shrink-0" />
-                  <p className="text-[10px] text-emerald-300/90 leading-relaxed">
-                    <span className="font-semibold">Gravity Pull Active</span> — All {gravitySignal.indicesTotal} indices above max pain + stock avg positive.
-                    Big money may pull market toward <span className="font-semibold">average max pain</span> of all indices.
+                  {gravitySignal.direction === 'down' ? (
+                    <TrendingDown className="w-3 h-3 text-red-400 mt-0.5 flex-shrink-0" />
+                  ) : (
+                    <TrendingUp className="w-3 h-3 text-emerald-400 mt-0.5 flex-shrink-0" />
+                  )}
+                  <p className={`text-[10px] leading-relaxed ${
+                    gravitySignal.direction === 'down' ? 'text-red-300/90' : 'text-emerald-300/90'
+                  }`}>
+                    <span className="font-semibold">
+                      {gravitySignal.direction === 'down' ? 'Gravity Pull DOWN' : 'Gravity Pull UP'}
+                    </span> — All {gravitySignal.indicesTotal} indices {gravitySignal.direction === 'down' ? 'above' : 'below'} max pain + stock avg confirms.
+                    Big money may pull market <span className="font-semibold">
+                      {gravitySignal.direction === 'down' ? 'down toward' : 'up toward'} average max pain
+                    </span> of all indices.
                     Watch for Mean Reversion after 2 PM on expiry day.
                   </p>
                 </div>
