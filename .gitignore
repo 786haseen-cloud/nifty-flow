@@ -58,3 +58,4 @@ server.log
 # Skills directory
 /skills/tool-results/
 download/
+tool-results/
