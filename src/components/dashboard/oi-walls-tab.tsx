@@ -318,15 +318,32 @@ export default function OIWallsTab() {
   const [scanError, setScanError] = useState<string | null>(null);
   const [gravitySignal, setGravitySignal] = useState<GravitySignal | null>(null);
   // Pre-computed per-strike deltas (computed in fetchData, read during render)
+  // Pre-computed per-strike deltas — 30s realtime
   const [strikeDeltas, setStrikeDeltas] = useState<Map<number, { ceOi: number; peOi: number; ceLtp: number; peLtp: number }>>(new Map());
+  // Pre-computed per-strike deltas — cumulative since open (first poll baseline)
+  const [cumulativeDeltas, setCumulativeDeltas] = useState<Map<number, { ceOi: number; peOi: number; ceLtp: number; peLtp: number }>>(new Map());
+  // View mode: 'sinceOpen' (cumulative from first poll) or 'realtime' (30s delta)
+  const [deltaMode, setDeltaMode] = useState<'sinceOpen' | 'realtime'>('sinceOpen');
 
   const prevSnapshotRef = useRef<StrikeFlowSnapshot | null>(null);
+  const openingSnapshotRef = useRef<Map<string, StrikeFlowSnapshot>>(new Map());
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
 
   // Load PCR history on mount / symbol change
   useEffect(() => {
     setPcrHistory(loadPCRHistory(symbol));
   }, [symbol]);
+
+  // Helper: compute deltas between two snapshots
+  function computeDeltas(newData: StrikeFlowSnapshot, baseData: StrikeFlowSnapshot): Map<number, { ceOi: number; peOi: number; ceLtp: number; peLtp: number }> {
+    const baseMap = new Map(baseData.strikes.map(s => [s.strike, s]));
+    const d = new Map<number, { ceOi: number; peOi: number; ceLtp: number; peLtp: number }>();
+    for (const s of newData.strikes) {
+      const b = baseMap.get(s.strike);
+      if (b) d.set(s.strike, { ceOi: s.ceOI - b.ceOI, peOi: s.peOI - b.peOI, ceLtp: s.ceLTP - b.ceLTP, peLtp: s.peLTP - b.peLTP });
+    }
+    return d;
+  }
 
   const fetchData = useCallback(async () => {
     setLoading(true);
@@ -341,18 +358,18 @@ export default function OIWallsTab() {
         // This enables 4-color OI coding even in demo mode.
         const prev = prevSnapshotRef.current;
         const demo = generateDemoData(symbol, prev);
-        // Compute per-strike deltas BEFORE updating the ref
+        // Compute 30s realtime deltas BEFORE updating the ref
         if (prev && prev.strikes) {
-          const prevMap = new Map(prev.strikes.map(s => [s.strike, s]));
-          const d = new Map<number, { ceOi: number; peOi: number; ceLtp: number; peLtp: number }>();
-          for (const s of demo.strikes) {
-            const p = prevMap.get(s.strike);
-            if (p) d.set(s.strike, { ceOi: s.ceOI - p.ceOI, peOi: s.peOI - p.peOI, ceLtp: s.ceLTP - p.ceLTP, peLtp: s.peLTP - p.peLTP });
-          }
-          setStrikeDeltas(d);
+          setStrikeDeltas(computeDeltas(demo, prev));
         } else {
           setStrikeDeltas(new Map());
         }
+        // Store opening snapshot (first poll baseline) for cumulative mode
+        const openings = openingSnapshotRef.current;
+        if (!openings.has(symbol)) {
+          openings.set(symbol, demo);
+        }
+        setCumulativeDeltas(computeDeltas(demo, openings.get(symbol)!));
         prevSnapshotRef.current = demo;
         setIsLive(false);
         setDemoData(demo);
@@ -369,19 +386,19 @@ export default function OIWallsTab() {
         hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
       }));
 
-      // Compute per-strike deltas BEFORE updating the ref
+      // Compute 30s realtime deltas BEFORE updating the ref
       const prev = prevSnapshotRef.current;
       if (prev && prev.symbol === data.symbol && prev.strikes) {
-        const prevMap = new Map(prev.strikes.map(s => [s.strike, s]));
-        const d = new Map<number, { ceOi: number; peOi: number; ceLtp: number; peLtp: number }>();
-        for (const s of data.strikes) {
-          const p = prevMap.get(s.strike);
-          if (p) d.set(s.strike, { ceOi: s.ceOI - p.ceOI, peOi: s.peOI - p.peOI, ceLtp: s.ceLTP - p.ceLTP, peLtp: s.peLTP - p.peLTP });
-        }
-        setStrikeDeltas(d);
+        setStrikeDeltas(computeDeltas(data, prev));
       } else {
         setStrikeDeltas(new Map());
       }
+      // Store opening snapshot (first poll baseline) for cumulative mode
+      const openings = openingSnapshotRef.current;
+      if (!openings.has(symbol)) {
+        openings.set(symbol, data);
+      }
+      setCumulativeDeltas(computeDeltas(data, openings.get(symbol)!));
       prevSnapshotRef.current = data;
       setSnapshot(data);
     } catch (err) {
@@ -475,29 +492,21 @@ export default function OIWallsTab() {
     };
   }, [fetchScan]);
 
-  // Compute OI change using ref to prev snapshot
-  const oiChange = (() => {
-    const prev = prevSnapshotRef.current;
-    const curr = snapshot;
-    if (!prev || !curr || prev.symbol !== curr.symbol) {
-      // Check demo data diff
-      if (demoData) return { ce: 0, pe: 0 };
-      return { ce: 0, pe: 0 };
-    }
-    let ceChange = 0, peChange = 0;
-    const prevMap = new Map(prev.strikes.map(s => [s.strike, s]));
-    for (const s of curr.strikes) {
-      const p = prevMap.get(s.strike);
-      if (p) {
-        ceChange += s.ceOI - p.ceOI;
-        peChange += s.peOI - p.peOI;
-      }
-    }
-    return { ce: ceChange, pe: peChange };
-  })();
-
   // Use demo or live data
   const data = isLive ? snapshot : demoData;
+
+  // Compute OI change totals — supports both realtime and cumulative modes
+  const getOIChangeTotals = (mode: 'sinceOpen' | 'realtime') => {
+    if (!data || !data.strikes) return { ce: 0, pe: 0 };
+    const activeDeltas = mode === 'sinceOpen' ? cumulativeDeltas : strikeDeltas;
+    let ceChange = 0, peChange = 0;
+    for (const [_, d] of activeDeltas) {
+      ceChange += d.ceOi;
+      peChange += d.peOi;
+    }
+    return { ce: ceChange, pe: peChange };
+  };
+  const oiChange = getOIChangeTotals(deltaMode);
 
   // Compute walls and metrics
   const { walls, metrics } = (() => {
@@ -514,9 +523,10 @@ export default function OIWallsTab() {
     const atmStrike = data.atmStrike || data.strikes.find(s => s.isATM)?.strike || 0;
 
     const walls: OIWallsStrike[] = data.strikes.map(s => {
-      // Use pre-computed deltas from fetchData (stored in state)
+      // Choose delta source based on mode
+      const activeDeltas = deltaMode === 'sinceOpen' ? cumulativeDeltas : strikeDeltas;
       let ceOiChg = 0, peOiChg = 0, ceLtpChg = 0, peLtpChg = 0;
-      const d = strikeDeltas.get(s.strike);
+      const d = activeDeltas.get(s.strike);
       if (d) {
         ceOiChg = d.ceOi;
         peOiChg = d.peOi;
@@ -725,7 +735,7 @@ export default function OIWallsTab() {
       {/* ─── OI Walls Chart ─── */}
       {data && walls.length > 0 ? (
         <div className="bg-card border border-border/30 rounded-lg p-4">
-          {/* Chart header — 4-color legend */}
+          {/* Chart header — 4-color legend + mode toggle */}
           <div className="flex items-center justify-between mb-2 flex-wrap gap-y-1">
             <div className="flex items-center gap-3 flex-wrap">
               <span className="text-[10px] text-zinc-500 font-medium">CE OI (LEFT)</span>
@@ -757,6 +767,31 @@ export default function OIWallsTab() {
               </div>
             </div>
             <div className="flex items-center gap-3">
+              {/* Delta mode toggle */}
+              <div className="flex items-center bg-zinc-900/80 border border-border/30 rounded-md p-0.5">
+                <button
+                  onClick={() => setDeltaMode('sinceOpen')}
+                  className={[
+                    'text-[9px] px-2 py-0.5 rounded-sm transition-all cursor-pointer',
+                    deltaMode === 'sinceOpen'
+                      ? 'bg-primary/20 text-primary-foreground font-semibold'
+                      : 'text-zinc-500 hover:text-zinc-300'
+                  ].join(' ')}
+                >
+                  Since Open
+                </button>
+                <button
+                  onClick={() => setDeltaMode('realtime')}
+                  className={[
+                    'text-[9px] px-2 py-0.5 rounded-sm transition-all cursor-pointer',
+                    deltaMode === 'realtime'
+                      ? 'bg-primary/20 text-primary-foreground font-semibold'
+                      : 'text-zinc-500 hover:text-zinc-300'
+                  ].join(' ')}
+                >
+                  Real-time 30s
+                </button>
+              </div>
               <div className="flex items-center gap-1">
                 <div className="w-2.5 h-2.5 rounded-sm bg-emerald-500/[0.06] border border-emerald-500/20" />
                 <span className="text-[9px] text-zinc-600">ITM</span>
@@ -947,6 +982,9 @@ export default function OIWallsTab() {
             <div className="flex items-center gap-1.5 mb-2">
               <BarChart3 className="w-3.5 h-3.5 text-zinc-500" />
               <span className="text-[10px] text-zinc-500 uppercase tracking-wider">OI Change</span>
+              <span className="text-[8px] px-1 py-0.5 rounded bg-zinc-800 text-zinc-500 border border-border/20">
+                {deltaMode === 'sinceOpen' ? 'SINCE OPEN' : '30s DELTA'}
+              </span>
             </div>
             <div className="space-y-1">
               <div className="flex items-center justify-between">
