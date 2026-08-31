@@ -317,6 +317,8 @@ export default function OIWallsTab() {
   const [scanLoading, setScanLoading] = useState(false);
   const [scanError, setScanError] = useState<string | null>(null);
   const [gravitySignal, setGravitySignal] = useState<GravitySignal | null>(null);
+  // Pre-computed per-strike deltas (computed in fetchData, read during render)
+  const [strikeDeltas, setStrikeDeltas] = useState<Map<number, { ceOi: number; peOi: number; ceLtp: number; peLtp: number }>>(new Map());
 
   const prevSnapshotRef = useRef<StrikeFlowSnapshot | null>(null);
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
@@ -339,10 +341,19 @@ export default function OIWallsTab() {
         // This enables 4-color OI coding even in demo mode.
         const prev = prevSnapshotRef.current;
         const demo = generateDemoData(symbol, prev);
-        // NOTE: do NOT update prevSnapshotRef here — it must remain
-        // pointing to the PREVIOUS data so the walls computation
-        // (which runs during render) can compute real ΔOI/ΔLTP.
-        // The ref is updated in a post-render useEffect instead.
+        // Compute per-strike deltas BEFORE updating the ref
+        if (prev && prev.strikes) {
+          const prevMap = new Map(prev.strikes.map(s => [s.strike, s]));
+          const d = new Map<number, { ceOi: number; peOi: number; ceLtp: number; peLtp: number }>();
+          for (const s of demo.strikes) {
+            const p = prevMap.get(s.strike);
+            if (p) d.set(s.strike, { ceOi: s.ceOI - p.ceOI, peOi: s.peOI - p.peOI, ceLtp: s.ceLTP - p.ceLTP, peLtp: s.peLTP - p.peLTP });
+          }
+          setStrikeDeltas(d);
+        } else {
+          setStrikeDeltas(new Map());
+        }
+        prevSnapshotRef.current = demo;
         setIsLive(false);
         setDemoData(demo);
         setLastUpdate(new Date().toLocaleTimeString('en-IN', {
@@ -358,12 +369,20 @@ export default function OIWallsTab() {
         hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
       }));
 
-      // Compute OI change before updating ref
+      // Compute per-strike deltas BEFORE updating the ref
       const prev = prevSnapshotRef.current;
-      if (prev && prev.symbol === data.symbol) {
-        // OI change is computed in metrics; we just need to store prev for diff
+      if (prev && prev.symbol === data.symbol && prev.strikes) {
+        const prevMap = new Map(prev.strikes.map(s => [s.strike, s]));
+        const d = new Map<number, { ceOi: number; peOi: number; ceLtp: number; peLtp: number }>();
+        for (const s of data.strikes) {
+          const p = prevMap.get(s.strike);
+          if (p) d.set(s.strike, { ceOi: s.ceOI - p.ceOI, peOi: s.peOI - p.peOI, ceLtp: s.ceLTP - p.ceLTP, peLtp: s.peLTP - p.peLTP });
+        }
+        setStrikeDeltas(d);
+      } else {
+        setStrikeDeltas(new Map());
       }
-      // NOTE: do NOT update prevSnapshotRef here (same reason as demo branch)
+      prevSnapshotRef.current = data;
       setSnapshot(data);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Fetch failed');
@@ -480,15 +499,6 @@ export default function OIWallsTab() {
   // Use demo or live data
   const data = isLive ? snapshot : demoData;
 
-  // Update prevSnapshotRef AFTER render so the walls computation
-  // (above, during render) always compares against the PREVIOUS data.
-  // This ensures ΔOI and ΔLTP are non-zero between polls.
-  useEffect(() => {
-    if (data) {
-      prevSnapshotRef.current = data;
-    }
-  }, [data?.timestamp]);
-
   // Compute walls and metrics
   const { walls, metrics } = (() => {
     if (!data || !data.strikes?.length) {
@@ -503,31 +513,20 @@ export default function OIWallsTab() {
     // Find ATM strike for ITM determination
     const atmStrike = data.atmStrike || data.strikes.find(s => s.isATM)?.strike || 0;
 
-    // Build prev strike map for per-strike diff
-    const prev = prevSnapshotRef.current;
-    const prevMap = new Map<number, StrikeFlowData>();
-    if (prev && prev.symbol === data.symbol) {
-      for (const s of prev.strikes) prevMap.set(s.strike, s);
-    }
-
     const walls: OIWallsStrike[] = data.strikes.map(s => {
-      const p = prevMap.get(s.strike);
-      let ceOiChg = p ? s.ceOI - p.ceOI : 0;
-      let peOiChg = p ? s.peOI - p.peOI : 0;
-      let ceLtpChg = p ? s.ceLTP - p.ceLTP : 0;
-      let peLtpChg = p ? s.peLTP - p.peLTP : 0;
-
-      // FIRST-POLL HEURISTIC: When no previous snapshot exists,
-      // infer activity from OI concentration patterns.
-      // Strikes with highest OI relative to neighbors are likely
-      // being written (accumulated OI). Combined with moneyness,
-      // this produces a reasonable 4-color classification.
-      if (!p) {
+      // Use pre-computed deltas from fetchData (stored in state)
+      let ceOiChg = 0, peOiChg = 0, ceLtpChg = 0, peLtpChg = 0;
+      const d = strikeDeltas.get(s.strike);
+      if (d) {
+        ceOiChg = d.ceOi;
+        peOiChg = d.peOi;
+        ceLtpChg = d.ceLtp;
+        peLtpChg = d.peLtp;
+      } else {
+        // FIRST-POLL HEURISTIC: No deltas yet (first load).
+        // Infer activity from OI concentration patterns.
         const avgCeOI = data.strikes.reduce((sum, x) => sum + x.ceOI, 0) / data.strikes.length;
         const avgPeOI = data.strikes.reduce((sum, x) => sum + x.peOI, 0) / data.strikes.length;
-        // Above-average OI = likely written (positive OI change)
-        // Below-average = likely closed or never opened (negative OI change)
-        // Mid-range strikes get a small positive OI change (never 0)
         const ceRatio = s.ceOI / avgCeOI;
         ceOiChg = ceRatio > 1.1 ? Math.round(s.ceOI * 0.02)
                    : ceRatio < 0.7 ? -Math.round(s.ceOI * 0.01)
@@ -536,9 +535,8 @@ export default function OIWallsTab() {
         peOiChg = peRatio > 1.1 ? Math.round(s.peOI * 0.02)
                    : peRatio < 0.7 ? -Math.round(s.peOI * 0.01)
                    : Math.round(s.peOI * 0.005);
-        // LTP heuristic: ITM options have positive intrinsic value movement
-        ceLtpChg = s.ceLTP * 0.002 * (Math.random() - 0.3);  // slight upward bias for CE
-        peLtpChg = s.peLTP * 0.002 * (Math.random() - 0.7);  // slight downward bias for PE
+        ceLtpChg = s.ceLTP * 0.002 * (Math.random() - 0.3);
+        peLtpChg = s.peLTP * 0.002 * (Math.random() - 0.7);
       }
 
       return {
