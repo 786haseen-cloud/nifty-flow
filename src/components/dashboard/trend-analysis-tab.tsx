@@ -18,6 +18,7 @@
  * extend the store's `pollOnce()` action to fetch new data.
  */
 
+import { useMemo } from 'react';
 import { Badge } from '@/components/ui/badge';
 import {
   LineChart, Line, AreaChart, Area, BarChart, Bar,
@@ -55,6 +56,9 @@ const SESSION_TICKS = [
 
 /**
  * Convert a time string ("HH:MM" or "HH:MM:SS") to minutes since midnight.
+ * Includes seconds as a fractional component so that data points with the
+ * same HH:MM but different seconds get distinct X positions (otherwise
+ * Recharts collapses them into a single dot and can't draw a connecting line).
  * Returns NaN if the string is unparseable — Recharts will skip those points.
  */
 function timeStrToMinutes(t: string | undefined | null): number {
@@ -63,15 +67,68 @@ function timeStrToMinutes(t: string | undefined | null): number {
   if (parts.length < 2) return NaN;
   const h = parseInt(parts[0], 10);
   const m = parseInt(parts[1], 10);
+  const s = parts.length >= 3 ? parseInt(parts[2], 10) : 0;
   if (isNaN(h) || isNaN(m)) return NaN;
-  return h * 60 + m;
+  return h * 60 + m + (isNaN(s) ? 0 : s / 60);
 }
 
 /** Format minutes-since-midnight back to "HH:MM" for axis tick labels. */
 function minutesToTimeStr(min: number): string {
-  const h = Math.floor(min / 60);
-  const m = Math.round(min % 60);
+  const rounded = Math.round(min);
+  const h = Math.floor(rounded / 60);
+  const m = rounded % 60;
   return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+}
+
+/**
+ * Compute a dynamic X-axis domain [min, max] for trend charts.
+ *
+ * PROBLEM: The cashFlowTrend and flowTrend arrays use real wall-clock times
+ * (e.g. "03:52:43" when testing outside market hours). The old fixed domain
+ * [555, 940] (09:15–15:40 IST) causes all data points to be drawn at negative
+ * X coordinates — making the charts appear empty.
+ *
+ * SOLUTION: Use the actual data range. If data falls within the trading
+ * session, use the session domain. Otherwise, use the data's own min/max.
+ */
+function computeTrendDomain(
+  points: { time: string }[]
+): [number, number] {
+  if (points.length === 0) return [SESSION_START_MIN, SESSION_END_MIN];
+
+  const mins = points.map(p => timeStrToMinutes(p.time)).filter(m => !isNaN(m));
+  if (mins.length === 0) return [SESSION_START_MIN, SESSION_END_MIN];
+
+  const dataMin = Math.min(...mins);
+  const dataMax = Math.max(...mins);
+
+  // If all data is within the trading session, use the full session domain
+  // so the chart always shows the complete 09:15–15:40 window.
+  if (dataMin >= SESSION_START_MIN && dataMax <= SESSION_END_MIN) {
+    return [SESSION_START_MIN, SESSION_END_MIN];
+  }
+
+  // Data is (partially) outside market hours (e.g. demo mode at 3 AM, or
+  // pre-market polling). Use the data's own range with a small pad.
+  const pad = Math.max(5, (dataMax - dataMin) * 0.05);
+  return [Math.max(0, Math.floor(dataMin - pad)), Math.ceil(dataMax + pad)];
+}
+
+/**
+ * Compute tick marks for a dynamic domain.
+ * Generates ~6-8 evenly spaced ticks.
+ */
+function computeTrendTicks(domain: [number, number]): number[] {
+  const [min, max] = domain;
+  const range = max - min;
+  if (range <= 0) return [min];
+  const tickCount = Math.min(8, Math.max(4, Math.floor(range / 60) + 1));
+  const step = range / (tickCount - 1);
+  const ticks: number[] = [];
+  for (let i = 0; i < tickCount; i++) {
+    ticks.push(Math.round(min + step * i));
+  }
+  return ticks;
 }
 
 // ─── Custom Tooltips ───
@@ -195,6 +252,37 @@ export default function TrendAnalysisTab() {
     ? new Date(lastPollAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })
     : '—';
 
+  // ─── Dynamic X-axis domains for trend charts ───
+  // cashFlowTrend and flowTrend use real wall-clock times which may fall
+  // outside the trading session (e.g. demo mode at 3 AM). We compute a
+  // domain that fits the actual data so lines are always visible.
+  // Also applies to niftyCandles when the API uses the 2-point quote fallback
+  // (which synthesizes candle times from the current wall-clock time).
+  const niftyDomain = computeTrendDomain(niftyCandles);
+  const niftyTicks = computeTrendTicks(niftyDomain);
+  const cashDomain = computeTrendDomain(cashFlowTrend);
+  const cashTicks = computeTrendTicks(cashDomain);
+  const flowDomain = computeTrendDomain(flowTrend);
+  const flowTicks = computeTrendTicks(flowDomain);
+
+  // ─── Pre-compute numeric X for each data point ───
+  // Recharts Line/Area components fail to render connected lines when the
+  // XAxis uses a function-based dataKey (they collapse to single dots).
+  // The fix is to add a numeric `x` field to each point and use dataKey="x".
+  // This ensures Recharts sees distinct X values and connects them properly.
+  const niftyChartData = useMemo(
+    () => niftyCandles.map(c => ({ ...c, x: timeStrToMinutes(c.time) })),
+    [niftyCandles]
+  );
+  const cashChartData = useMemo(
+    () => cashFlowTrend.map(p => ({ ...p, x: timeStrToMinutes(p.time) })),
+    [cashFlowTrend]
+  );
+  const flowChartData = useMemo(
+    () => flowTrend.map(p => ({ ...p, x: timeStrToMinutes(p.time) })),
+    [flowTrend]
+  );
+
   // ─── Format helpers ───
 
   const fmtCr = (v: number) => {
@@ -257,9 +345,9 @@ export default function TrendAnalysisTab() {
           </div>
         </div>
         <div className="h-[200px]">
-          {niftyCandles.length > 0 ? (
+          {niftyChartData.length > 0 ? (
             <ResponsiveContainer width="100%" height="100%">
-              <ComposedChart data={niftyCandles} margin={{ top: 5, right: 10, left: 10, bottom: 0 }}>
+              <ComposedChart data={niftyChartData} margin={{ top: 5, right: 10, left: 10, bottom: 0 }}>
                 <defs>
                   <linearGradient id="niftyGrad" x1="0" y1="0" x2="0" y2="1">
                     <stop offset="0%" stopColor="#10b981" stopOpacity={0.3} />
@@ -268,10 +356,10 @@ export default function TrendAnalysisTab() {
                 </defs>
                 <CartesianGrid strokeDasharray="3 3" stroke="#ffffff10" />
                 <XAxis
-                  dataKey={(d: NiftyCandle) => timeStrToMinutes(d.time)}
+                  dataKey="x"
                   type="number"
-                  domain={[SESSION_START_MIN, SESSION_END_MIN]}
-                  ticks={SESSION_TICKS}
+                  domain={niftyDomain}
+                  ticks={niftyTicks}
                   tickFormatter={(v: number) => minutesToTimeStr(v)}
                   tick={{ fill: '#a1a1aa', fontSize: 10 }}
                   allowDataOverflow
@@ -329,9 +417,9 @@ export default function TrendAnalysisTab() {
             </div>
           </div>
           <div className="h-[130px]">
-            {cashFlowTrend.length > 1 ? (
+            {cashChartData.length > 1 ? (
               <ResponsiveContainer width="100%" height="100%">
-                <ComposedChart data={cashFlowTrend} margin={{ top: 5, right: 10, left: 10, bottom: 0 }}>
+                <ComposedChart data={cashChartData} margin={{ top: 5, right: 10, left: 10, bottom: 0 }}>
                   <defs>
                     <linearGradient id="cashNetGrad" x1="0" y1="0" x2="0" y2="1">
                       <stop offset="0%" stopColor={cumNetCr >= 0 ? '#10b981' : '#ef4444'} stopOpacity={0.35} />
@@ -340,10 +428,10 @@ export default function TrendAnalysisTab() {
                   </defs>
                   <CartesianGrid strokeDasharray="3 3" stroke="#ffffff08" />
                   <XAxis
-                    dataKey={(d: CashFlowTrendPoint) => timeStrToMinutes(d.time)}
+                    dataKey="x"
                     type="number"
-                    domain={[SESSION_START_MIN, SESSION_END_MIN]}
-                    ticks={SESSION_TICKS}
+                    domain={cashDomain}
+                    ticks={cashTicks}
                     tickFormatter={(v: number) => minutesToTimeStr(v)}
                     tick={{ fill: '#a1a1aa', fontSize: 9 }}
                     allowDataOverflow
@@ -411,15 +499,15 @@ export default function TrendAnalysisTab() {
             })}
           </div>
           <div className="h-[200px]">
-            {flowTrend.length > 1 ? (
+            {flowChartData.length > 1 ? (
               <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={flowTrend} margin={{ top: 5, right: 10, left: 10, bottom: 0 }}>
+                <LineChart data={flowChartData} margin={{ top: 5, right: 10, left: 10, bottom: 0 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#ffffff10" />
                   <XAxis
-                    dataKey={(d: FlowTrendPoint) => timeStrToMinutes(d.time)}
+                    dataKey="x"
                     type="number"
-                    domain={[SESSION_START_MIN, SESSION_END_MIN]}
-                    ticks={SESSION_TICKS}
+                    domain={flowDomain}
+                    ticks={flowTicks}
                     tickFormatter={(v: number) => minutesToTimeStr(v)}
                     tick={{ fill: '#a1a1aa', fontSize: 9 }}
                     allowDataOverflow
@@ -469,9 +557,9 @@ export default function TrendAnalysisTab() {
             </div>
           </div>
           <div className="h-[230px]">
-            {flowTrend.length > 1 ? (
+            {flowChartData.length > 1 ? (
               <ResponsiveContainer width="100%" height="100%">
-                <AreaChart data={flowTrend} margin={{ top: 5, right: 10, left: 10, bottom: 0 }}>
+                <AreaChart data={flowChartData} margin={{ top: 5, right: 10, left: 10, bottom: 0 }}>
                   <defs>
                     <linearGradient id="stockFlowGrad" x1="0" y1="0" x2="0" y2="1">
                       <stop offset="0%" stopColor="#f97316" stopOpacity={0.4} />
@@ -480,10 +568,10 @@ export default function TrendAnalysisTab() {
                   </defs>
                   <CartesianGrid strokeDasharray="3 3" stroke="#ffffff10" />
                   <XAxis
-                    dataKey={(d: FlowTrendPoint) => timeStrToMinutes(d.time)}
+                    dataKey="x"
                     type="number"
-                    domain={[SESSION_START_MIN, SESSION_END_MIN]}
-                    ticks={SESSION_TICKS}
+                    domain={flowDomain}
+                    ticks={flowTicks}
                     tickFormatter={(v: number) => minutesToTimeStr(v)}
                     tick={{ fill: '#a1a1aa', fontSize: 9 }}
                     allowDataOverflow
