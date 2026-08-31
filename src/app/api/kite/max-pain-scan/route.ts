@@ -68,7 +68,8 @@ export async function GET(req: NextRequest) {
 
   try {
     // Phase 1: Get spot prices for all symbols in one batch
-    const kiteSymbols = allSpecs.map(s => s.kiteSymbol);
+    // Use spotKiteSymbol if the cash ticker differs from F&O ticker (e.g. TATAMOTORS → NSE:TATAMOTORS)
+    const kiteSymbols = allSpecs.map(s => s.spotKiteSymbol || s.kiteSymbol);
     const spotQuotes = await getQuotes(kiteSymbols);
     if ('_error' in spotQuotes) {
       return NextResponse.json({
@@ -81,7 +82,8 @@ export async function GET(req: NextRequest) {
     // Map kiteSymbol → spot price
     const spotMap = new Map<string, number>();
     for (const spec of allSpecs) {
-      const q = spotQuotes[spec.kiteSymbol];
+      const spotKey = spec.spotKiteSymbol || spec.kiteSymbol;
+      const q = spotQuotes[spotKey];
       if (q?.lastPrice && q.lastPrice > 0) {
         spotMap.set(spec.symbol, q.lastPrice);
       }

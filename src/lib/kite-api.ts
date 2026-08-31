@@ -642,7 +642,8 @@ export interface InstrumentSpec {
   segment: string;           // NFO = NSE F&O, BFO = BSE F&O
   instrumentType: string;    // OPTIDX / OPTSTK
   strikesAround: number;     // How many strikes around ATM (±N)
-  kiteSymbol: string;        // Kite quote symbol
+  kiteSymbol: string;        // Kite quote symbol (used for spot price by default)
+  spotKiteSymbol?: string;   // Override for spot price if cash ticker differs from F&O ticker
   searchAliases?: string[];  // Extra strings to match Kite option names/tradingSymbols
 }
 
@@ -667,11 +668,11 @@ export const STOCK_SPECS: InstrumentSpec[] = [
   { symbol: 'BHARTIARTL', name: 'Bharti Airtel',       exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTSTK', strikesAround: 4, kiteSymbol: 'NSE:BHARTIARTL' },
   { symbol: 'ITC',        name: 'ITC Limited',          exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTSTK', strikesAround: 4, kiteSymbol: 'NSE:ITC' },
   { symbol: 'KOTAKBANK',  name: 'Kotak Mahindra Bank', exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTSTK', strikesAround: 4, kiteSymbol: 'NSE:KOTAKBANK' },
-  { symbol: 'LT',         name: 'Larsen & Toubro',     exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTSTK', strikesAround: 4, kiteSymbol: 'NSE:LT' },
+  { symbol: 'LT',         name: 'Larsen & Toubro',     exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTSTK', strikesAround: 4, kiteSymbol: 'NSE:LT', searchAliases: ['L&T', 'LARSEN'] },
   { symbol: 'AXISBANK',   name: 'Axis Bank',            exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTSTK', strikesAround: 4, kiteSymbol: 'NSE:AXISBANK' },
   { symbol: 'BAJFINANCE', name: 'Bajaj Finance',       exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTSTK', strikesAround: 4, kiteSymbol: 'NSE:BAJFINANCE', searchAliases: ['BAJAJ FINANCE'] },
   { symbol: 'MARUTI',     name: 'Maruti Suzuki',       exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTSTK', strikesAround: 4, kiteSymbol: 'NSE:MARUTI' },
-  { symbol: 'TATAMOTORS', name: 'Tata Motors (TMCV)', exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTSTK', strikesAround: 4, kiteSymbol: 'NSE:TMCV' },
+  { symbol: 'TATAMOTORS', name: 'Tata Motors (TMCV)', exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTSTK', strikesAround: 4, kiteSymbol: 'NSE:TMCV', spotKiteSymbol: 'NSE:TATAMOTORS', searchAliases: ['TMCV', 'TATA MOTORS'] },
 ];
 
 // Helper: get spec by symbol

@@ -49,9 +49,10 @@ export async function GET(req: NextRequest) {
 
   try {
     // Auto-fetch spot price if not provided
+    const spotKey = spec.spotKiteSymbol || spec.kiteSymbol;
     if (spotPrice <= 0) {
-      const quotes = await getQuotes([spec.kiteSymbol]);
-      const q = quotes[spec.kiteSymbol];
+      const quotes = await getQuotes([spotKey]);
+      const q = quotes[spotKey];
       if (q?.lastPrice && q.lastPrice > 0) {
         spotPrice = q.lastPrice;
       }
