@@ -37,7 +37,7 @@ function getOIColor(oiChange: number, ltpChange: number, isPE: boolean): OIColor
   if (oiChange < 0) {
     return { bg: '#6b7280', text: 'text-zinc-400', label: 'Close' };
   }
-  // oiChange > 0 — new positions opened
+  // oiChange >= 0 — new positions opened (or no change)
   if (isPE) {
     // PE: Write = bullish (price up/stable + OI up), Buy = bearish (price down + OI up)
     if (ltpChange >= 0) return { bg: '#C6EFCE', border: '#16a34a', text: 'text-emerald-700', label: 'Write' };
@@ -515,10 +515,15 @@ export default function OIWallsTab() {
         const avgPeOI = data.strikes.reduce((sum, x) => sum + x.peOI, 0) / data.strikes.length;
         // Above-average OI = likely written (positive OI change)
         // Below-average = likely closed or never opened (negative OI change)
-        ceOiChg = s.ceOI > avgCeOI * 1.1 ? Math.round(s.ceOI * 0.02)
-                     : s.ceOI < avgCeOI * 0.7 ? -Math.round(s.ceOI * 0.01) : 0;
-        peOiChg = s.peOI > avgPeOI * 1.1 ? Math.round(s.peOI * 0.02)
-                     : s.peOI < avgPeOI * 0.7 ? -Math.round(s.peOI * 0.01) : 0;
+        // Mid-range strikes get a small positive OI change (never 0)
+        const ceRatio = s.ceOI / avgCeOI;
+        ceOiChg = ceRatio > 1.1 ? Math.round(s.ceOI * 0.02)
+                   : ceRatio < 0.7 ? -Math.round(s.ceOI * 0.01)
+                   : Math.round(s.ceOI * 0.005);
+        const peRatio = s.peOI / avgPeOI;
+        peOiChg = peRatio > 1.1 ? Math.round(s.peOI * 0.02)
+                   : peRatio < 0.7 ? -Math.round(s.peOI * 0.01)
+                   : Math.round(s.peOI * 0.005);
         // LTP heuristic: ITM options have positive intrinsic value movement
         ceLtpChg = s.ceLTP * 0.002 * (Math.random() - 0.3);  // slight upward bias for CE
         peLtpChg = s.peLTP * 0.002 * (Math.random() - 0.7);  // slight downward bias for PE
