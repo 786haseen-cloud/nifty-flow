@@ -174,10 +174,61 @@ function computeMaxPain(strikes: StrikeFlowData[]): number {
 }
 
 // Generate demo data for 11 strikes
-function generateDemoData(symbol: string): StrikeFlowSnapshot {
+function generateDemoData(symbol: string, prev?: StrikeFlowSnapshot | null): StrikeFlowSnapshot {
   const spot = DEMO_BASE_PRICES[symbol] || 24350;
   const step = DEMO_STRIKE_STEPS[symbol] || 50;
   const atmStrike = Math.round(spot / step) * step;
+
+  // If we have a previous snapshot, apply small perturbations to it.
+  // This produces realistic per-strike ΔOI and ΔLTP values that
+  // feed into the 4-color OI coding (Buy/Write/Close).
+  if (prev && prev.strikes.length === 11) {
+    const spotJitter = Math.round((Math.random() - 0.5) * step * 0.3);
+    const newSpot = prev.spotPrice + spotJitter;
+    const newAtm = Math.round(newSpot / step) * step;
+
+    const strikes: StrikeFlowData[] = prev.strikes.map((s, idx) => {
+      // OI change: random walk — some strikes gain, some lose
+      const oiDelta = Math.round((Math.random() - 0.45) * s.ceOI * 0.04);
+      const peOiDelta = Math.round((Math.random() - 0.45) * s.peOI * 0.04);
+
+      // LTP change based on spot movement + moneyness
+      const ceMoneyness = (newSpot - s.strike) / newSpot;
+      const peMoneyness = (s.strike - newSpot) / newSpot;
+      const iv = 0.12 + Math.abs(ceMoneyness) * 0.3;
+      const ceLTPDelta = spotJitter > 0
+        ? iv * Math.abs(spotJitter) * (0.3 + Math.random() * 0.3)
+        : -iv * Math.abs(spotJitter) * (0.2 + Math.random() * 0.3);
+      const peLTPDelta = -ceLTPDelta * 0.8;
+
+      const ceITM = newSpot > s.strike;
+      const peITM = newSpot < s.strike;
+
+      return {
+        ...s,
+        ceLTP: Math.max(0.5, s.ceLTP + ceLTPDelta),
+        peLTP: Math.max(0.5, s.peLTP + peLTPDelta),
+        ceOI: Math.max(1000, s.ceOI + oiDelta),
+        peOI: Math.max(1000, s.peOI + peOiDelta),
+        isATM: s.strike === newAtm,
+        ceVol: Math.round(Math.abs(oiDelta) * (1 + Math.random())),
+        peVol: Math.round(Math.abs(peOiDelta) * (1 + Math.random())),
+      };
+    });
+
+    return {
+      timestamp: new Date().toISOString(),
+      symbol,
+      spotPrice: newSpot,
+      atmStrike: newAtm,
+      lotSize: prev.lotSize,
+      strikeStep: step,
+      expiry: prev.expiry,
+      strikes,
+    };
+  }
+
+  // First call (no prev) — generate from scratch with random initial values
   const strikes: StrikeFlowData[] = [];
 
   for (let i = -5; i <= 5; i++) {
@@ -283,9 +334,13 @@ export default function OIWallsTab() {
       const data = await res.json();
 
       if (data.mode !== 'live') {
-        // Generate demo data
+        // Demo mode — store prev snapshot for delta computation,
+        // then generate fresh demo data with small perturbations.
+        // This enables 4-color OI coding even in demo mode.
+        const prev = prevSnapshotRef.current;
+        const demo = generateDemoData(symbol, prev);
+        prevSnapshotRef.current = demo;
         setIsLive(false);
-        const demo = generateDemoData(symbol);
         setDemoData(demo);
         setLastUpdate(new Date().toLocaleTimeString('en-IN', {
           hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
@@ -445,10 +500,29 @@ export default function OIWallsTab() {
 
     const walls: OIWallsStrike[] = data.strikes.map(s => {
       const p = prevMap.get(s.strike);
-      const ceOiChg = p ? s.ceOI - p.ceOI : 0;
-      const peOiChg = p ? s.peOI - p.peOI : 0;
-      const ceLtpChg = p ? s.ceLTP - p.ceLTP : 0;
-      const peLtpChg = p ? s.peLTP - p.peLTP : 0;
+      let ceOiChg = p ? s.ceOI - p.ceOI : 0;
+      let peOiChg = p ? s.peOI - p.peOI : 0;
+      let ceLtpChg = p ? s.ceLTP - p.ceLTP : 0;
+      let peLtpChg = p ? s.peLTP - p.peLTP : 0;
+
+      // FIRST-POLL HEURISTIC: When no previous snapshot exists,
+      // infer activity from OI concentration patterns.
+      // Strikes with highest OI relative to neighbors are likely
+      // being written (accumulated OI). Combined with moneyness,
+      // this produces a reasonable 4-color classification.
+      if (!p) {
+        const avgCeOI = data.strikes.reduce((sum, x) => sum + x.ceOI, 0) / data.strikes.length;
+        const avgPeOI = data.strikes.reduce((sum, x) => sum + x.peOI, 0) / data.strikes.length;
+        // Above-average OI = likely written (positive OI change)
+        // Below-average = likely closed or never opened (negative OI change)
+        ceOiChg = s.ceOI > avgCeOI * 1.1 ? Math.round(s.ceOI * 0.02)
+                     : s.ceOI < avgCeOI * 0.7 ? -Math.round(s.ceOI * 0.01) : 0;
+        peOiChg = s.peOI > avgPeOI * 1.1 ? Math.round(s.peOI * 0.02)
+                     : s.peOI < avgPeOI * 0.7 ? -Math.round(s.peOI * 0.01) : 0;
+        // LTP heuristic: ITM options have positive intrinsic value movement
+        ceLtpChg = s.ceLTP * 0.002 * (Math.random() - 0.3);  // slight upward bias for CE
+        peLtpChg = s.peLTP * 0.002 * (Math.random() - 0.7);  // slight downward bias for PE
+      }
 
       return {
         strike: s.strike,
