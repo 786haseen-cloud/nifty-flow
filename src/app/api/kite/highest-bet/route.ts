@@ -428,6 +428,9 @@ async function fetchLiveData(): Promise<HighestBetResponse> {
 }
 
 // ─── DEMO MODE ───
+// Module-level cache: produce stable demo data with small perturbations
+// between polls so the frontend can compute meaningful OI diffs.
+let _prevDemoResponse: HighestBetResponse | null = null;
 
 function generateDemoData(): HighestBetResponse {
   const allSpecs = [...INDEX_SPECS, ...STOCK_SPECS];
@@ -455,9 +458,15 @@ function generateDemoData(): HighestBetResponse {
     BAJFINANCE: 50, MARUTI: 50, TATAMOTORS: 10,
   };
 
+  const prev = _prevDemoResponse;
+  const spotJitter = prev ? (Math.random() - 0.5) * 5 : 0;
+
   const symbols: SymbolBetData[] = allSpecs.map(spec => {
     const base = basePrices[spec.symbol] || 1000;
-    const spotPrice = base + (Math.random() - 0.5) * base * 0.02;
+    const prevSym = prev?.symbols.find(s => s.symbol === spec.symbol);
+    // Stable spot: base + small cumulative jitter
+    const prevSpot = prevSym?.spotPrice || base;
+    const spotPrice = Math.round((prevSpot + spotJitter + (Math.random() - 0.5) * 2) * 100) / 100;
     const lotSize = lotSizes[spec.symbol] || 100;
     const strikeStep = strikeSteps[spec.symbol] || 10;
     const atmStrike = Math.round(spotPrice / strikeStep) * strikeStep;
@@ -465,13 +474,27 @@ function generateDemoData(): HighestBetResponse {
 
     const strikes: StrikeFlowData[] = Array.from({ length: 11 }, (_, i) => {
       const strike = atmStrike - 5 * strikeStep + i * strikeStep;
+      const prevStrike = prevSym?.strikes.find(s => s.strike === strike);
+      // Small OI perturbation: ±0.5% → realistic 30s delta
+      const ceOI = prevStrike
+        ? Math.max(1000, prevStrike.ceOI + Math.round((Math.random() - 0.48) * prevStrike.ceOI * 0.005))
+        : Math.floor(Math.random() * 5000000 + 100000);
+      const peOI = prevStrike
+        ? Math.max(1000, prevStrike.peOI + Math.round((Math.random() - 0.48) * prevStrike.peOI * 0.005))
+        : Math.floor(Math.random() * 5000000 + 100000);
+      const ceLTP = prevStrike
+        ? Math.max(0.5, prevStrike.ceLTP + (Math.random() - 0.45) * 3)
+        : Math.max(0.5, (spotPrice - strike) * (0.3 + Math.random() * 0.2) + Math.random() * 20);
+      const peLTP = prevStrike
+        ? Math.max(0.5, prevStrike.peLTP + (Math.random() - 0.55) * 3)
+        : Math.max(0.5, (strike - spotPrice) * (0.3 + Math.random() * 0.2) + Math.random() * 20);
       return {
         strike,
         isATM: strike === atmStrike,
-        ceLTP: Math.max(0.5, (spotPrice - strike) * (0.3 + Math.random() * 0.2) + Math.random() * 20),
-        peLTP: Math.max(0.5, (strike - spotPrice) * (0.3 + Math.random() * 0.2) + Math.random() * 20),
-        ceOI: Math.floor(Math.random() * 5000000 + 100000),
-        peOI: Math.floor(Math.random() * 5000000 + 100000),
+        ceLTP,
+        peLTP,
+        ceOI,
+        peOI,
         ceVol: Math.floor(Math.random() * 200000 + 1000),
         peVol: Math.floor(Math.random() * 200000 + 1000),
         ceDelta: Math.abs(bsDelta(true, spotPrice, strike, T)),
@@ -481,15 +504,18 @@ function generateDemoData(): HighestBetResponse {
       };
     });
 
+    const prevFutOI = prevSym?.futOI || Math.floor(Math.random() * 20000000 + 500000);
+    const futOI = Math.max(1000, prevFutOI + Math.round((Math.random() - 0.5) * 50000));
+
     return {
       symbol: spec.symbol,
       name: spec.name,
       type: spec.instrumentType === 'OPTIDX' ? 'index' as const : 'stock' as const,
-      spotPrice: Math.round(spotPrice * 100) / 100,
-      spotVolume: Math.floor(Math.random() * 50000000 + 1000000),
-      spotChange: Math.round((Math.random() - 0.5) * 400) / 100,
-      futOI: Math.floor(Math.random() * 20000000 + 500000),
-      futPrice: Math.round((spotPrice * (1 + (Math.random() - 0.5) * 0.005)) * 100) / 100,
+      spotPrice,
+      spotVolume: prevSym?.spotVolume || Math.floor(Math.random() * 50000000 + 1000000),
+      spotChange: prevSym?.spotChange || Math.round((Math.random() - 0.5) * 400) / 100,
+      futOI,
+      futPrice: Math.round((spotPrice * (1 + (Math.random() - 0.5) * 0.002)) * 100) / 100,
       futLotSize: lotSize,
       lotSize,
       strikeStep,
@@ -497,11 +523,13 @@ function generateDemoData(): HighestBetResponse {
     };
   });
 
-  return {
+  const result: HighestBetResponse = {
     mode: 'demo',
     timestamp: new Date().toISOString(),
     symbols,
   };
+  _prevDemoResponse = result;
+  return result;
 }
 
 // ─── GET Handler ───
