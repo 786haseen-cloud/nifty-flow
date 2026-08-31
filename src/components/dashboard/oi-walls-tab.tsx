@@ -339,7 +339,10 @@ export default function OIWallsTab() {
         // This enables 4-color OI coding even in demo mode.
         const prev = prevSnapshotRef.current;
         const demo = generateDemoData(symbol, prev);
-        prevSnapshotRef.current = demo;
+        // NOTE: do NOT update prevSnapshotRef here — it must remain
+        // pointing to the PREVIOUS data so the walls computation
+        // (which runs during render) can compute real ΔOI/ΔLTP.
+        // The ref is updated in a post-render useEffect instead.
         setIsLive(false);
         setDemoData(demo);
         setLastUpdate(new Date().toLocaleTimeString('en-IN', {
@@ -360,7 +363,7 @@ export default function OIWallsTab() {
       if (prev && prev.symbol === data.symbol) {
         // OI change is computed in metrics; we just need to store prev for diff
       }
-      prevSnapshotRef.current = data;
+      // NOTE: do NOT update prevSnapshotRef here (same reason as demo branch)
       setSnapshot(data);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Fetch failed');
@@ -476,6 +479,15 @@ export default function OIWallsTab() {
 
   // Use demo or live data
   const data = isLive ? snapshot : demoData;
+
+  // Update prevSnapshotRef AFTER render so the walls computation
+  // (above, during render) always compares against the PREVIOUS data.
+  // This ensures ΔOI and ΔLTP are non-zero between polls.
+  useEffect(() => {
+    if (data) {
+      prevSnapshotRef.current = data;
+    }
+  }, [data?.timestamp]);
 
   // Compute walls and metrics
   const { walls, metrics } = (() => {
