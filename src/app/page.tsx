@@ -14,6 +14,7 @@ import LiveMonitor from '@/components/dashboard/live-monitor';
 import SignalEngineTab from '@/components/dashboard/signal-engine-tab';
 import BigMoneyTab from '@/components/dashboard/big-money-tab';
 import OptionsFlowTab from '@/components/dashboard/options-flow-tab';
+import OptionFlowTV from '@/components/dashboard/option-flow-tv';
 import StrikeFlowMap from '@/components/dashboard/strike-flow-map';
 import HighestBetTracker from '@/components/dashboard/highest-bet-tracker';
 import OIWallsTab from '@/components/dashboard/oi-walls-tab';
@@ -203,6 +204,12 @@ export default function DashboardPage() {
               <span className="hidden sm:inline">⚡ Opt Flow</span>
               <span className="sm:hidden">⚡</span>
             </TabsTrigger>
+            {/* TRADINGVIEW-STYLE OPTION FLOW CHART */}
+            <TabsTrigger value="flow-tv" className="flex-1 text-xs gap-1.5 data-[state=active]:bg-fuchsia-500/20 data-[state=active]:text-fuchsia-300">
+              <LineChart className="h-3.5 w-3.5" />
+              <span className="hidden sm:inline">📊 Flow TV</span>
+              <span className="sm:hidden">📊</span>
+            </TabsTrigger>
             <TabsTrigger value="strike-flow" className="flex-1 text-xs gap-1.5 data-[state=active]:bg-pink-500/20 data-[state=active]:text-pink-300 font-bold">
               <Crosshair className="h-3.5 w-3.5" />
               <span className="hidden sm:inline">⚡ Strike Flow</span>
@@ -276,6 +283,11 @@ export default function DashboardPage() {
           {/* OPTIONS FLOW = THE MAIN THING — Cash → Index Options → Stock Options stacked */}
           <TabsContent value="options-flow" className="mt-0">
             <OptionsFlowTab />
+          </TabsContent>
+
+          {/* TRADINGVIEW-STYLE OPTION FLOW CHART */}
+          <TabsContent value="flow-tv" className="mt-0">
+            <OptionFlowTV />
           </TabsContent>
 
           <TabsContent value="strike-flow" className="mt-0">
