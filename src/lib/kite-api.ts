@@ -649,10 +649,10 @@ export interface InstrumentSpec {
 
 // ═══ INDEX SPECIFICATIONS ═══
 export const INDEX_SPECS: InstrumentSpec[] = [
-  { symbol: 'NIFTY',      name: 'Nifty 50',          exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTIDX', strikesAround: 5, kiteSymbol: 'NSE:NIFTY 50' },
-  { symbol: 'SENSEX',     name: 'Sensex',            exchange: 'BSE', segment: 'BFO', instrumentType: 'OPTIDX', strikesAround: 5, kiteSymbol: 'BSE:SENSEX' },
-  { symbol: 'BANKNIFTY',  name: 'Bank Nifty',        exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTIDX', strikesAround: 5, kiteSymbol: 'NSE:NIFTY BANK' },
-  { symbol: 'FINNIFTY',   name: 'Fin Nifty',         exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTIDX', strikesAround: 5, kiteSymbol: 'NSE:NIFTY FIN SERVICE', searchAliases: ['NIFTYFIN', 'NIFTY FIN SERVICE'] },
+  { symbol: 'NIFTY',      name: 'Nifty 50',          exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTIDX', strikesAround: 4, kiteSymbol: 'NSE:NIFTY 50' },
+  { symbol: 'SENSEX',     name: 'Sensex',            exchange: 'BSE', segment: 'BFO', instrumentType: 'OPTIDX', strikesAround: 4, kiteSymbol: 'BSE:SENSEX' },
+  { symbol: 'BANKNIFTY',  name: 'Bank Nifty',        exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTIDX', strikesAround: 4, kiteSymbol: 'NSE:NIFTY BANK' },
+  { symbol: 'FINNIFTY',   name: 'Fin Nifty',         exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTIDX', strikesAround: 4, kiteSymbol: 'NSE:NIFTY FIN SERVICE', searchAliases: ['NIFTYFIN', 'NIFTY FIN SERVICE'] },
 ];
 
 // ═══ STOCK F&O SPECIFICATIONS ═══
@@ -829,7 +829,7 @@ export interface StrikeFlowData {
 /**
  * Get raw strike flow snapshot — per-strike OI, LTP, volume, delta.
  * Frontend diffs consecutive snapshots to compute 4-color flow.
- * Fetches 11 strikes around ATM (±5 × strikeStep).
+ * Fetches 9 strikes around ATM (±4 × strikeStep).
  */
 export async function getStrikeFlowSnapshot(
   symbol: string,
@@ -838,8 +838,8 @@ export async function getStrikeFlowSnapshot(
   const spec = getInstrumentSpec(symbol);
   if (!spec) return null;
 
-  // Get instruments for nearest expiry, 5 strikes each side = 11 total
-  const { instruments: optInstruments, meta } = await getOptionInstruments(symbol, spotPrice, 5);
+  // Get instruments for nearest expiry, 4 strikes each side = 9 total
+  const { instruments: optInstruments, meta } = await getOptionInstruments(symbol, spotPrice, 4);
   if (optInstruments.length === 0) return null;
 
   // Batch fetch quotes using instrument tokens

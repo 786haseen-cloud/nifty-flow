@@ -173,7 +173,7 @@ function computeMaxPain(strikes: StrikeFlowData[]): number {
   return maxPainStrike;
 }
 
-// Generate demo data for 11 strikes
+// Generate demo data for 9 strikes
 function generateDemoData(symbol: string, prev?: StrikeFlowSnapshot | null): StrikeFlowSnapshot {
   const spot = DEMO_BASE_PRICES[symbol] || 24350;
   const step = DEMO_STRIKE_STEPS[symbol] || 50;
@@ -182,7 +182,7 @@ function generateDemoData(symbol: string, prev?: StrikeFlowSnapshot | null): Str
   // If we have a previous snapshot, apply small perturbations to it.
   // This produces realistic per-strike ΔOI and ΔLTP values that
   // feed into the 4-color OI coding (Buy/Write/Close).
-  if (prev && prev.strikes.length === 11) {
+  if (prev && prev.strikes.length === 9) {
     const spotJitter = Math.round((Math.random() - 0.5) * step * 0.3);
     const newSpot = prev.spotPrice + spotJitter;
     const newAtm = Math.round(newSpot / step) * step;
@@ -231,7 +231,7 @@ function generateDemoData(symbol: string, prev?: StrikeFlowSnapshot | null): Str
   // First call (no prev) — generate from scratch with random initial values
   const strikes: StrikeFlowData[] = [];
 
-  for (let i = -5; i <= 5; i++) {
+  for (let i = -4; i <= 4; i++) {
     const strike = atmStrike + i * step;
     const dist = Math.abs(i);
     // Heavier OI near ATM, with some randomness
