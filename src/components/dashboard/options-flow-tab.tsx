@@ -616,7 +616,7 @@ export default function OptionsFlowTab() {
           </CardTitle>
         </CardHeader>
         <CardContent className="px-2 pb-2">
-          <div className="relative border-2 border-border/60 rounded-md bg-[#0c0f1a]/90" style={{ height: chartSettings.priceHeight }}>
+          <div className="relative border-2 border-border/60 rounded-md bg-[#0c0f1a]/90 overflow-hidden" style={{ height: chartSettings.priceHeight }}>
             {/* Left Y-axis: Price scale */}
             <div className="absolute left-0 top-0 bottom-0 w-12 border-r border-border/30 z-10 flex flex-col justify-between py-0.5 px-0.5">
               <span className="text-[8px] font-mono text-emerald-400/80">{priceMax.toFixed(0)}</span>
