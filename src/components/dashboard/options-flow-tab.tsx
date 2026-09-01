@@ -1,11 +1,11 @@
 'use client';
 
-import { useEffect, useState, useMemo, useRef, useCallback } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import {
-  BarChart3, Activity, Layers, Zap, Crosshair,
-  TrendingUp, TrendingDown, ShieldAlert, AlertTriangle,
+  BarChart3, Activity, Layers, Crosshair,
+  ShieldAlert, AlertTriangle,
   Wifi, WifiOff, Settings2, RefreshCw,
 } from 'lucide-react';
 import type { OptionsFlowBar, FuturesFlowBar, CompositeSignal } from '@/lib/types';
@@ -16,7 +16,7 @@ import type { SnapshotSymbol } from '@/hooks/use-kite-snapshot';
 // Chart dimensions — compact for single-screen
 const VISIBLE_BARS = 160;
 const BAR_WIDTH = 2;
-const CHART_H = 72;
+const CHART_H = 48;
 
 // Color palette
 const C = {
@@ -205,19 +205,29 @@ function computeFuturesFlowBar(
 
   return {
     timestamp,
-    indexFutBuy,
-    indexFutSell,
+    indexFutBuy: idxFutBuy,
+    indexFutSell: idxFutSell,
     indexFutNet: idxFutBuy - idxFutSell,
-    indexFutOI,
+    indexFutOI: idxFutOI,
     indexFutBasis: idxCount > 0 ? idxBasis / idxCount : 0,
-    stockFutBuy,
-    stockFutSell,
+    stockFutBuy: stkFutBuy,
+    stockFutSell: stkFutSell,
     stockFutNet: stkFutBuy - stkFutSell,
-    stockFutOI,
+    stockFutOI: stkFutOI,
     stockFutBasis: stkCount > 0 ? stkBasis / stkCount : 0,
     indexBreakdown,
   };
 }
+
+// Module-level bar storage (persists across tab switches since Radix unmounts)
+const MAX_BARS = 1500;
+const TRADING_DAY_START = '09:15';
+const TRADING_DAY_END = '15:40';
+let _pOptBars: OptionsFlowBar[] = [];
+let _pFutBars: FuturesFlowBar[] = [];
+let _pPrices: number[] = [];
+let _pScores: number[] = [];
+let _pOpenPrice = 0;
 
 // ═══════════════════════════════════════════════════════════
 // MAIN COMPONENT
@@ -226,104 +236,79 @@ function computeFuturesFlowBar(
 export default function OptionsFlowTab() {
   const { curr, prev, pollCount } = useKiteSnapshot(15000);
 
-  // Bar histories accumulated from real diffs
-  const optionsBarsRef = useRef<OptionsFlowBar[]>([]);
-  const futBarsRef = useRef<FuturesFlowBar[]>([]);
-  const priceHistoryRef = useRef<number[]>([]);
-  const scoreHistoryRef = useRef<number[]>([]);
-  const openPriceRef = useRef<number>(0);
-  const prevPollRef = useRef<number>(0);
+  // Track last processed poll — init -1 guarantees first effect always processes
+  const lastProcessedPoll = useRef<number>(-1);
 
-  // Visible data state (triggers re-render)
-  const [optionsBars, setOptionsBars] = useState<OptionsFlowBar[]>([]);
-  const [futBars, setFutBars] = useState<FuturesFlowBar[]>([]);
-  const [niftyPrices, setNiftyPrices] = useState<number[]>([]);
-  const [niftyPrice, setNiftyPrice] = useState(0);
-  const [scoreHistory, setScoreHistory] = useState<number[]>([]);
+  // Visible data state (triggers re-render) — init from module-level persistence
+  const [optionsBars, setOptionsBars] = useState<OptionsFlowBar[]>([..._pOptBars]);
+  const [futBars, setFutBars] = useState<FuturesFlowBar[]>([..._pFutBars]);
+  const [niftyPrices, setNiftyPrices] = useState<number[]>([..._pPrices]);
+  const [niftyPrice, setNiftyPrice] = useState(_pPrices[_pPrices.length - 1] || 0);
+  const [scoreHistory, setScoreHistory] = useState<number[]>([..._pScores]);
   const [signal, setSignal] = useState<CompositeSignal | null>(null);
-  const [mode, setMode] = useState<'live' | 'demo' | 'error' | 'loading'>('loading');
+  const [mode, setMode] = useState<'live' | 'demo' | 'error' | 'loading'>(_pOptBars.length > 0 ? 'live' : 'loading');
 
-  // Chart settings
+  // Chart settings — compact defaults
   const [chartSettings, setChartSettings] = useState({
-    priceHeight: 140,
-    barHeight: 72,
+    priceHeight: 100,
+    barHeight: 48,
     visibleBars: 160,
     updateInterval: 15000,
-    priceLineWidth: 1.2,
-    scoreLineWidth: 1,
+    priceLineWidth: 1,
+    scoreLineWidth: 0.8,
     priceColor: '#34d399',
     scoreColor: '#fbbf24',
   });
   const [showSettings, setShowSettings] = useState(false);
+  const [showDetails, setShowDetails] = useState(false);
 
   // Get Nifty spot price from snapshot
   const niftySymbol = curr?.symbols.find(s => s.symbol === 'NIFTY');
   const currentSpotPrice = niftySymbol?.spotPrice ?? 0;
 
-  // Core data computation — runs when pollCount changes (new snapshot)
+  // Core data computation
   useEffect(() => {
-    if (!curr || pollCount === prevPollRef.current) return;
-    prevPollRef.current = pollCount;
+    if (!curr) return;
+    if (pollCount === lastProcessedPoll.current) return;
+    lastProcessedPoll.current = pollCount;
 
-    // Update mode
     setMode(curr.mode === 'demo' ? 'demo' : curr.mode);
 
-    // Get Nifty symbol
     const nifty = curr.symbols.find(s => s.symbol === 'NIFTY');
     if (!nifty) return;
 
-    // Set open price on first poll
-    if (openPriceRef.current === 0) {
-      openPriceRef.current = nifty.spotPrice;
-    }
+    if (_pOpenPrice === 0) _pOpenPrice = nifty.spotPrice;
     const spotPrice = nifty.spotPrice;
 
-    // Accumulate price history
-    priceHistoryRef.current.push(spotPrice);
-    if (priceHistoryRef.current.length > 500) {
-      priceHistoryRef.current = priceHistoryRef.current.slice(-500);
-    }
+    _pPrices.push(spotPrice);
+    if (_pPrices.length > MAX_BARS) _pPrices = _pPrices.slice(-MAX_BARS);
     setNiftyPrice(spotPrice);
-    setNiftyPrices([...priceHistoryRef.current]);
+    setNiftyPrices([..._pPrices]);
 
     const ts = curr.timestamp
       ? new Date(curr.timestamp).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })
       : new Date().toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
 
-    // Only compute flow bars when we have a previous snapshot to diff against
     if (prev && prev.symbols.length > 0) {
-      // Compute options flow from real OI diffs
       const optBar = computeOptionsFlowBar(prev.symbols, curr.symbols, ts);
-      optionsBarsRef.current.push(optBar);
-      if (optionsBarsRef.current.length > 500) {
-        optionsBarsRef.current = optionsBarsRef.current.slice(-500);
-      }
-      setOptionsBars([...optionsBarsRef.current]);
+      _pOptBars.push(optBar);
+      if (_pOptBars.length > MAX_BARS) _pOptBars = _pOptBars.slice(-MAX_BARS);
+      setOptionsBars([..._pOptBars]);
 
-      // Compute futures flow from real OI diffs
       const futBar = computeFuturesFlowBar(prev.symbols, curr.symbols, ts);
-      futBarsRef.current.push(futBar);
-      if (futBarsRef.current.length > 500) {
-        futBarsRef.current = futBarsRef.current.slice(-500);
-      }
-      setFutBars([...futBarsRef.current]);
+      _pFutBars.push(futBar);
+      if (_pFutBars.length > MAX_BARS) _pFutBars = _pFutBars.slice(-MAX_BARS);
+      setFutBars([..._pFutBars]);
 
-      // Compute composite signal (cashNet = 0 since Kite doesn't provide per-stock cash flow)
-      const priceTrend = spotPrice - openPriceRef.current;
+      const priceTrend = spotPrice - _pOpenPrice;
       const sig = computeCompositeSignal(
-        0,                    // cashNet — not available from Kite
-        optBar.indexNetFlow,  // idxOptNet
-        optBar.stockNetFlow,  // stkOptNet
-        futBar.indexFutNet,   // idxFutNet
-        futBar.stockFutNet,   // stkFutNet
-        priceTrend,           // priceTrend
+        0, optBar.indexNetFlow, optBar.stockNetFlow,
+        futBar.indexFutNet, futBar.stockFutNet, priceTrend,
       );
       setSignal(sig);
-      scoreHistoryRef.current.push(sig.score);
-      if (scoreHistoryRef.current.length > 500) {
-        scoreHistoryRef.current = scoreHistoryRef.current.slice(-500);
-      }
-      setScoreHistory([...scoreHistoryRef.current]);
+      _pScores.push(sig.score);
+      if (_pScores.length > MAX_BARS) _pScores = _pScores.slice(-MAX_BARS);
+      setScoreHistory([..._pScores]);
     }
   }, [curr, prev, pollCount]);
 
@@ -358,10 +343,11 @@ export default function OptionsFlowTab() {
   const scoreRange = Math.max(1, scoreMax - scoreMin);
 
   // Open price for change display
-  const openPrice = openPriceRef.current || currentSpotPrice;
+  const openPrice = _pOpenPrice || currentSpotPrice;
+  const allZeroFlow = visOpt.length > 0 && visOpt.every(b => b.indexBullishFlow === 0 && b.indexBearishFlow === 0);
 
   return (
-    <div className="space-y-2">
+    <div className="space-y-1">
       {/* ═══════════════════════════════════════════════════════════
           ROW 0: STATUS BAR + SETTINGS TOGGLE
           ═══════════════════════════════════════════════════════════ */}
@@ -592,26 +578,22 @@ export default function OptionsFlowTab() {
         <CardContent className="px-2 pb-2">
           <div className="relative border-2 border-border/60 rounded-md bg-[#0c0f1a]/90" style={{ height: chartSettings.priceHeight }}>
             {/* Left Y-axis: Price scale */}
-            <div className="absolute left-0 top-0 bottom-0 w-14 border-r border-border/30 z-10 flex flex-col justify-between py-1 px-1">
-              <span className="text-[9px] font-mono text-emerald-400/80">{priceMax.toFixed(0)}</span>
-              <span className="text-[9px] font-mono text-muted-foreground">{(priceMax - priceRange * 0.25).toFixed(0)}</span>
-              <span className="text-[9px] font-mono text-muted-foreground">{((priceMax + priceMin) / 2).toFixed(0)}</span>
-              <span className="text-[9px] font-mono text-muted-foreground">{(priceMin + priceRange * 0.25).toFixed(0)}</span>
-              <span className="text-[9px] font-mono text-red-400/80">{priceMin.toFixed(0)}</span>
+            <div className="absolute left-0 top-0 bottom-0 w-12 border-r border-border/30 z-10 flex flex-col justify-between py-0.5 px-0.5">
+              <span className="text-[8px] font-mono text-emerald-400/80">{priceMax.toFixed(0)}</span>
+              <span className="text-[8px] font-mono text-muted-foreground">{((priceMax + priceMin) / 2).toFixed(0)}</span>
+              <span className="text-[8px] font-mono text-red-400/80">{priceMin.toFixed(0)}</span>
             </div>
 
             {/* Right Y-axis: Score scale */}
-            <div className="absolute right-0 top-0 bottom-0 w-12 border-l border-border/30 z-10 flex flex-col justify-between py-1 px-1 text-right">
-              <span className="text-[9px] font-mono text-amber-400/70">+{scoreMax.toFixed(0)}</span>
-              <span className="text-[9px] font-mono text-amber-400/40">+{(scoreMax * 0.5).toFixed(0)}</span>
-              <span className="text-[9px] font-mono text-muted-foreground">0</span>
-              <span className="text-[9px] font-mono text-amber-400/40">{(scoreMin * 0.5).toFixed(0)}</span>
-              <span className="text-[9px] font-mono text-amber-400/70">{scoreMin.toFixed(0)}</span>
+            <div className="absolute right-0 top-0 bottom-0 w-10 border-l border-border/30 z-10 flex flex-col justify-between py-0.5 px-0.5 text-right">
+              <span className="text-[8px] font-mono text-amber-400/70">+{scoreMax.toFixed(0)}</span>
+              <span className="text-[8px] font-mono text-muted-foreground">0</span>
+              <span className="text-[8px] font-mono text-amber-400/70">{scoreMin.toFixed(0)}</span>
             </div>
 
             {/* SVG chart area */}
             <svg
-              className="absolute left-14 right-12 top-0 bottom-0"
+              className="absolute left-12 right-10 top-0 bottom-0"
               viewBox={`0 0 ${Math.max(1, visPrices.length) * BAR_WIDTH} ${chartSettings.priceHeight}`}
               preserveAspectRatio="none"
             >
@@ -704,7 +686,7 @@ export default function OptionsFlowTab() {
             </svg>
 
             {/* Mode indicator */}
-            <div className="absolute top-1.5 right-14 z-20">
+            <div className="absolute top-1.5 right-12 z-20">
               <Badge className={`text-[7px] px-1 py-0 ${mode === 'live' ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30 animate-pulse' : 'bg-amber-500/20 text-amber-300 border-amber-500/30'}`}>
                 {mode === 'live' ? 'LIVE' : mode.toUpperCase()}
               </Badge>
@@ -712,7 +694,7 @@ export default function OptionsFlowTab() {
           </div>
 
           {/* Time axis */}
-          <div className="flex justify-between px-14 mt-1 text-[8px] font-mono text-muted-foreground">
+          <div className="flex justify-between px-12 mt-1 text-[8px] font-mono text-muted-foreground">
             {visOpt.length > 0 ? (
               <>
                 <span>{visOpt[0]?.timestamp || ''}</span>
@@ -737,7 +719,7 @@ export default function OptionsFlowTab() {
           <CardTitle className="flex items-center gap-2 text-xs">
             <Layers className="h-3.5 w-3.5 text-purple-400" />
             OI Flow Bars — Options | Futures
-            <span className="text-muted-foreground font-normal">| Real OI diffs | {visBars} bars</span>
+            <span className="text-muted-foreground font-normal">| Real OI diffs | {visBars} bars | {TRADING_DAY_START}-{TRADING_DAY_END} IST</span>
             <div className="ml-auto flex items-center gap-2 text-[9px]">
               <span className="flex items-center gap-0.5"><span className="inline-block w-2 h-1.5 rounded-sm" style={{ background: C.callBuy }} />CB</span>
               <span className="flex items-center gap-0.5"><span className="inline-block w-2 h-1.5 rounded-sm" style={{ background: C.putWrite }} />PW</span>
@@ -748,11 +730,18 @@ export default function OptionsFlowTab() {
             </div>
           </CardTitle>
         </CardHeader>
-        <CardContent className="space-y-0.5 px-2 pb-2">
+        <CardContent className="space-y-0 px-2 pb-2">
           {visOpt.length === 0 ? (
-            <div className="flex items-center justify-center h-20 text-[10px] text-muted-foreground">
-              <RefreshCw className="h-3 w-3 mr-1.5 animate-spin" />
-              Waiting for 2 consecutive Kite snapshots to compute OI flow...
+            <div className="flex items-center justify-center h-14 text-[10px] text-muted-foreground gap-1.5">
+              <RefreshCw className="h-3 w-3 animate-spin" />
+              {!curr ? 'Connecting...' : !prev ? 'Waiting for 2nd snapshot...' : 'Processing...'}
+              <span className="text-[8px] font-mono">(poll={pollCount})</span>
+            </div>
+          ) : allZeroFlow ? (
+            <div className="flex items-center justify-center h-14 text-[10px] gap-1.5">
+              <ShieldAlert className="h-3.5 w-3.5 text-amber-400" />
+              <span className="text-amber-300">{optionsBars.length} bars, all OI diffs = 0</span>
+              <span className="text-[8px] text-muted-foreground">- market closed? 9:15 AM - 3:40 PM IST</span>
             </div>
           ) : (
             <>
@@ -886,119 +875,65 @@ export default function OptionsFlowTab() {
         </CardContent>
       </Card>
 
-      {/* ═══════════════════════════════════════════════════════════
-          ROW 3: COMPONENT SCORE BREAKDOWN + FUTURES BREAKDOWN
-          ═══════════════════════════════════════════════════════════ */}
-      {signal && (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-          {/* Score Breakdown */}
-          <Card className="border-border/50 bg-card/80 backdrop-blur-sm">
-            <CardHeader className="pb-1 pt-2">
-              <CardTitle className="flex items-center gap-1.5 text-xs">
-                <Crosshair className="h-3.5 w-3.5 text-amber-400" />
-                Signal Component Scores
+      {/* Collapsible details */}
+      <div
+        role="button"
+        tabIndex={0}
+        onClick={() => setShowDetails(d => !d)}
+        className="w-full flex items-center justify-between px-1 py-0.5 text-[9px] text-muted-foreground hover:text-foreground transition-colors cursor-pointer select-none"
+      >
+        <span className="flex items-center gap-1">
+          <Settings2 className="h-3 w-3" />
+          {showDetails ? 'Hide' : 'Show'} Details
+        </span>
+      </div>
+      {showDetails && signal && (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-1">
+          <Card className="border-border/50 bg-card/80">
+            <CardHeader className="pb-0.5 pt-1.5">
+              <CardTitle className="text-[10px] flex items-center gap-1">
+                <Crosshair className="h-3 w-3 text-amber-400" /> Signal Scores
               </CardTitle>
             </CardHeader>
-            <CardContent className="p-2 pt-0">
-              <div className="space-y-1.5">
-                <ScoreBar label="Price Trend" score={signal.priceTrendScore} />
-                <ScoreBar label="Cash Flow" score={signal.cashFlowScore} />
-                <ScoreBar label="Idx Options" score={signal.idxOptScore} />
-                <ScoreBar label="Stk Options" score={signal.stkOptScore} />
-                <ScoreBar label="Idx Futures" score={signal.idxFutScore} />
-                <ScoreBar label="Stk Futures" score={signal.stkFutScore} />
-                <div className="border-t border-border/30 pt-1">
-                  <ScoreBar label="COMPOSITE" score={signal.score} bold />
-                </div>
-                <div className="text-[7px] text-muted-foreground mt-1">
-                  Cash Flow score = 0 (Kite API doesn't provide per-stock money in/out data)
-                </div>
-              </div>
+            <CardContent className="p-1.5 pt-0 space-y-0.5">
+              <ScoreBar label="Price" score={signal.priceTrendScore} />
+              <ScoreBar label="Cash" score={signal.cashFlowScore} />
+              <ScoreBar label="IdxOpt" score={signal.idxOptScore} />
+              <ScoreBar label="StkOpt" score={signal.stkOptScore} />
+              <ScoreBar label="IdxFut" score={signal.idxFutScore} />
+              <ScoreBar label="StkFut" score={signal.stkFutScore} />
+              <ScoreBar label="TOTAL" score={signal.score} bold />
             </CardContent>
           </Card>
-
-          {/* Futures Breakdown */}
-          <Card className="border-border/50 bg-card/80 backdrop-blur-sm">
-            <CardHeader className="pb-1 pt-2">
-              <CardTitle className="flex items-center gap-1.5 text-xs">
-                <BarChart3 className="h-3.5 w-3.5 text-indigo-400" />
-                Futures OI Flow (Latest)
+          <Card className="border-border/50 bg-card/80">
+            <CardHeader className="pb-0.5 pt-1.5">
+              <CardTitle className="text-[10px] flex items-center gap-1">
+                <BarChart3 className="h-3 w-3 text-indigo-400" /> Futures Flow
               </CardTitle>
             </CardHeader>
-            <CardContent className="p-2 pt-0">
+            <CardContent className="p-1.5 pt-0">
               {latestFut ? (
-                <div className="space-y-1">
-                  <div className="text-[9px] font-medium text-indigo-400">Index Futures</div>
+                <div className="space-y-0.5">
                   {latestFut.indexBreakdown.map(idx => (
-                    <div key={idx.symbol} className="flex items-center justify-between text-[10px] font-mono">
-                      <span className="w-20">{idx.symbol}</span>
-                      <span className={`flex-1 text-right ${idx.futNet > 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                        {idx.futNet > 0 ? '+' : ''}{(idx.futNet / CROR).toFixed(1)} Cr
-                      </span>
-                      <span className={`w-16 text-right ${idx.basis > 0 ? 'text-emerald-400/70' : 'text-red-400/70'}`}>
-                        B:{idx.basis > 0 ? '+' : ''}{idx.basis.toFixed(1)}
-                      </span>
-                      <span className={`w-16 text-right ${idx.oiChg > 0 ? 'text-blue-400/70' : 'text-orange-400/70'}`}>
-                        OI:{idx.oiChg > 0 ? '+' : ''}{(idx.oiChg / 1000).toFixed(0)}K
-                      </span>
+                    <div key={idx.symbol} className="flex items-center justify-between text-[9px] font-mono">
+                      <span className="w-16">{idx.symbol}</span>
+                      <span className={["flex-1 text-right", idx.futNet > 0 ? "text-emerald-400" : "text-red-400"].join(" ")}>{idx.futNet > 0 ? "+" : ""}{(idx.futNet / CROR).toFixed(1)}Cr</span>
+                      <span className="w-10 text-right text-muted-foreground">B:{idx.basis.toFixed(0)}</span>
                     </div>
                   ))}
-                  <div className="text-[9px] font-medium text-pink-400 mt-1">Stock Futures (15 stocks)</div>
-                  <div className="flex items-center justify-between text-[10px] font-mono">
-                    <span className="w-20">Combined</span>
-                    <span className={`flex-1 text-right ${latestFut.stockFutNet > 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                      {latestFut.stockFutNet > 0 ? '+' : ''}{(latestFut.stockFutNet / CROR).toFixed(1)} Cr
-                    </span>
-                    <span className={`w-16 text-right ${latestFut.stockFutBasis > 0 ? 'text-emerald-400/70' : 'text-red-400/70'}`}>
-                      B:{latestFut.stockFutBasis > 0 ? '+' : ''}{latestFut.stockFutBasis.toFixed(1)}
-                    </span>
-                    <span className={`w-16 text-right ${latestFut.stockFutOI > 0 ? 'text-blue-400/70' : 'text-orange-400/70'}`}>
-                      OI:{latestFut.stockFutOI > 0 ? '+' : ''}{(latestFut.stockFutOI / 1000).toFixed(0)}K
-                    </span>
-                  </div>
-                  <div className="text-[8px] text-muted-foreground mt-1">
-                    Basis = Future - Spot | OI Chg = Open Interest change (build-up vs unwinding)
+                  <div className="border-t border-border/20 pt-0.5 flex items-center justify-between text-[9px] font-mono">
+                    <span className="w-16 text-pink-400">15 Stk</span>
+                    <span className={["flex-1 text-right", latestFut.stockFutNet > 0 ? "text-emerald-400" : "text-red-400"].join(" ")}>{latestFut.stockFutNet > 0 ? "+" : ""}{(latestFut.stockFutNet / CROR).toFixed(1)}Cr</span>
+                    <span className="w-10 text-right text-muted-foreground">B:{latestFut.stockFutBasis.toFixed(0)}</span>
                   </div>
                 </div>
               ) : (
-                <div className="text-[10px] text-muted-foreground">Waiting for futures data...</div>
+                <div className="text-[9px] text-muted-foreground">Waiting...</div>
               )}
             </CardContent>
           </Card>
         </div>
       )}
-
-      {/* ═══════════════════════════════════════════════════════════
-          ROW 4: TRADING TIPS
-          ═══════════════════════════════════════════════════════════ */}
-      <Card className="border-border/30 bg-card/50">
-        <CardContent className="p-2 space-y-1.5">
-          <div className="flex items-center gap-1.5 text-xs font-bold text-purple-400">
-            <ShieldAlert className="h-3.5 w-3.5" />
-            OI Flow Trading Framework
-          </div>
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-x-4 gap-y-1 text-[9px] text-muted-foreground">
-            <div>
-              <span className="text-emerald-400 font-medium">1. 4-Color OI Engine:</span> Each bar = diff of 2 Kite snapshots (15s). CE Buy (dOI up + dP &ge; 0) and PE Write (dOI up + dP &gt; 0) are bullish. PE Buy and CE Write are bearish. OI decrease uses 0.3x factor (unwinding).
-            </div>
-            <div>
-              <span className="text-red-400 font-medium">2. Divergence = Trap:</span> If Options showing Call Buy + Put Write (bullish) but price falling, smart money is writing options against the trend. The divergence badge catches this automatically.
-            </div>
-            <div>
-              <span className="text-amber-400 font-medium">3. Futures Confirmation:</span> Futures are leveraged — institutions don&apos;t take futures positions casually. If Index Futures net LONG + Options bullish = high probability trade.
-            </div>
-            <div>
-              <span className="text-blue-400 font-medium">4. Basis Signal:</span> Contango (positive basis) = bullish sentiment. Backwardation (negative basis) = bearish urgency. If basis flips while options still bullish &rarr; smart money is exiting.
-            </div>
-            <div>
-              <span className="text-cyan-400 font-medium">5. OI Build-Up:</span> Rising OI + rising price = long build-up (bullish). Rising OI + falling price = short build-up (bearish). Falling OI = unwinding — move is ending.
-            </div>
-            <div>
-              <span className="text-purple-400 font-medium">6. Data Source:</span> All data from Zerodha Kite API (real or demo). Cash flow not available from Kite — signal uses Price + Options OI + Futures OI only.
-            </div>
-          </div>
-        </CardContent>
-      </Card>
     </div>
   );
 }

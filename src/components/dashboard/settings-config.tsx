@@ -278,6 +278,10 @@ export default function SettingsConfig() {
             <p>
               Credentials are saved in your browser&apos;s localStorage — they never leave your device except as query params to your own API routes.
             </p>
+            <p>
+              <span className="text-amber-400 font-medium">Cross-device tip:</span>{' '}
+              Set <code className="bg-muted px-1 rounded">KITE_API_KEY</code> + <code className="bg-muted px-1 rounded">KITE_ACCESS_TOKEN</code> in your <code className="bg-muted px-1 rounded">.env</code> file (or Vercel environment variables). This works on ALL devices without re-pasting. Settings tab still works for quick daily token updates.
+            </p>
           </div>
         </CardContent>
       </Card>
