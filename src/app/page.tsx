@@ -177,7 +177,6 @@ export default function DashboardPage() {
         </div>
       </header>
 
-      {/* Main Content */}
       <main className="flex-1 p-4">
         <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
           <TabsList className="mb-4 w-full flex h-10 bg-muted/50">
@@ -261,7 +260,6 @@ export default function DashboardPage() {
             </TabsTrigger>
           </TabsList>
 
-          {/* LIVE FIRST — Options + Cash = index movement */}
           <TabsContent value="live" className="mt-0">
             <LiveMonitor />
           </TabsContent>
@@ -326,7 +324,6 @@ export default function DashboardPage() {
         </Tabs>
       </main>
 
-      {/* Footer */}
       <footer className="border-t border-border/30 bg-card/50 mt-auto">
         <div className="px-4 py-2 flex items-center justify-between text-[10px] text-muted-foreground">
           <span>

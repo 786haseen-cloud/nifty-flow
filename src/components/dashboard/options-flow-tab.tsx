@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useRef } from 'react';
+import { useEffect, useState, useRef, useCallback } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import {
@@ -234,7 +234,7 @@ let _pOpenPrice = 0;
 // ═══════════════════════════════════════════════════════════
 
 export default function OptionsFlowTab() {
-  const { curr, prev, pollCount } = useKiteSnapshot(15000);
+  const { curr, prev, pollCount, errorCount } = useKiteSnapshot(15000);
 
   // Track last processed poll — init -1 guarantees first effect always processes
   const lastProcessedPoll = useRef<number>(-1);
@@ -247,6 +247,9 @@ export default function OptionsFlowTab() {
   const [scoreHistory, setScoreHistory] = useState<number[]>([..._pScores]);
   const [signal, setSignal] = useState<CompositeSignal | null>(null);
   const [mode, setMode] = useState<'live' | 'demo' | 'error' | 'loading'>(_pOptBars.length > 0 ? 'live' : 'loading');
+
+  // Diagnostic state for debugging
+  const [diagInfo, setDiagInfo] = useState<string>('');
 
   // Chart settings — compact defaults
   const [chartSettings, setChartSettings] = useState({
@@ -266,16 +269,19 @@ export default function OptionsFlowTab() {
   const niftySymbol = curr?.symbols.find(s => s.symbol === 'NIFTY');
   const currentSpotPrice = niftySymbol?.spotPrice ?? 0;
 
-  // Core data computation
-  useEffect(() => {
-    if (!curr) return;
-    if (pollCount === lastProcessedPoll.current) return;
-    lastProcessedPoll.current = pollCount;
+  // Core data computation — runs inside useCallback to keep logic stable
+  const processSnapshot = useCallback((
+    currData: NonNullable<typeof curr>,
+    prevData: typeof prev,
+    currentPollCount: number,
+  ) => {
+    setMode(currData.mode === 'demo' ? 'demo' : currData.mode);
 
-    setMode(curr.mode === 'demo' ? 'demo' : curr.mode);
-
-    const nifty = curr.symbols.find(s => s.symbol === 'NIFTY');
-    if (!nifty) return;
+    const nifty = currData.symbols.find(s => s.symbol === 'NIFTY');
+    if (!nifty) {
+      setDiagInfo(`poll#${currentPollCount}: no NIFTY in ${currData.symbols.length} symbols`);
+      return;
+    }
 
     if (_pOpenPrice === 0) _pOpenPrice = nifty.spotPrice;
     const spotPrice = nifty.spotPrice;
@@ -285,32 +291,54 @@ export default function OptionsFlowTab() {
     setNiftyPrice(spotPrice);
     setNiftyPrices([..._pPrices]);
 
-    const ts = curr.timestamp
-      ? new Date(curr.timestamp).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })
+    const ts = currData.timestamp
+      ? new Date(currData.timestamp).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })
       : new Date().toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
 
-    if (prev && prev.symbols.length > 0) {
-      const optBar = computeOptionsFlowBar(prev.symbols, curr.symbols, ts);
-      _pOptBars.push(optBar);
-      if (_pOptBars.length > MAX_BARS) _pOptBars = _pOptBars.slice(-MAX_BARS);
-      setOptionsBars([..._pOptBars]);
+    const hasPrev = prevData && prevData.symbols.length > 0;
+    if (hasPrev) {
+      try {
+        const optBar = computeOptionsFlowBar(prevData.symbols, currData.symbols, ts);
+        _pOptBars.push(optBar);
+        if (_pOptBars.length > MAX_BARS) _pOptBars = _pOptBars.slice(-MAX_BARS);
+        setOptionsBars([..._pOptBars]);
 
-      const futBar = computeFuturesFlowBar(prev.symbols, curr.symbols, ts);
-      _pFutBars.push(futBar);
-      if (_pFutBars.length > MAX_BARS) _pFutBars = _pFutBars.slice(-MAX_BARS);
-      setFutBars([..._pFutBars]);
+        const futBar = computeFuturesFlowBar(prevData.symbols, currData.symbols, ts);
+        _pFutBars.push(futBar);
+        if (_pFutBars.length > MAX_BARS) _pFutBars = _pFutBars.slice(-MAX_BARS);
+        setFutBars([..._pFutBars]);
 
-      const priceTrend = spotPrice - _pOpenPrice;
-      const sig = computeCompositeSignal(
-        0, optBar.indexNetFlow, optBar.stockNetFlow,
-        futBar.indexFutNet, futBar.stockFutNet, priceTrend,
-      );
-      setSignal(sig);
-      _pScores.push(sig.score);
-      if (_pScores.length > MAX_BARS) _pScores = _pScores.slice(-MAX_BARS);
-      setScoreHistory([..._pScores]);
+        const priceTrend = spotPrice - _pOpenPrice;
+        const sig = computeCompositeSignal(
+          0, optBar.indexNetFlow, optBar.stockNetFlow,
+          futBar.indexFutNet, futBar.stockFutNet, priceTrend,
+        );
+        setSignal(sig);
+        _pScores.push(sig.score);
+        if (_pScores.length > MAX_BARS) _pScores = _pScores.slice(-MAX_BARS);
+        setScoreHistory([..._pScores]);
+
+        setDiagInfo(`poll#${currentPollCount}: OK — ${_pOptBars.length} bars, mode=${currData.mode}`);
+      } catch (e) {
+        console.error('[OptFlow] Bar computation error:', e);
+        setDiagInfo(`poll#${currentPollCount}: COMPUTE ERROR — ${e}`);
+      }
+    } else {
+      setDiagInfo(`poll#${currentPollCount}: waiting for prev (hasPrev=${!!prevData})`);
     }
-  }, [curr, prev, pollCount]);
+  }, []);
+
+  // Core data computation
+  useEffect(() => {
+    if (!curr) {
+      setDiagInfo(`curr=null, poll=${pollCount}, errors=${errorCount}`);
+      return;
+    }
+    if (pollCount === lastProcessedPoll.current) return;
+    lastProcessedPoll.current = pollCount;
+
+    processSnapshot(curr, prev, pollCount);
+  }, [curr, prev, pollCount, errorCount, processSnapshot]);
 
   // Visible slices
   const visBars = chartSettings.visibleBars;
@@ -346,8 +374,13 @@ export default function OptionsFlowTab() {
   const openPrice = _pOpenPrice || currentSpotPrice;
   const allZeroFlow = visOpt.length > 0 && visOpt.every(b => b.indexBullishFlow === 0 && b.indexBearishFlow === 0);
 
+  // Determine what to show in the flow chart area
+  const showWaiting = visOpt.length === 0;
+  const showZeroFlow = !showWaiting && allZeroFlow;
+  const showCharts = !showWaiting && !showZeroFlow;
+
   return (
-    <div className="space-y-1">
+    <div className="space-y-1.5">
       {/* ═══════════════════════════════════════════════════════════
           ROW 0: STATUS BAR + SETTINGS TOGGLE
           ═══════════════════════════════════════════════════════════ */}
@@ -371,14 +404,19 @@ export default function OptionsFlowTab() {
             </Badge>
           )}
           <span className="text-[8px] text-muted-foreground">
-            {mode === 'demo' && 'Using Kite demo data — set KITE_API_KEY + KITE_ACCESS_TOKEN in .env for live'}
-            {mode === 'live' && `Real Kite data — ${curr?.symbols.length ?? 0} symbols`}
+            {mode === 'demo' && 'Using demo data — set Kite creds in Settings for live'}
+            {mode === 'live' && `${curr?.symbols.length ?? 0} symbols`}
             {mode === 'loading' && 'Waiting for first snapshot...'}
             {mode === 'error' && 'Snapshot error — check Kite credentials'}
           </span>
           <span className="text-[8px] text-muted-foreground font-mono">
             ({optionsBars.length} bars)
           </span>
+          {errorCount > 0 && (
+            <Badge className="text-[7px] bg-red-500/30 text-red-300 border-red-500/40 px-1 py-0">
+              {errorCount} fetch errors
+            </Badge>
+          )}
         </div>
         <button
           onClick={() => setShowSettings(!showSettings)}
@@ -473,7 +511,9 @@ export default function OptionsFlowTab() {
           signal.action === 'BUY_CALL' ? 'border-emerald-500/60 bg-emerald-500/5' :
           signal.action === 'BUY_PUT' ? 'border-red-500/60 bg-red-500/5' :
           'border-amber-500/40 bg-amber-500/5'
-        } backdrop-blur-sm`}>
+        } backdrop-blur-sm`}
+          style={{ flexShrink: 0 }}
+        >
           <CardContent className="p-2">
             <div className="flex items-center justify-between flex-wrap gap-x-4 gap-y-1">
               <div className="flex items-center gap-2">
@@ -487,7 +527,7 @@ export default function OptionsFlowTab() {
                    signal.action === 'EXIT' ? 'EXIT' : 'WAIT'}
                 </span>
                 <span className="text-xs text-muted-foreground">
-                  Nifty {signal.suggestedStrike.toLocaleString()} @ ₹{signal.suggestedPremium.toFixed(0)}
+                  Nifty {signal.suggestedStrike.toLocaleString()} @ Rs.{signal.suggestedPremium.toFixed(0)}
                 </span>
               </div>
               <div className="flex items-center gap-2">
@@ -515,9 +555,9 @@ export default function OptionsFlowTab() {
                 </span>
               </div>
               <div className="flex items-center gap-3 text-[10px] font-mono">
-                <span>SL: ₹{signal.stopLoss.toFixed(0)}</span>
-                <span className="text-emerald-400">T1: ₹{signal.target1.toFixed(0)}</span>
-                <span className="text-emerald-300">T2: ₹{signal.target2.toFixed(0)}</span>
+                <span>SL: Rs.{signal.stopLoss.toFixed(0)}</span>
+                <span className="text-emerald-400">T1: Rs.{signal.target1.toFixed(0)}</span>
+                <span className="text-emerald-300">T2: Rs.{signal.target2.toFixed(0)}</span>
                 <span>RR: {signal.riskReward.toFixed(1)}:1</span>
               </div>
               <div className="flex items-center gap-1">
@@ -543,12 +583,12 @@ export default function OptionsFlowTab() {
       {/* ═══════════════════════════════════════════════════════════
           ROW 2a: NIFTY50 PRICE + SCORE LINE
           ═══════════════════════════════════════════════════════════ */}
-      <Card className="border-2 border-emerald-500/30 bg-card/90 backdrop-blur-sm shadow-lg shadow-emerald-500/5">
+      <Card className="border-2 border-emerald-500/30 bg-card/90 backdrop-blur-sm shadow-lg shadow-emerald-500/5" style={{ flexShrink: 0 }}>
         <CardHeader className="pb-1 pt-2">
           <CardTitle className="flex items-center gap-2 text-xs">
             <Activity className="h-3.5 w-3.5 text-emerald-400" />
             Nifty 50 Price + Score
-            <span className="text-[9px] text-muted-foreground font-normal">│ real-time from Kite │ OI diff flow</span>
+            <span className="text-[9px] text-muted-foreground font-normal">| real-time from Kite | OI diff flow</span>
             {niftyPrice > 0 && (
               <>
                 <span className={`font-mono font-bold ${niftyPrice >= openPrice ? 'text-emerald-400' : 'text-red-400'}`}>
@@ -564,7 +604,7 @@ export default function OptionsFlowTab() {
                 signal.action === 'BUY_CALL' ? 'bg-emerald-500/20 text-emerald-300' :
                 signal.action === 'BUY_PUT' ? 'bg-red-500/20 text-red-300' : 'bg-amber-500/20 text-amber-300'
               }`}>
-                {signal.action === 'BUY_CALL' ? '▲ BUY CALL' : signal.action === 'BUY_PUT' ? '▼ BUY PUT' : '— WAIT'}
+                {signal.action === 'BUY_CALL' ? 'UP BUY CALL' : signal.action === 'BUY_PUT' ? 'DN BUY PUT' : '- WAIT'}
               </span>
             )}
             <div className="ml-auto flex items-center gap-2 text-[9px]">
@@ -712,9 +752,8 @@ export default function OptionsFlowTab() {
 
       {/* ═══════════════════════════════════════════════════════════
           ROW 2b: FLOW CHARTS — Options | Futures
-          (Cash flow removed — Kite doesn't provide per-stock money in/out)
           ═══════════════════════════════════════════════════════════ */}
-      <Card className="border-border/50 bg-card/80 backdrop-blur-sm">
+      <Card className="border-border/50 bg-card/80 backdrop-blur-sm" style={{ flexShrink: 0 }}>
         <CardHeader className="pb-1 pt-2">
           <CardTitle className="flex items-center gap-2 text-xs">
             <Layers className="h-3.5 w-3.5 text-purple-400" />
@@ -731,21 +770,24 @@ export default function OptionsFlowTab() {
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-0 px-2 pb-2">
-          {visOpt.length === 0 ? (
-            <div className="flex items-center justify-center h-14 text-[10px] text-muted-foreground gap-1.5">
-              <RefreshCw className="h-3 w-3 animate-spin" />
-              {!curr ? 'Connecting...' : !prev ? 'Waiting for 2nd snapshot...' : 'Processing...'}
-              <span className="text-[8px] font-mono">(poll={pollCount})</span>
+          {showWaiting ? (
+            <div className="flex flex-col items-center justify-center h-16 text-[10px] text-muted-foreground gap-1.5">
+              <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+              {!curr ? 'Connecting to server...' : !prev ? 'Waiting for 2nd snapshot (15s interval)...' : 'Processing flow data...'}
+              <span className="text-[8px] font-mono text-muted-foreground/60">
+                poll={pollCount} | symbols={curr?.symbols.length ?? 0} | prev={prev ? 'yes' : 'no'} | diag: {diagInfo}
+              </span>
             </div>
-          ) : allZeroFlow ? (
-            <div className="flex items-center justify-center h-14 text-[10px] gap-1.5">
+          ) : showZeroFlow ? (
+            <div className="flex flex-col items-center justify-center h-16 text-[10px] gap-1.5">
               <ShieldAlert className="h-3.5 w-3.5 text-amber-400" />
               <span className="text-amber-300">{optionsBars.length} bars, all OI diffs = 0</span>
-              <span className="text-[8px] text-muted-foreground">- market closed? 9:15 AM - 3:40 PM IST</span>
+              <span className="text-[8px] text-muted-foreground">market closed or no OI change (9:15 AM - 3:40 PM IST)</span>
+              <span className="text-[7px] font-mono text-muted-foreground/50">{diagInfo}</span>
             </div>
           ) : (
             <>
-              {/* ── IDX OPTIONS FLOW (4-color) ── */}
+              {/* IDX OPTIONS FLOW (4-color) */}
               <FlowChartRow
                 label="IDX OPT"
                 labelColor="text-amber-400"
@@ -763,7 +805,7 @@ export default function OptionsFlowTab() {
                 ))}
               </FlowChartRow>
 
-              {/* ── STOCK OPTIONS FLOW (4-color) ── */}
+              {/* STOCK OPTIONS FLOW (4-color) */}
               <FlowChartRow
                 label="STK OPT"
                 labelColor="text-cyan-400"
@@ -781,7 +823,7 @@ export default function OptionsFlowTab() {
                 ))}
               </FlowChartRow>
 
-              {/* ── INDEX FUTURES FLOW ── */}
+              {/* INDEX FUTURES FLOW */}
               <FlowChartRow
                 label="IDX FUT"
                 labelColor="text-indigo-400"
@@ -797,12 +839,12 @@ export default function OptionsFlowTab() {
                     <div key={i} className="flex flex-col items-center justify-center" style={{ width: BAR_WIDTH, height: '100%' }}>
                       <div className="w-full flex-1 flex items-end">
                         <div className="w-full" style={{ height: buyH, background: C.futBuy }}
-                          title={`Idx Fut Buy: ₹${(bar.indexFutBuy / CROR).toFixed(1)} Cr`}
+                          title={`Idx Fut Buy: Rs.${(bar.indexFutBuy / CROR).toFixed(1)} Cr`}
                         />
                       </div>
                       <div className="w-full flex-1">
                         <div className="w-full" style={{ height: sellH, background: C.futSell }}
-                          title={`Idx Fut Sell: ₹${(bar.indexFutSell / CROR).toFixed(1)} Cr`}
+                          title={`Idx Fut Sell: Rs.${(bar.indexFutSell / CROR).toFixed(1)} Cr`}
                         />
                       </div>
                     </div>
@@ -810,7 +852,7 @@ export default function OptionsFlowTab() {
                 })}
               </FlowChartRow>
 
-              {/* ── STOCK FUTURES FLOW ── */}
+              {/* STOCK FUTURES FLOW */}
               <FlowChartRow
                 label="STK FUT"
                 labelColor="text-pink-400"
@@ -826,12 +868,12 @@ export default function OptionsFlowTab() {
                     <div key={i} className="flex flex-col items-center justify-center" style={{ width: BAR_WIDTH, height: '100%' }}>
                       <div className="w-full flex-1 flex items-end">
                         <div className="w-full" style={{ height: buyH, background: C.futBuy }}
-                          title={`Stk Fut Buy: ₹${(bar.stockFutBuy / CROR).toFixed(1)} Cr`}
+                          title={`Stk Fut Buy: Rs.${(bar.stockFutBuy / CROR).toFixed(1)} Cr`}
                         />
                       </div>
                       <div className="w-full flex-1">
                         <div className="w-full" style={{ height: sellH, background: C.futSell }}
-                          title={`Stk Fut Sell: ₹${(bar.stockFutSell / CROR).toFixed(1)} Cr`}
+                          title={`Stk Fut Sell: Rs.${(bar.stockFutSell / CROR).toFixed(1)} Cr`}
                         />
                       </div>
                     </div>
@@ -881,6 +923,7 @@ export default function OptionsFlowTab() {
         tabIndex={0}
         onClick={() => setShowDetails(d => !d)}
         className="w-full flex items-center justify-between px-1 py-0.5 text-[9px] text-muted-foreground hover:text-foreground transition-colors cursor-pointer select-none"
+        style={{ flexShrink: 0 }}
       >
         <span className="flex items-center gap-1">
           <Settings2 className="h-3 w-3" />
@@ -888,7 +931,7 @@ export default function OptionsFlowTab() {
         </span>
       </div>
       {showDetails && signal && (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-1">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-1" style={{ flexShrink: 0 }}>
           <Card className="border-border/50 bg-card/80">
             <CardHeader className="pb-0.5 pt-1.5">
               <CardTitle className="text-[10px] flex items-center gap-1">
@@ -959,13 +1002,13 @@ function FlowChartRow({
       <div className="flex items-center gap-1 text-[8px] mb-0.5">
         <span className={`font-bold ${labelColor}`}>{label}</span>
         <span className="text-muted-foreground">{subtitle}</span>
-        <span className="ml-auto text-muted-foreground">±{(maxAbs / unitDivisor).toFixed(1)} {unit}</span>
+        <span className="ml-auto text-muted-foreground">+/-{(maxAbs / unitDivisor).toFixed(1)} {unit}</span>
       </div>
       <div className="relative border border-border/15 rounded bg-black/20" style={{ height: CHART_H }}>
         <div className="absolute left-0 top-0 bottom-0 w-8 border-r border-border/10 z-10 flex flex-col justify-between py-0.5 px-0.5">
           <span className="text-[6px] font-mono text-emerald-400/70">+</span>
           <span className="text-[6px] font-mono text-muted-foreground">0</span>
-          <span className="text-[6px] font-mono text-red-400/70">−</span>
+          <span className="text-[6px] font-mono text-red-400/70">-</span>
         </div>
         <div className="absolute left-8 right-0 flex items-end gap-px overflow-hidden" style={{ top: 0, bottom: 0 }}>
           {children}

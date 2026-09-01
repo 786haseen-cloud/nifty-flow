@@ -47,10 +47,25 @@ const listeners = new Set<() => void>();
 let globalTimer: ReturnType<typeof setInterval> | null = null;
 let globalPollCount = 0;
 
+let _consecutiveErrors = 0;
+
 async function pollOnce() {
   try {
-    const res = await fetch(withCreds('/api/kite/highest-bet'));
+    const url = withCreds('/api/kite/highest-bet');
+    const res = await fetch(url);
+    if (!res.ok) {
+      console.error(`[KiteSnapshot] HTTP ${res.status} from ${url}`);
+      _consecutiveErrors++;
+      listeners.forEach(fn => fn());
+      return;
+    }
     const data = await res.json();
+    if (!data || !Array.isArray(data.symbols)) {
+      console.error('[KiteSnapshot] Invalid response structure:', data);
+      _consecutiveErrors++;
+      listeners.forEach(fn => fn());
+      return;
+    }
     globalPrev = globalCurr;
     globalCurr = {
       mode: data.mode || 'demo',
@@ -59,8 +74,10 @@ async function pollOnce() {
       vix: data.vix || null,
     };
     globalPollCount++;
-  } catch {
-    // silent — keep last known data
+    _consecutiveErrors = 0;
+  } catch (err) {
+    _consecutiveErrors++;
+    console.error(`[KiteSnapshot] Fetch error #${_consecutiveErrors}:`, err);
   }
   listeners.forEach(fn => fn());
 }
@@ -89,5 +106,6 @@ export function useKiteSnapshot(intervalMs = 15000) {
     curr: globalCurr,
     prev: globalPrev,
     pollCount: globalPollCount,
+    errorCount: _consecutiveErrors,
   };
 }
