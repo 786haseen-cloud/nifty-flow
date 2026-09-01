@@ -146,27 +146,25 @@ function formatNumber(n: number): string {
   return n.toLocaleString('en-IN');
 }
 
-// Compute Max Pain: strike where option buyers lose the most
+// Compute Max Pain: strike K where total SELLER payout is minimum (= buyers hurt the most)
+// Seller payout at expiry K:
+//   CE: seller pays max(0, K - S) × CE_OI  (CE ITM when K > strike)
+//   PE: seller pays max(0, S - K) × PE_OI  (PE ITM when K < strike)
 function computeMaxPain(strikes: StrikeFlowData[]): number {
   if (strikes.length === 0) return 0;
-  let minLoss = Infinity;
+  let minPayout = Infinity;
   let maxPainStrike = strikes[0].strike;
 
   for (const k of strikes) {
-    let totalLoss = 0;
+    let totalPayout = 0;
     for (const s of strikes) {
-      // CE buyer loses if spot expires at K below the CE strike: CE worthless
-      // Actually: CE buyer loss = max(0, K_expiry - S_strike) * CE_OI... no.
-      // At expiry price K, CE with strike S > K is worthless → buyer loses premium paid.
-      // But we only have OI, not premium. Standard Max Pain uses:
-      // CE buyer loss at expiry K = Σ max(0, strike_i - K) * CE_OI_i
-      // (CE is ITM and worth (strike - K), but buyer already paid more than intrinsic...)
-      // Simplified: use intrinsic value approach
-      totalLoss += Math.max(0, s.strike - k.strike) * s.ceOI;
-      totalLoss += Math.max(0, k.strike - s.strike) * s.peOI;
+      // CE seller pays when expiry K > strike S
+      totalPayout += Math.max(0, k.strike - s.strike) * s.ceOI;
+      // PE seller pays when expiry K < strike S
+      totalPayout += Math.max(0, s.strike - k.strike) * s.peOI;
     }
-    if (totalLoss < minLoss) {
-      minLoss = totalLoss;
+    if (totalPayout < minPayout) {
+      minPayout = totalPayout;
       maxPainStrike = k.strike;
     }
   }

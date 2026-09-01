@@ -31,20 +31,24 @@ interface MaxPainResult {
   totalPEOI: number;
 }
 
-// Compute max pain from strike data (same logic as OI Walls tab)
+// Compute max pain: strike K where total SELLER payout is minimum (= max pain for buyers)
+// CE seller pays max(0, K - S) × CE_OI  (CE ITM when K > strike)
+// PE seller pays max(0, S - K) × PE_OI  (PE ITM when K < strike)
 function computeMaxPain(strikes: { strike: number; ceOI: number; peOI: number }[]): number {
   if (strikes.length === 0) return 0;
-  let minLoss = Infinity;
+  let minPayout = Infinity;
   let mpStrike = strikes[0].strike;
 
   for (const k of strikes) {
-    let totalLoss = 0;
+    let totalPayout = 0;
     for (const s of strikes) {
-      totalLoss += Math.max(0, s.strike - k.strike) * s.ceOI;
-      totalLoss += Math.max(0, k.strike - s.strike) * s.peOI;
+      // CE: seller pays when expiry K > strike S
+      totalPayout += Math.max(0, k.strike - s.strike) * s.ceOI;
+      // PE: seller pays when expiry K < strike S
+      totalPayout += Math.max(0, s.strike - k.strike) * s.peOI;
     }
-    if (totalLoss < minLoss) {
-      minLoss = totalLoss;
+    if (totalPayout < minPayout) {
+      minPayout = totalPayout;
       mpStrike = k.strike;
     }
   }
