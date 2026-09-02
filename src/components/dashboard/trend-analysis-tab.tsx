@@ -21,11 +21,11 @@
 import { useMemo } from 'react';
 import { Badge } from '@/components/ui/badge';
 import {
-  LineChart, Line, BarChart, Bar,
+  LineChart, Line, BarChart, Bar, Area,
   XAxis, YAxis, CartesianGrid, Tooltip, Legend, ReferenceLine,
   ResponsiveContainer, ComposedChart,
 } from 'recharts';
-import { TrendingUp, TrendingDown, ArrowUpRight, ArrowDownRight, Activity, Wallet } from 'lucide-react';
+import { TrendingUp, TrendingDown, ArrowUpRight, ArrowDownRight, Activity, Wallet, Magnet } from 'lucide-react';
 import { useTrendStore } from '@/lib/trend-store';
 import {
   IDX_COLORS,
@@ -36,6 +36,8 @@ import {
   type CashFlowTrendPoint,
   type FlowTrendPoint,
 } from '@/lib/trend-types';
+import { useMagnetScan } from '@/hooks/use-magnet-scan';
+import MagnetCard, { MagnetSummaryRow } from '@/components/dashboard/magnet-card';
 
 // ─── Trading Session X-Axis Helpers ───
 // Charts display a fixed trading-session window 09:15 → 15:40 IST.
@@ -225,6 +227,15 @@ export default function TrendAnalysisTab() {
   const currentIntervalCashFlow = useTrendStore((s) => s.currentIntervalCashFlow);
   const prevStockTotals = useTrendStore((s) => s.prevStockTotals);
   const lastPollAt = useTrendStore((s) => s.lastPollAt);
+
+  // Magnet & Gamma Dashboard — separate 60s poller (heavy batched call,
+  // kept off the 15s trend poller to limit Kite API load)
+  const magnetScan = useMagnetScan(true);
+  const magnetIndices = magnetScan.data.filter(s => s.type === 'index');
+  const magnetStocks = magnetScan.data.filter(s => s.type === 'stock');
+  const magnetLastStr = magnetScan.lastPollAt > 0
+    ? new Date(magnetScan.lastPollAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })
+    : '—';
 
   // ─── Derived values ───
 
@@ -598,6 +609,133 @@ export default function TrendAnalysisTab() {
             )}
           </div>
         </div>
+      </div>
+
+      {/* Section 3.5: Magnet & Gamma Dashboard — GEX / Zero-Γ / Charm / Pinning Probability
+          ============================================================
+          Replaces vanilla max-pain with a dealer-flow-aware composite:
+            1. GEX strip per strike (gamma exposure, +green/-red bars)
+            2. Zero-Gamma Flip line (where dealer behavior flips)
+            3. Magnet Zone band (top-3 strikes by composite score)
+            4. Charm direction (end-of-day forced drift)
+            5. Pinning Probability gauge (composite 0-100%)
+
+          Polled on a 60s cadence (separate from the 15s trend poller) to
+          limit Kite API load — these metrics change slowly.
+      */}
+      <div className="rounded-xl border border-border/50 bg-card/50 p-4">
+        <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+          <div className="flex items-center gap-2">
+            <Magnet className="h-4 w-4 text-purple-400" />
+            <h3 className="text-sm font-semibold">Magnet &amp; Gamma Dashboard — All 4 Indices + 15 Stocks</h3>
+            <span className="text-[10px] text-muted-foreground hidden sm:inline">
+              GEX strip · Zero-Γ flip · Magnet Zone · Charm drift · Pinning %
+            </span>
+          </div>
+          <div className="flex items-center gap-3 text-xs">
+            <Badge variant="outline" className={
+              magnetScan.mode === 'live' ? 'border-emerald-500/40 text-emerald-300' :
+              magnetScan.mode === 'error' ? 'border-red-500/40 text-red-300' :
+              magnetScan.mode === 'demo' ? 'border-orange-500/40 text-orange-300' :
+              'border-muted-foreground/40 text-muted-foreground'
+            }>
+              {magnetScan.mode === 'live' ? 'LIVE' : magnetScan.mode === 'error' ? 'Error' : magnetScan.mode === 'demo' ? 'Demo' : 'Loading'}
+            </Badge>
+            <span className="text-muted-foreground">Poll: {magnetLastStr}</span>
+            <span className="text-muted-foreground">|</span>
+            <span className="text-muted-foreground">{magnetScan.data.length}/19 symbols</span>
+          </div>
+        </div>
+
+        {/* Loading state */}
+        {magnetScan.mode === 'loading' && (
+          <div className="h-[100px] flex items-center justify-center text-xs text-muted-foreground">
+            Loading magnet &amp; gamma scan... (fetching ~400 option quotes in one batch)
+          </div>
+        )}
+
+        {/* Error / demo state */}
+        {(magnetScan.mode === 'error' || magnetScan.mode === 'demo') && magnetScan.error && (
+          <div className="rounded-lg border border-orange-500/30 bg-orange-500/10 p-3 text-xs text-orange-300 mb-3">
+            <strong>{magnetScan.mode === 'error' ? 'Error' : 'Demo'}:</strong> {magnetScan.error}
+            {magnetScan.mode === 'demo' && (
+              <span className="block mt-1 text-[10px]">
+                Configure Kite credentials in Settings to enable live magnet &amp; gamma scan.
+              </span>
+            )}
+          </div>
+        )}
+
+        {/* Live data */}
+        {magnetScan.mode === 'live' && magnetScan.data.length > 0 && (
+          <>
+            {/* Aggregate summary row */}
+            <MagnetSummaryRow symbols={magnetScan.data} />
+
+            {/* Indices section — 4 cards in a 4-col grid */}
+            <div className="mb-2 flex items-center gap-1.5">
+              <span className="inline-block w-1 h-3 bg-purple-400 rounded-sm" />
+              <h4 className="text-[11px] font-semibold text-purple-300 uppercase tracking-wider">
+                Indices ({magnetIndices.length}/4)
+              </h4>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2 mb-4">
+              {magnetIndices.map((s) => (
+                <MagnetCard key={s.symbol} data={s} />
+              ))}
+              {/* Fill placeholders if indices < 4 */}
+              {magnetIndices.length < 4 && Array.from({ length: 4 - magnetIndices.length }).map((_, i) => (
+                <div key={`idx-fill-${i}`} className="rounded-lg border border-dashed border-border/30 bg-muted/5 p-2.5 flex items-center justify-center h-[260px]">
+                  <span className="text-[10px] text-muted-foreground">No data</span>
+                </div>
+              ))}
+            </div>
+
+            {/* Stocks section — 5-col grid for 15 stocks */}
+            <div className="mb-2 flex items-center gap-1.5">
+              <span className="inline-block w-1 h-3 bg-orange-400 rounded-sm" />
+              <h4 className="text-[11px] font-semibold text-orange-300 uppercase tracking-wider">
+                F&amp;O Stocks ({magnetStocks.length}/15)
+              </h4>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-2">
+              {magnetStocks.map((s) => (
+                <MagnetCard key={s.symbol} data={s} compact />
+              ))}
+              {/* Fill placeholders if stocks < 15 */}
+              {magnetStocks.length < 15 && Array.from({ length: 15 - magnetStocks.length }).map((_, i) => (
+                <div key={`stk-fill-${i}`} className="rounded-lg border border-dashed border-border/30 bg-muted/5 p-2.5 flex items-center justify-center h-[220px]">
+                  <span className="text-[10px] text-muted-foreground">No data</span>
+                </div>
+              ))}
+            </div>
+
+            {/* Legend / explainer */}
+            <div className="mt-3 pt-3 border-t border-border/30 text-[10px] text-muted-foreground space-y-1">
+              <div className="flex flex-wrap gap-3">
+                <span className="flex items-center gap-1">
+                  <span className="inline-block w-2 h-2 rounded-sm bg-emerald-500" /> Positive GEX (long gamma, sticky)
+                </span>
+                <span className="flex items-center gap-1">
+                  <span className="inline-block w-2 h-2 rounded-sm bg-red-500" /> Negative GEX (short gamma, volatile)
+                </span>
+                <span className="flex items-center gap-1">
+                  <span className="inline-block w-2 h-2 rounded-sm bg-amber-500" /> Magnet Zone (top-3 strikes)
+                </span>
+                <span className="flex items-center gap-1">
+                  <span className="inline-block w-2 h-2 rounded-sm bg-sky-500" /> Zero-Γ Flip
+                </span>
+                <span className="flex items-center gap-1">
+                  <span className="inline-block w-2 h-2 rounded-sm bg-purple-500" /> Spot (S)
+                </span>
+              </div>
+              <div className="italic">
+                Magnet Score combines: distance-from-max-pain (45%) + gamma concentration (35%) + OI concentration (20%).
+                Pinning Probability factors: distance, DTE, gamma regime, GEX magnitude, charm alignment.
+              </div>
+            </div>
+          </>
+        )}
       </div>
 
       {/* Section 4: Dual Exchange Cash Flow */}
