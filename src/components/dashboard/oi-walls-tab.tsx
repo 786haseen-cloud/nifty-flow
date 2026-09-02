@@ -344,16 +344,6 @@ export default function OIWallsTab() {
   // Use singleton for per-strike data (eliminates /api/kite/strike-flow duplicate)
   const { curr: singletonCurr, prev: singletonPrev } = useKiteSnapshot(30000);
 
-  // Helper: compute deltas between two snapshots
-  function computeDeltas(newData: StrikeFlowSnapshot, baseData: StrikeFlowSnapshot): Map<number, { ceOi: number; peOi: number; ceLtp: number; peLtp: number }> {
-    const baseMap = new Map(baseData.strikes.map(s => [s.strike, s]));
-    const d = new Map<number, { ceOi: number; peOi: number; ceLtp: number; peLtp: number }>();
-    for (const s of newData.strikes) {
-      const b = baseMap.get(s.strike);
-      if (b) d.set(s.strike, { ceOi: s.ceOI - b.ceOI, peOi: s.peOI - b.peOI, ceLtp: s.ceLTP - b.ceLTP, peLtp: s.peLTP - b.peLTP });
-    }
-    return d;
-  }
 
   // Extract StrikeFlowSnapshot for selected symbol from singleton
   useEffect(() => {

@@ -5,7 +5,7 @@ import { withCreds } from '@/lib/kite-creds';
 import { useKiteSnapshot } from '@/hooks/use-kite-snapshot';
 import { INDEX_SPECS } from '@/lib/kite-api';
 import { Badge } from '@/components/ui/badge';
-import type { SnapshotSymbol } from '@/hooks/use-kite-snapshot';
+// Symbol type is just a string identifier
 import { Crosshair, Maximize2, Minimize2, RefreshCw, Wifi, WifiOff } from 'lucide-react';
 
 // ═══════════════════════════════════════════
@@ -37,7 +37,9 @@ interface FlowBar {
 // CONSTANTS
 // ═══════════════════════════════════════════
 
-const SYMBOLS: { value: SnapshotSymbol; label: string; token: number }[] = [
+type SymbolId = string;
+
+const SYMBOLS: { value: SymbolId; label: string; token: number }[] = [
   { value: 'NIFTY', label: 'Nifty 50', token: 256265 },
   { value: 'BANKNIFTY', label: 'Bank Nifty', token: 260105 },
   { value: 'SENSEX', label: 'Sensex', token: 265 },
@@ -95,7 +97,7 @@ export default function OptionFlowTV() {
   const prevFlowRef = useRef<any>(null);
   const legendRef = useRef<HTMLDivElement>(null);
 
-  const [symbol, setSymbol] = useState<SnapshotSymbol>('NIFTY');
+  const [symbol, setSymbol] = useState<SymbolId>('NIFTY');
   const [interval, setInterval] = useState('5minute');
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [legend, setLegend] = useState({
@@ -105,8 +107,8 @@ export default function OptionFlowTV() {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
 
-  // Get snapshot for real-time data
-  const { curr, prev, pollCount, errorCount } = useKiteSnapshot(symbol);
+  // Get snapshot for real-time data (uses singleton — no symbol filter needed)
+  const { curr, prev, pollCount, errorCount } = useKiteSnapshot();
 
   // ─── Initialize chart ───
   const initChart = useCallback(async () => {

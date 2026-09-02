@@ -10,10 +10,10 @@ import { Button } from '@/components/ui/button';
 import { Slider } from '@/components/ui/slider';
 import {
   Settings, Key, RefreshCw, Target, Sliders, Wifi, WifiOff,
-  Loader2, CheckCircle, XCircle, Eye, EyeOff, Trash2,
+  Loader2, CheckCircle, XCircle, Eye, EyeOff, Trash2, Copy, Check,
 } from 'lucide-react';
 import { INDICES, TOP_STOCKS } from '@/lib/types';
-import { getKiteCreds, setKiteCreds, clearKiteCreds, hasKiteCreds, withCreds, type KiteCredentials } from '@/lib/kite-creds';
+import { getKiteCreds, setKiteCreds, clearKiteCreds, hasKiteCreds, withCreds, generateCredsUrl, initCredsFromHash, type KiteCredentials } from '@/lib/kite-creds';
 
 // ═══════════════════════════════════════════
 // SETTINGS STORAGE
@@ -66,12 +66,18 @@ export default function SettingsConfig() {
   const [connStatus, setConnStatus] = useState<ConnStatus>('unknown');
   const [connMsg, setConnMsg] = useState('');
   const [testing, setTesting] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const [hashLoaded, setHashLoaded] = useState(false);
 
   // ── App Settings State ──
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
 
-  // Load from localStorage on mount
+  // Load from localStorage on mount (or from URL hash on new device)
   useEffect(() => {
+    // Check if credentials were transferred via URL hash (cross-device)
+    const fromHash = initCredsFromHash();
+    if (fromHash) setHashLoaded(true);
+
     const creds = getKiteCreds();
     setApiKey(creds.apiKey);
     setAccessToken(creds.accessToken);
@@ -126,6 +132,27 @@ export default function SettingsConfig() {
       setConnMsg('');
     }
   }, [apiKey, accessToken, testConnection]);
+
+  // Copy credentials link for cross-device transfer
+  const handleCopyCredsLink = useCallback(async () => {
+    const url = generateCredsUrl();
+    if (!url) return;
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 3000);
+    } catch {
+      // Fallback: select text in a temp input
+      const ta = document.createElement('textarea');
+      ta.value = url;
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      document.body.removeChild(ta);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 3000);
+    }
+  }, []);
 
   // Disconnect
   const handleDisconnect = useCallback(() => {
@@ -266,6 +293,16 @@ export default function SettingsConfig() {
                 Re-test
               </Button>
             )}
+            {apiKey && accessToken && (
+              <Button
+                variant="outline"
+                onClick={handleCopyCredsLink}
+                className="text-xs"
+              >
+                {copied ? <Check className="mr-2 h-3 w-3 text-emerald-400" /> : <Copy className="mr-2 h-3 w-3" />}
+                {copied ? 'Copied!' : 'Copy Link'}
+              </Button>
+            )}
           </div>
           <div className="text-xs text-muted-foreground space-y-1">
             <p>
@@ -279,9 +316,14 @@ export default function SettingsConfig() {
               Credentials are saved in your browser&apos;s localStorage — they never leave your device except as query params to your own API routes.
             </p>
             <p>
-              <span className="text-amber-400 font-medium">Cross-device tip:</span>{' '}
-              Set <code className="bg-muted px-1 rounded">KITE_API_KEY</code> + <code className="bg-muted px-1 rounded">KITE_ACCESS_TOKEN</code> in your <code className="bg-muted px-1 rounded">.env</code> file (or Vercel environment variables). This works on ALL devices without re-pasting. Settings tab still works for quick daily token updates.
+              <span className="text-amber-400 font-medium">Cross-device transfer:</span>{' '}
+              Click &quot;Copy Link&quot; above, then open that link on your other device. Credentials are embedded in the URL hash (never sent to server) and auto-saved to localStorage on the new device. The hash is cleared immediately after loading.
             </p>
+            {hashLoaded && (
+              <p className="text-emerald-400">
+                Credentials loaded from shared link and saved to this device.
+              </p>
+            )}
           </div>
         </CardContent>
       </Card>
