@@ -5,25 +5,12 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Badge } from '@/components/ui/badge';
 import { useTrendStore } from '@/lib/trend-store';
 import {
-  Globe, Activity, Target, Landmark, Thermometer, Settings,
-  Wifi, WifiOff, Clock, TrendingUp, TrendingDown, Info, Layers, Crosshair, Trophy,
-  Shield, Bell, BookOpen, BarChart3, Clock4, LineChart,
+  Activity, Shield, BarChart3, LineChart, Settings,
+  Wifi, WifiOff, Clock,
 } from 'lucide-react';
-import BirdsEye from '@/components/dashboard/birds-eye';
-import LiveMonitor from '@/components/dashboard/live-monitor';
-import SignalEngineTab from '@/components/dashboard/signal-engine-tab';
-import BigMoneyTab from '@/components/dashboard/big-money-tab';
-import OptionsFlowTab from '@/components/dashboard/options-flow-tab';
-import OptionFlowTV from '@/components/dashboard/option-flow-tv';
-import StrikeFlowMap from '@/components/dashboard/strike-flow-map';
-import HighestBetTracker from '@/components/dashboard/highest-bet-tracker';
 import OIWallsTab from '@/components/dashboard/oi-walls-tab';
-import AlertsTab from '@/components/dashboard/alerts-tab';
-import JournalTab from '@/components/dashboard/journal-tab';
-import GreeksDecay from '@/components/dashboard/greeks-decay';
 import SettingsConfig from '@/components/dashboard/settings-config';
 import FuturesBasisTab from '@/components/dashboard/futures-basis-tab';
-import MultiTimeframeTab from '@/components/dashboard/multi-timeframe-tab';
 import TrendAnalysisTab from '@/components/dashboard/trend-analysis-tab';
 import { getMarketStatus } from '@/lib/demo-data';
 import type { NSESessionInfo } from '@/lib/types';
@@ -32,23 +19,17 @@ import { hasKiteCreds } from '@/lib/kite-creds';
 import { useKiteSnapshot } from '@/hooks/use-kite-snapshot';
 
 export default function DashboardPage() {
-  const [activeTab, setActiveTab] = useState('live'); // LIVE is the HERO — options + cash movement drives decisions
+  const [activeTab, setActiveTab] = useState('oi-walls');
   const [istTime, setIstTime] = useState('');
   const [jeddahTime, setJeddahTime] = useState('');
   const [marketStatus, setMarketStatus] = useState<string>('closed');
   const [nseSession, setNseSession] = useState<NSESessionInfo | null>(null);
   const { curr: snapshot } = useKiteSnapshot(15000);
 
-  // Start the global trend poller ONCE at app boot — it runs as a singleton
-  // regardless of which tab is active, so trend data keeps accumulating even
-  // when the user is on other tabs. This is the key fix for "data disappears
-  // when I switch tabs".
+  // Start the global trend poller ONCE at app boot
   const startTrendPolling = useTrendStore((s) => s.startPolling);
   useEffect(() => {
     startTrendPolling();
-    // We intentionally do NOT call stopPolling on unmount — for a single-page
-    // app the polling should continue for the lifetime of the page. The store
-    // handles its own cleanup if a new trading day starts.
   }, [startTrendPolling]);
 
   useEffect(() => {
@@ -81,7 +62,6 @@ export default function DashboardPage() {
   } : null;
 
   const statusColor = () => {
-    // During CAS: show orange (cash paused, F&O active)
     if (nseSession?.isCASActive) return 'border-orange-500/40 text-orange-400';
     switch (marketStatus) {
       case 'open': return 'border-emerald-500/40 text-emerald-400';
@@ -181,45 +161,6 @@ export default function DashboardPage() {
       <main className="flex-1 p-4">
         <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
           <TabsList className="mb-4 w-full flex h-10 bg-muted/50">
-            {/* LIVE is PRIMARY — Options + Cash movement drives index direction */}
-            <TabsTrigger value="live" className="flex-1 text-xs gap-1.5 data-[state=active]:bg-emerald-500/20 data-[state=active]:text-emerald-300 font-bold">
-              <Activity className="h-3.5 w-3.5" />
-              <span className="hidden sm:inline">⚡ LIVE</span>
-              <span className="sm:hidden">⚡</span>
-            </TabsTrigger>
-            <TabsTrigger value="signals" className="flex-1 text-xs gap-1.5 data-[state=active]:bg-amber-500/20 data-[state=active]:text-amber-300">
-              <Target className="h-3.5 w-3.5" />
-              <span className="hidden sm:inline">Signals</span>
-              <span className="sm:hidden">🎯</span>
-            </TabsTrigger>
-            {/* Big Money / 3-Day = PREDICTION compass — just alignment check */}
-            <TabsTrigger value="big-money" className="flex-1 text-xs gap-1.5 data-[state=active]:bg-red-500/20 data-[state=active]:text-red-300">
-              <Landmark className="h-3.5 w-3.5" />
-              <span className="hidden sm:inline">3-Day Pred</span>
-              <span className="sm:hidden">🔮</span>
-            </TabsTrigger>
-            {/* OPTIONS FLOW = THE MAIN THING — Cash + Options flow stacked view */}
-            <TabsTrigger value="options-flow" className="flex-1 text-xs gap-1.5 data-[state=active]:bg-purple-500/20 data-[state=active]:text-purple-300">
-              <Layers className="h-3.5 w-3.5" />
-              <span className="hidden sm:inline">⚡ Opt Flow</span>
-              <span className="sm:hidden">⚡</span>
-            </TabsTrigger>
-            {/* TRADINGVIEW-STYLE OPTION FLOW CHART */}
-            <TabsTrigger value="flow-tv" className="flex-1 text-xs gap-1.5 data-[state=active]:bg-fuchsia-500/20 data-[state=active]:text-fuchsia-300">
-              <LineChart className="h-3.5 w-3.5" />
-              <span className="hidden sm:inline">📊 Flow TV</span>
-              <span className="sm:hidden">📊</span>
-            </TabsTrigger>
-            <TabsTrigger value="strike-flow" className="flex-1 text-xs gap-1.5 data-[state=active]:bg-pink-500/20 data-[state=active]:text-pink-300 font-bold">
-              <Crosshair className="h-3.5 w-3.5" />
-              <span className="hidden sm:inline">⚡ Strike Flow</span>
-              <span className="sm:hidden">🎯</span>
-            </TabsTrigger>
-            <TabsTrigger value="highest-bet" className="flex-1 text-xs gap-1.5 data-[state=active]:bg-amber-500/20 data-[state=active]:text-amber-300 font-bold">
-              <Trophy className="h-3.5 w-3.5" />
-              <span className="hidden sm:inline">⚡ Big Bets</span>
-              <span className="sm:hidden">🏆</span>
-            </TabsTrigger>
             <TabsTrigger value="oi-walls" className="flex-1 text-xs gap-1.5 data-[state=active]:bg-blue-500/20 data-[state=active]:text-blue-300">
               <Shield className="h-3.5 w-3.5" />
               <span className="hidden sm:inline">OI Walls</span>
@@ -235,68 +176,12 @@ export default function DashboardPage() {
               <span className="hidden sm:inline">Trends</span>
               <span className="sm:hidden">📈</span>
             </TabsTrigger>
-            <TabsTrigger value="multi-tf" className="flex-1 text-xs gap-1.5 data-[state=active]:bg-violet-500/20 data-[state=active]:text-violet-300">
-              <Clock4 className="h-3.5 w-3.5" />
-              <span className="hidden sm:inline">Multi-TF</span>
-              <span className="sm:hidden">⏱</span>
-            </TabsTrigger>
-            <TabsTrigger value="alerts" className="flex-1 text-xs gap-1.5 data-[state=active]:bg-orange-500/20 data-[state=active]:text-orange-300">
-              <Bell className="h-3.5 w-3.5" />
-              <span className="hidden sm:inline">Alerts</span>
-              <span className="sm:hidden">🔔</span>
-            </TabsTrigger>
-            <TabsTrigger value="journal" className="flex-1 text-xs gap-1.5 data-[state=active]:bg-violet-500/20 data-[state=active]:text-violet-300">
-              <BookOpen className="h-3.5 w-3.5" />
-              <span className="hidden sm:inline">Journal</span>
-              <span className="sm:hidden">📓</span>
-            </TabsTrigger>
-            <TabsTrigger value="birds-eye" className="flex-1 text-xs gap-1.5 data-[state=active]:bg-orange-500/20 data-[state=active]:text-orange-300">
-              <Globe className="h-3.5 w-3.5" />
-              <span className="hidden sm:inline">Context</span>
-              <span className="sm:hidden">🌍</span>
-            </TabsTrigger>
-            <TabsTrigger value="greeks" className="flex-1 text-xs gap-1.5 data-[state=active]:bg-cyan-500/20 data-[state=active]:text-cyan-300">
-              <Thermometer className="h-3.5 w-3.5" />
-              <span className="hidden sm:inline">Greeks</span>
-              <span className="sm:hidden">📈</span>
-            </TabsTrigger>
             <TabsTrigger value="settings" className="flex-1 text-xs gap-1.5 data-[state=active]:bg-gray-500/20 data-[state=active]:text-gray-300">
               <Settings className="h-3.5 w-3.5" />
               <span className="hidden sm:inline">Settings</span>
               <span className="sm:hidden">⚙️</span>
             </TabsTrigger>
           </TabsList>
-
-          <TabsContent value="live" className="mt-0">
-            <LiveMonitor />
-          </TabsContent>
-
-          <TabsContent value="signals" className="mt-0">
-            <SignalEngineTab />
-          </TabsContent>
-
-          {/* 3-Day Prediction — just alignment, not the main driver */}
-          <TabsContent value="big-money" className="mt-0">
-            <BigMoneyTab />
-          </TabsContent>
-
-          {/* OPTIONS FLOW = THE MAIN THING — Cash → Index Options → Stock Options stacked */}
-          <TabsContent value="options-flow" className="mt-0">
-            <OptionsFlowTab />
-          </TabsContent>
-
-          {/* TRADINGVIEW-STYLE OPTION FLOW CHART */}
-          <TabsContent value="flow-tv" className="mt-0">
-            <OptionFlowTV />
-          </TabsContent>
-
-          <TabsContent value="strike-flow" className="mt-0">
-            <StrikeFlowMap />
-          </TabsContent>
-
-          <TabsContent value="highest-bet" className="mt-0">
-            <HighestBetTracker />
-          </TabsContent>
 
           <TabsContent value="oi-walls" className="mt-0">
             <OIWallsTab />
@@ -310,26 +195,6 @@ export default function DashboardPage() {
             <TrendAnalysisTab />
           </TabsContent>
 
-          <TabsContent value="multi-tf" className="mt-0">
-            <MultiTimeframeTab />
-          </TabsContent>
-
-          <TabsContent value="alerts" className="mt-0">
-            <AlertsTab />
-          </TabsContent>
-
-          <TabsContent value="journal" className="mt-0">
-            <JournalTab />
-          </TabsContent>
-
-          <TabsContent value="birds-eye" className="mt-0">
-            <BirdsEye />
-          </TabsContent>
-
-          <TabsContent value="greeks" className="mt-0">
-            <GreeksDecay />
-          </TabsContent>
-
           <TabsContent value="settings" className="mt-0">
             <SettingsConfig />
           </TabsContent>
@@ -339,13 +204,12 @@ export default function DashboardPage() {
       <footer className="border-t border-border/30 bg-card/50 mt-auto">
         <div className="px-4 py-2 flex items-center justify-between text-[10px] text-muted-foreground">
           <span>
-            <span className="text-emerald-400 font-semibold">LIVE = PRIMARY</span> — Options OI + Cash Flow + Money Flow drives index direction |
-            <span className="text-amber-400 ml-1">3-Day = Prediction compass</span> (alignment check only) |
-            <span className="text-purple-400 ml-1">Opt Flow = Cash → Idx Options → Stk Options</span> (stacked correlation) |
-            <span className="text-blue-400 ml-1">Net Money Flow (NSE+BSE)</span> |
+            <span className="text-blue-400 font-semibold">OI Walls</span> — Max Pain + OI + PCR |
+            <span className="text-sky-400 ml-1">Basis</span> — Futures Basis Spread |
+            <span className="text-teal-400 ml-1">Trends</span> — Price + Cash + Options Flow |
             <span className="text-orange-400 ml-1">CAS: Cash PAUSED, F&O Continues</span>
           </span>
-          <span className="font-mono">Auto-refresh: 15s | Demo Mode</span>
+          <span className="font-mono">Auto-refresh: 15s</span>
         </div>
       </footer>
     </div>
