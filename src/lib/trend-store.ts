@@ -595,21 +595,24 @@ export const useTrendStore = create<TrendState>()(
         }
         return localStorage;
       }),
-      // Don't persist runtime-only fields (timers, polling flag)
+      // Don't persist runtime-only fields (timers, polling flag).
+      // CRITICAL: prevSnapshots MUST NOT be persisted — they contain raw OI values
+      // from the last poll. On page reload, diffing stale OI against current OI
+      // creates a massive fake spike in the cumulative flow chart.
+      // Per-interval values (currentStockFlow, currentIdxFlows) also shouldn't
+      // persist — they show the last interval's flow, meaningless after reload.
       partialize: (state) => ({
         istDate: state.istDate,
         lastPollAt: state.lastPollAt,
         cashFlowTrend: state.cashFlowTrend,
         flowTrend: state.flowTrend,
-        prevSnapshots: state.prevSnapshots,
+        // prevSnapshots: INTENTIONALLY NOT persisted (see comment above)
         cumulativeFlow: state.cumulativeFlow,
         prevStockTotals: state.prevStockTotals,
         niftyCandles: state.niftyCandles,
         stockCashFlow: state.stockCashFlow,
         trendMode: state.trendMode,
-        currentIdxFlows: state.currentIdxFlows,
-        currentStockFlow: state.currentStockFlow,
-        currentIntervalCashFlow: state.currentIntervalCashFlow,
+        // currentIdxFlows, currentStockFlow, currentIntervalCashFlow: NOT persisted
       }),
     }
   )

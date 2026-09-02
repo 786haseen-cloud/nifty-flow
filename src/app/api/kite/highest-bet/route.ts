@@ -302,9 +302,9 @@ async function fetchLiveData(): Promise<HighestBetResponse> {
     const expiryOpts = opts.filter(o => o.expiry === nearestExpiry);
     const atmStrike = Math.round(spotPrice / strikeStep) * strikeStep;
 
-    // 11 strikes: ATM ± 5
-    const strikeList = Array.from({ length: 11 }, (_, i) =>
-      atmStrike - 5 * strikeStep + i * strikeStep
+    // 9 strikes: ATM ± 4 (big players mostly around ATM)
+    const strikeList = Array.from({ length: 9 }, (_, i) =>
+      atmStrike - 4 * strikeStep + i * strikeStep
     );
 
     const filteredOpts = expiryOpts.filter(o => strikeList.includes(o.strike));
@@ -472,8 +472,8 @@ function generateDemoData(): HighestBetResponse {
     const atmStrike = Math.round(spotPrice / strikeStep) * strikeStep;
     const T = 3 / 365;
 
-    const strikes: StrikeFlowData[] = Array.from({ length: 11 }, (_, i) => {
-      const strike = atmStrike - 5 * strikeStep + i * strikeStep;
+    const strikes: StrikeFlowData[] = Array.from({ length: 9 }, (_, i) => {
+      const strike = atmStrike - 4 * strikeStep + i * strikeStep;
       const prevStrike = prevSym?.strikes.find(s => s.strike === strike);
       // Small OI perturbation: ±0.5% → realistic 30s delta
       const ceOI = prevStrike
