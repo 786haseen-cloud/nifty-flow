@@ -21,7 +21,7 @@
 import { useMemo } from 'react';
 import { Badge } from '@/components/ui/badge';
 import {
-  LineChart, Line, AreaChart, Area, BarChart, Bar,
+  LineChart, Line, BarChart, Bar,
   XAxis, YAxis, CartesianGrid, Tooltip, Legend, ReferenceLine,
   ResponsiveContainer, ComposedChart,
 } from 'recharts';
@@ -284,12 +284,16 @@ export default function TrendAnalysisTab() {
   );
 
   // ─── Format helpers ───
-
-  const fmtCr = (v: number) => {
+  const fmtRaw = (v: number) => {
     const cr = v / 10000000;
     if (Math.abs(cr) >= 100) return `${cr.toFixed(0)}`;
     if (Math.abs(cr) >= 1) return `${cr.toFixed(1)}`;
     return `${cr.toFixed(2)}`;
+  };
+  const fmtCr = (v: number) => {
+    if (Math.abs(v) >= 100) return `${v.toFixed(0)}`;
+    if (Math.abs(v) >= 1) return `${v.toFixed(1)}`;
+    return `${v.toFixed(2)}`;
   };
 
   // ─── Render ───
@@ -412,7 +416,7 @@ export default function TrendAnalysisTab() {
                 Net: {cumNetCr.toFixed(1)} Cr
               </div>
               <span className={`font-mono ${currentIntervalCashFlow >= 0 ? 'text-emerald-300' : 'text-red-300'}`}>
-                15s: {currentIntervalCashFlow >= 0 ? '+' : ''}{fmtCr(currentIntervalCashFlow)} Cr
+                15s: {currentIntervalCashFlow >= 0 ? '+' : ''}{fmtRaw(currentIntervalCashFlow)} Cr
               </span>
             </div>
           </div>
@@ -549,7 +553,7 @@ export default function TrendAnalysisTab() {
             </div>
             <div className="flex items-center gap-2">
               <span className={`text-xs font-mono font-semibold ${currentStockFlow >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                Interval: {currentStockFlow >= 0 ? '+' : ''}{fmtCr(currentStockFlow)} Cr
+                Int: {currentStockFlow >= 0 ? '+' : ''}{fmtCr(currentStockFlow)} Cr
               </span>
               <span className="text-[10px] text-muted-foreground">
                 Cum: {fmtCr(cumulativeFlow.stockAggregate || 0)} Cr
@@ -559,13 +563,7 @@ export default function TrendAnalysisTab() {
           <div className="h-[230px]">
             {flowChartData.length > 1 ? (
               <ResponsiveContainer width="100%" height="100%">
-                <AreaChart data={flowChartData} margin={{ top: 5, right: 10, left: 10, bottom: 0 }}>
-                  <defs>
-                    <linearGradient id="stockFlowGrad" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="0%" stopColor="#f97316" stopOpacity={0.4} />
-                      <stop offset="100%" stopColor="#f97316" stopOpacity={0.02} />
-                    </linearGradient>
-                  </defs>
+                <LineChart data={flowChartData} margin={{ top: 5, right: 10, left: 10, bottom: 0 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#ffffff10" />
                   <XAxis
                     dataKey="x"
@@ -578,21 +576,20 @@ export default function TrendAnalysisTab() {
                   />
                   <YAxis
                     tick={{ fill: '#a1a1aa', fontSize: 10 }}
-                    tickFormatter={(v: number) => v.toFixed(0)}
-                    width={45}
+                    tickFormatter={(v: number) => `${v.toFixed(0)}`}
+                    width={55}
                   />
                   <Tooltip content={<FlowTooltip />} />
                   <ReferenceLine y={0} stroke="#ffffff30" />
-                  <Area
+                  <Line
                     type="monotone"
                     dataKey="stockAggregate"
                     stroke="#f97316"
                     strokeWidth={2}
-                    fill="url(#stockFlowGrad)"
                     dot={false}
                     activeDot={{ r: 4, fill: '#f97316', stroke: '#fff', strokeWidth: 2 }}
                   />
-                </AreaChart>
+                </LineChart>
               </ResponsiveContainer>
             ) : (
               <div className="h-full flex items-center justify-center text-muted-foreground text-xs">
@@ -613,17 +610,17 @@ export default function TrendAnalysisTab() {
           <div className="flex items-center gap-3 text-xs">
             <div className="flex items-center gap-1">
               <span className="inline-block w-2 h-2 rounded-full bg-emerald-500" />
-              <span className="text-muted-foreground">NSE: {fmtCr(totalNseFlow)} Cr</span>
+              <span className="text-muted-foreground">NSE: {fmtRaw(totalNseFlow)} Cr</span>
             </div>
             <div className="flex items-center gap-1">
               <span className="inline-block w-2 h-2 rounded-full bg-sky-500" />
-              <span className="text-muted-foreground">BSE: {fmtCr(totalBseFlow)} Cr</span>
+              <span className="text-muted-foreground">BSE: {fmtRaw(totalBseFlow)} Cr</span>
             </div>
             <div className={`font-mono font-semibold ${totalCombinedFlow >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-              Net: {fmtCr(totalCombinedFlow)} Cr
+              Net: {fmtRaw(totalCombinedFlow)} Cr
             </div>
             <div className="text-muted-foreground">
-              Weighted: {fmtCr(totalWeightedFlow)} Cr
+              Weighted: {fmtRaw(totalWeightedFlow)} Cr
             </div>
           </div>
         </div>
@@ -687,20 +684,20 @@ export default function TrendAnalysisTab() {
                       {s.nseChange >= 0 ? '+' : ''}{s.nseChange}%
                     </td>
                     <td className={`text-right py-1 px-1 font-mono ${s.nseCashFlow >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                      {fmtCr(s.nseCashFlow)}
+                      {fmtRaw(s.nseCashFlow)} Cr
                     </td>
                     <td className="text-right py-1 px-1 font-mono">{s.bseLtp > 0 ? s.bseLtp.toLocaleString('en-IN') : '-'}</td>
                     <td className={`text-right py-1 px-1 font-mono ${s.bseChange >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
                       {s.bseLtp > 0 ? `${s.bseChange >= 0 ? '+' : ''}${s.bseChange}%` : '-'}
                     </td>
                     <td className={`text-right py-1 px-1 font-mono ${s.bseCashFlow >= 0 ? 'text-sky-400' : 'text-red-400'}`}>
-                      {s.bseLtp > 0 ? fmtCr(s.bseCashFlow) : '-'}
+                      {s.bseLtp > 0 ? `${fmtRaw(s.bseCashFlow)} Cr` : '-'}
                     </td>
                     <td className={`text-right py-1 px-1 font-mono font-semibold ${s.combinedFlow >= 0 ? 'text-emerald-300' : 'text-red-400'}`}>
-                      {fmtCr(s.combinedFlow)}
+                      {fmtRaw(s.combinedFlow)} Cr
                     </td>
                     <td className={`text-right py-1 pl-1 font-mono ${s.weightedFlow >= 0 ? 'text-emerald-300' : 'text-red-400'}`}>
-                      {fmtCr(s.weightedFlow)}
+                      {fmtRaw(s.weightedFlow)} Cr
                     </td>
                   </tr>
                 ))}
