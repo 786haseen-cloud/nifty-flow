@@ -13,7 +13,7 @@ import { Crosshair, Maximize2, Minimize2, RefreshCw, Wifi, WifiOff } from 'lucid
 // ═══════════════════════════════════════════
 
 interface CandleData {
-  time: string;
+  time: number;  // UTCTimestamp (unix seconds) for lightweight-charts v5
   open: number;
   high: number;
   low: number;
@@ -47,6 +47,7 @@ const SYMBOLS: { value: SymbolId; label: string; token: number }[] = [
 ];
 
 const INTERVALS = [
+  { value: 'minute', label: '1m' },
   { value: '3minute', label: '3m' },
   { value: '5minute', label: '5m' },
   { value: '15minute', label: '15m' },
@@ -240,15 +241,21 @@ export default function OptionFlowTV() {
         return;
       }
 
-      const candles: CandleData[] = data.candles.map((c: any) => ({
-        time: new Date(c.timestamp * 1000).toISOString().split('T')[0] + ' ' +
-               new Date(c.timestamp * 1000).toISOString().split('T')[1].substring(0, 5),
-        open: c.open,
-        high: c.high,
-        low: c.low,
-        close: c.close,
-        volume: c.volume,
-      }));
+      // Kite returns timestamp as ISO string (e.g. "2024-08-15T09:15:00+05:30").
+      // Convert to UTCTimestamp (unix seconds) for lightweight-charts v5.
+      const candles: CandleData[] = data.candles.map((c: any) => {
+        const ts = typeof c.timestamp === 'number'
+          ? c.timestamp
+          : Math.floor(new Date(c.timestamp).getTime() / 1000);
+        return {
+          time: ts as any,
+          open: c.open,
+          high: c.high,
+          low: c.low,
+          close: c.close,
+          volume: c.volume,
+        };
+      });
 
       candleSeries.setData(candles);
 
@@ -363,12 +370,11 @@ export default function OptionFlowTV() {
     if (!symData?.spotPrice) return;
 
     const spot = symData.spotPrice;
-    const timeStr = new Date().toISOString().split('T')[0] + ' ' +
-                    new Date().toISOString().split('T')[1].substring(0, 5);
+    const now = Math.floor(Date.now() / 1000);
 
     try {
       candleSeriesRef.current.update({
-        time: timeStr,
+        time: now as any,
         close: spot,
         high: spot,
         low: spot,
