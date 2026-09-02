@@ -1,35 +1,13 @@
 'use client';
 
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Badge } from '@/components/ui/badge';
 import { Activity, TrendingUp, TrendingDown, ArrowUpRight, ArrowDownRight, ArrowUpDown, Minus, RefreshCw, Wifi, WifiOff } from 'lucide-react';
-import { withCreds } from '@/lib/kite-creds';
-import type { StrikeFlowData } from '@/lib/kite-api';
+import { useKiteSnapshot } from '@/hooks/use-kite-snapshot';
 
 // ═══════════════════════════════════════════
 // TYPES
 // ═══════════════════════════════════════════
-
-interface SymbolSnapshot {
-  symbol: string;
-  name?: string;
-  type?: string;
-  spotPrice: number;
-  spotVolume: number;
-  spotChange: number;
-  futOI: number;
-  futPrice: number;
-  futLotSize: number;
-  lotSize: number;
-  strikeStep: number;
-  strikes: StrikeFlowData[];
-}
-
-interface BatchResponse {
-  mode: string;
-  timestamp: string;
-  symbols: SymbolSnapshot[];
-}
 
 interface BasisData {
   symbol: string;
@@ -87,74 +65,54 @@ const SECTOR_COLORS: Record<string, string> = {
 export default function FuturesBasisTab() {
   const [data, setData] = useState<BasisData[]>([]);
   const [mode, setMode] = useState<string>('');
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const { curr, pollCount } = useKiteSnapshot(30000);
   const [sortKey, setSortKey] = useState<'symbol' | 'basisPct' | 'futOI'>('basisPct');
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
   const prevBasisRef = useRef<Map<string, number>>(new Map());
   const prevOIRef = useRef<Map<string, number>>(new Map());
-  const mountedRef = useRef(true);
 
-  const fetchData = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const res = await fetch(withCreds('/api/kite/highest-bet'));
-      const json: BatchResponse = await res.json();
-      if (!mountedRef.current) return;
-
-      setMode(json.mode);
-
-      if (json.mode === 'demo' || !json.symbols?.length) {
-        setData(generateDemoBasis());
-        setLoading(false);
-        return;
-      }
-
-      const prevBasis = prevBasisRef.current;
-      const prevOI = prevOIRef.current;
-      const newBasis = new Map<string, number>();
-      const newOI = new Map<string, number>();
-
-      const basisData: BasisData[] = json.symbols
-        .filter(s => s.futPrice > 0 && s.spotPrice > 0)
-        .map(s => {
-          const basis = s.futPrice - s.spotPrice;
-          const basisPct = (basis / s.spotPrice) * 100;
-          const prevB = prevBasis.get(s.symbol);
-          const prevO = prevOI.get(s.symbol);
-          const bd: BasisData = {
-            symbol: s.symbol,
-            spotPrice: s.spotPrice,
-            futPrice: s.futPrice,
-            basis: Math.round(basis * 100) / 100,
-            basisPct: Math.round(basisPct * 10000) / 10000,
-            basisChange: prevB !== undefined ? Math.round((basisPct - prevB) * 10000) / 10000 : 0,
-            futOI: s.futOI,
-            futOIChange: prevO !== undefined ? s.futOI - prevO : 0,
-            spotChange: s.spotChange,
-          };
-          newBasis.set(s.symbol, basisPct);
-          newOI.set(s.symbol, s.futOI);
-          return bd;
-        });
-
-      prevBasisRef.current = newBasis;
-      prevOIRef.current = newOI;
-      setData(basisData);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Fetch failed');
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
+  // Process snapshot into basis data
   useEffect(() => {
-    mountedRef.current = true;
-    fetchData();
-    const interval = setInterval(fetchData, REFRESH_INTERVAL);
-    return () => { mountedRef.current = false; clearInterval(interval); };
-  }, [fetchData]);
+    if (!curr) return;
+    setMode(curr.mode);
+
+    if (curr.mode === 'demo' || !curr.symbols?.length) {
+      setData(generateDemoBasis());
+      return;
+    }
+
+    const prevBasis = prevBasisRef.current;
+    const prevOI = prevOIRef.current;
+    const newBasis = new Map<string, number>();
+    const newOI = new Map<string, number>();
+
+    const basisData: BasisData[] = curr.symbols
+      .filter(s => s.futPrice > 0 && s.spotPrice > 0)
+      .map(s => {
+        const basis = s.futPrice - s.spotPrice;
+        const basisPct = (basis / s.spotPrice) * 100;
+        const prevB = prevBasis.get(s.symbol);
+        const prevO = prevOI.get(s.symbol);
+        const bd: BasisData = {
+          symbol: s.symbol,
+          spotPrice: s.spotPrice,
+          futPrice: s.futPrice,
+          basis: Math.round(basis * 100) / 100,
+          basisPct: Math.round(basisPct * 10000) / 10000,
+          basisChange: prevB !== undefined ? Math.round((basisPct - prevB) * 10000) / 10000 : 0,
+          futOI: s.futOI,
+          futOIChange: prevO !== undefined ? s.futOI - prevO : 0,
+          spotChange: s.spotChange,
+        };
+        newBasis.set(s.symbol, basisPct);
+        newOI.set(s.symbol, s.futOI);
+        return bd;
+      });
+
+    prevBasisRef.current = newBasis;
+    prevOIRef.current = newOI;
+    setData(basisData);
+  }, [curr?.timestamp]);
 
   // Sort
   const sorted = [...data].sort((a, b) => {
@@ -201,8 +159,8 @@ export default function FuturesBasisTab() {
         <Badge variant="outline" className="bg-sky-600/20 text-sky-400 border-sky-500/30">
           {data.length} symbols
         </Badge>
-        <button onClick={fetchData} className="ml-auto text-muted-foreground hover:text-foreground transition" disabled={loading}>
-          <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
+        <button onClick={() => window.location.reload()} className="ml-auto text-muted-foreground hover:text-foreground transition">
+          <RefreshCw className="w-3.5 h-3.5" />
         </button>
       </div>
 

@@ -4,7 +4,8 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { Badge } from '@/components/ui/badge';
 import { withCreds } from '@/lib/kite-creds';
 import { Target, Activity, BarChart3, Wifi, WifiOff, RefreshCw, TrendingUp, TrendingDown, Gauge } from 'lucide-react';
-import { INDEX_SPECS, STOCK_SPECS } from '@/lib/kite-api';
+import { INDEX_SPECS, STOCK_SPECS, getInstrumentSpec } from '@/lib/kite-api';
+import { useKiteSnapshot } from '@/hooks/use-kite-snapshot';
 import type { StrikeFlowSnapshot, StrikeFlowData } from '@/lib/kite-api';
 
 // ═══════════════════════════════════════════
@@ -305,8 +306,6 @@ function savePCRHistory(symbol: string, history: number[]) {
 export default function OIWallsTab() {
   const [symbol, setSymbol] = useState('NIFTY');
   const [snapshot, setSnapshot] = useState<StrikeFlowSnapshot | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [isLive, setIsLive] = useState(false);
   const [lastUpdate, setLastUpdate] = useState<string>('');
   const [pcrHistory, setPcrHistory] = useState<number[]>([]);
@@ -325,7 +324,6 @@ export default function OIWallsTab() {
 
   const prevSnapshotRef = useRef<StrikeFlowSnapshot | null>(null);
   const openingSnapshotRef = useRef<Map<string, StrikeFlowSnapshot>>(new Map());
-  const intervalRef = useRef<NodeJS.Timeout | null>(null);
 
   // Load PCR history on mount / symbol change
   useEffect(() => {
@@ -343,77 +341,89 @@ export default function OIWallsTab() {
     return d;
   }
 
-  const fetchData = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const res = await fetch(withCreds(`/api/kite/strike-flow?symbol=${symbol}`));
-      const data = await res.json();
+  // Use singleton for per-strike data (eliminates /api/kite/strike-flow duplicate)
+  const { curr: singletonCurr, prev: singletonPrev } = useKiteSnapshot(30000);
 
-      if (data.mode !== 'live') {
-        // Demo mode — store prev snapshot for delta computation,
-        // then generate fresh demo data with small perturbations.
-        // This enables 4-color OI coding even in demo mode.
-        const prev = prevSnapshotRef.current;
-        const demo = generateDemoData(symbol, prev);
-        // Compute 30s realtime deltas BEFORE updating the ref
-        if (prev && prev.strikes) {
-          setStrikeDeltas(computeDeltas(demo, prev));
-        } else {
-          setStrikeDeltas(new Map());
-        }
-        // Store opening snapshot (first poll baseline) for cumulative mode
-        const openings = openingSnapshotRef.current;
-        if (!openings.has(symbol)) {
-          openings.set(symbol, demo);
-        }
-        setCumulativeDeltas(computeDeltas(demo, openings.get(symbol)!));
-        prevSnapshotRef.current = demo;
-        setIsLive(false);
-        setDemoData(demo);
-        setLastUpdate(new Date().toLocaleTimeString('en-IN', {
-          hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
-        }));
-        setLoading(false);
-        return;
-      }
+  // Helper: compute deltas between two snapshots
+  function computeDeltas(newData: StrikeFlowSnapshot, baseData: StrikeFlowSnapshot): Map<number, { ceOi: number; peOi: number; ceLtp: number; peLtp: number }> {
+    const baseMap = new Map(baseData.strikes.map(s => [s.strike, s]));
+    const d = new Map<number, { ceOi: number; peOi: number; ceLtp: number; peLtp: number }>();
+    for (const s of newData.strikes) {
+      const b = baseMap.get(s.strike);
+      if (b) d.set(s.strike, { ceOi: s.ceOI - b.ceOI, peOi: s.peOI - b.peOI, ceLtp: s.ceLTP - b.ceLTP, peLtp: s.peLTP - b.peLTP });
+    }
+    return d;
+  }
 
-      setIsLive(true);
-      setDemoData(null);
-      setLastUpdate(new Date(data.timestamp).toLocaleTimeString('en-IN', {
-        hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
-      }));
+  // Extract StrikeFlowSnapshot for selected symbol from singleton
+  useEffect(() => {
+    if (!singletonCurr) return;
 
-      // Compute 30s realtime deltas BEFORE updating the ref
+    if (singletonCurr.mode === 'demo' || singletonCurr.mode === 'error') {
       const prev = prevSnapshotRef.current;
-      if (prev && prev.symbol === data.symbol && prev.strikes) {
-        setStrikeDeltas(computeDeltas(data, prev));
+      const demo = generateDemoData(symbol, prev);
+      if (prev && prev.strikes) {
+        setStrikeDeltas(computeDeltas(demo, prev));
       } else {
         setStrikeDeltas(new Map());
       }
-      // Store opening snapshot (first poll baseline) for cumulative mode
       const openings = openingSnapshotRef.current;
-      if (!openings.has(symbol)) {
-        openings.set(symbol, data);
-      }
-      setCumulativeDeltas(computeDeltas(data, openings.get(symbol)!));
-      prevSnapshotRef.current = data;
-      setSnapshot(data);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Fetch failed');
-    } finally {
-      setLoading(false);
+      if (!openings.has(symbol)) openings.set(symbol, demo);
+      setCumulativeDeltas(computeDeltas(demo, openings.get(symbol)!));
+      prevSnapshotRef.current = demo;
+      setIsLive(false);
+      setDemoData(demo);
+      setSnapshot(null);
+      setLastUpdate(new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }));
+      return;
     }
-  }, [symbol]);
 
-  // Initial fetch + polling for per-symbol OI walls
-  useEffect(() => {
-    fetchData();
-    intervalRef.current = setInterval(fetchData, REFRESH_INTERVAL);
-    return () => {
-      if (intervalRef.current) clearInterval(intervalRef.current);
+    const symData = singletonCurr.symbols.find(s => s.symbol === symbol);
+    if (!symData || symData.strikes.length === 0) return;
+
+    const spec = getInstrumentSpec(symbol);
+    const atmStrike = Math.round(symData.spotPrice / symData.strikeStep) * symData.strikeStep;
+
+    const data: StrikeFlowSnapshot = {
+      timestamp: singletonCurr.timestamp,
+      symbol: symData.symbol,
+      spotPrice: symData.spotPrice,
+      atmStrike,
+      lotSize: symData.lotSize,
+      strikeStep: symData.strikeStep,
+      expiry: '',  // not in singleton, but not used for core logic
+      strikes: symData.strikes.map(s => ({
+        strike: s.strike,
+        isATM: s.strike === atmStrike,
+        ceLTP: s.ceLTP,
+        peLTP: s.peLTP,
+        ceOI: s.ceOI,
+        peOI: s.peOI,
+        ceVol: s.ceVol,
+        peVol: s.peVol,
+        ceDelta: s.ceDelta,
+        peDelta: s.peDelta,
+        ceToken: s.ceToken,
+        peToken: s.peToken,
+      })),
     };
-  }, [fetchData]);
+
+    setIsLive(true);
+    setDemoData(null);
+    setSnapshot(data);
+    setLastUpdate(new Date(data.timestamp).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }));
+
+    const prev = prevSnapshotRef.current;
+    if (prev && prev.symbol === data.symbol && prev.strikes) {
+      setStrikeDeltas(computeDeltas(data, prev));
+    } else {
+      setStrikeDeltas(new Map());
+    }
+    const openings = openingSnapshotRef.current;
+    if (!openings.has(symbol)) openings.set(symbol, data);
+    setCumulativeDeltas(computeDeltas(data, openings.get(symbol)!));
+    prevSnapshotRef.current = data;
+  }, [singletonCurr?.timestamp, symbol]);
 
   // Fetch max pain scan for all symbols (longer interval — 120s)
   const scanIntervalRef = useRef<NodeJS.Timeout | null>(null);
@@ -714,21 +724,13 @@ export default function OIWallsTab() {
             <span className="text-[10px] text-zinc-600">{lastUpdate}</span>
           )}
           <button
-            onClick={fetchData}
-            disabled={loading}
-            className="p-1 rounded hover:bg-zinc-800 transition-colors disabled:opacity-50 cursor-pointer"
+            onClick={() => window.location.reload()}
+            className="p-1 rounded hover:bg-zinc-800 transition-colors cursor-pointer"
           >
-            <RefreshCw className={`w-3 h-3 text-zinc-500 ${loading ? 'animate-spin' : ''}`} />
+            <RefreshCw className="w-3 h-3 text-zinc-500" />
           </button>
         </div>
       </div>
-
-      {/* ─── Error ─── */}
-      {error && (
-        <div className="bg-red-500/10 border border-red-500/20 rounded-lg px-4 py-2 text-xs text-red-400">
-          {error}
-        </div>
-      )}
 
       {/* ─── OI Walls Chart ─── */}
       {data && walls.length > 0 ? (
@@ -912,17 +914,10 @@ export default function OIWallsTab() {
       ) : (
         <div className="bg-card border border-border/30 rounded-lg p-8 flex items-center justify-center">
           <div className="text-center">
-            {loading ? (
-              <>
-                <RefreshCw className="w-6 h-6 text-zinc-500 animate-spin mx-auto mb-2" />
-                <p className="text-xs text-zinc-500">Loading OI data...</p>
-              </>
-            ) : (
-              <>
+            <>
                 <BarChart3 className="w-6 h-6 text-zinc-600 mx-auto mb-2" />
                 <p className="text-xs text-zinc-500">No data available</p>
-              </>
-            )}
+            </>
           </div>
         </div>
       )}

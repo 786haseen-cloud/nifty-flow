@@ -1,33 +1,14 @@
 'use client';
 
-import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import { Badge } from '@/components/ui/badge';
-import { Clock, RefreshCw, Wifi, WifiOff, TrendingUp, TrendingDown, ArrowUpDown, BarChart3 } from 'lucide-react';
-import { withCreds } from '@/lib/kite-creds';
+import { Clock, Wifi, WifiOff, TrendingUp, TrendingDown, ArrowUpDown, BarChart3 } from 'lucide-react';
+import { useKiteSnapshot } from '@/hooks/use-kite-snapshot';
 import type { StrikeFlowData } from '@/lib/kite-api';
 
 // ═══════════════════════════════════════════
 // TYPES
 // ═══════════════════════════════════════════
-
-interface SymbolSnapshot {
-  symbol: string;
-  spotPrice: number;
-  spotVolume: number;
-  spotChange: number;
-  futOI: number;
-  futPrice: number;
-  futLotSize: number;
-  lotSize: number;
-  strikeStep: number;
-  strikes: StrikeFlowData[];
-}
-
-interface BatchResponse {
-  mode: string;
-  timestamp: string;
-  symbols: SymbolSnapshot[];
-}
 
 interface FlowRecord {
   timestamp: string;     // ISO string of when this was recorded
@@ -160,91 +141,73 @@ export default function MultiTimeframeTab() {
   const [symbol, setSymbol] = useState('NIFTY');
   const [tfIndex, setTfIndex] = useState<TFIndex>(0);
   const [mode, setMode] = useState('');
-  const [loading, setLoading] = useState(false);
 
   // Per-symbol flow history (raw 15s snapshots)
   const flowHistoryRef = useRef<Map<string, FlowRecord[]>>(new Map());
-  const prevSnapRef = useRef<Map<string, SymbolSnapshot>>(new Map());
-  const mountedRef = useRef(true);
 
   // Force re-render on new data
   const [, setTick] = useState(0);
 
-  const fetchData = useCallback(async () => {
-    setLoading(true);
-    try {
-      const res = await fetch(withCreds('/api/kite/highest-bet'));
-      const json: BatchResponse = await res.json();
-      if (!mountedRef.current) return;
+  // Shared singleton — no duplicate fetch
+  const { curr, prev } = useKiteSnapshot(POLL_INTERVAL);
 
-      setMode(json.mode);
-      const snapMap = new Map<string, SymbolSnapshot>(
-        json.symbols.map(s => [s.symbol, s]),
-      );
-
-      if (json.mode === 'demo') {
-        // Add demo flow record
-        const now = new Date().toISOString();
-        for (const sym of SYMBOLS) {
-          const hist = flowHistoryRef.current.get(sym) || [];
-          hist.push({
-            timestamp: now,
-            ceBuy: Math.round(Math.random() * 100),
-            ceWrite: Math.round(Math.random() * 80),
-            peBuy: Math.round(Math.random() * 90),
-            peWrite: Math.round(Math.random() * 70),
-            netFlow: Math.round((Math.random() - 0.45) * 200),
-          });
-          // Keep last 500 records (~2 hours at 15s poll)
-          flowHistoryRef.current.set(sym, hist.slice(-500));
-        }
-        setTick(t => t + 1);
-        setLoading(false);
-        return;
-      }
-
-      // Live: diff consecutive snapshots
-      const prev = prevSnapRef.current;
-      const curr = snapMap;
-
-      if (prev.size > 0) {
-        const now = new Date().toISOString();
-        for (const [sym, cSnap] of curr) {
-          const pSnap = prev.get(sym);
-          if (!pSnap) continue;
-
-          let ceBuy = 0, ceWrite = 0, peBuy = 0, peWrite = 0;
-          const prevMap = new Map(pSnap.strikes.map(s => [s.strike, s]));
-          for (const cStrike of cSnap.strikes) {
-            const pStrike = prevMap.get(cStrike.strike);
-            if (pStrike) {
-              const sf = computeStrikeFlow(pStrike, cStrike, cSnap.lotSize);
-              ceBuy += sf.ceBuy;
-              ceWrite += sf.ceWrite;
-              peBuy += sf.peBuy;
-              peWrite += sf.peWrite;
-            }
-          }
-          const netFlow = ceBuy - ceWrite - peBuy + peWrite;
-
-          const hist = flowHistoryRef.current.get(sym) || [];
-          hist.push({ timestamp: now, ceBuy, ceWrite, peBuy, peWrite, netFlow });
-          flowHistoryRef.current.set(sym, hist.slice(-500));
-        }
-      }
-
-      prevSnapRef.current = curr;
-      setTick(t => t + 1);
-    } catch { /* ignore */ }
-    setLoading(false);
-  }, []);
-
+  // Process new snapshot into flow history
+  const snapshotTs = curr?.timestamp ?? '';
   useEffect(() => {
-    mountedRef.current = true;
-    fetchData();
-    const interval = setInterval(fetchData, POLL_INTERVAL);
-    return () => { mountedRef.current = false; clearInterval(interval); };
-  }, [fetchData]);
+    if (!curr) return;
+    setMode(curr.mode);
+
+    const currMap = new Map(curr.symbols.map(s => [s.symbol, s]));
+
+    if (curr.mode === 'demo') {
+      const now = new Date().toISOString();
+      for (const sym of SYMBOLS) {
+        const hist = flowHistoryRef.current.get(sym) || [];
+        hist.push({
+          timestamp: now,
+          ceBuy: Math.round(Math.random() * 100),
+          ceWrite: Math.round(Math.random() * 80),
+          peBuy: Math.round(Math.random() * 90),
+          peWrite: Math.round(Math.random() * 70),
+          netFlow: Math.round((Math.random() - 0.45) * 200),
+        });
+        flowHistoryRef.current.set(sym, hist.slice(-500));
+      }
+      setTick(t => t + 1);
+      return;
+    }
+
+    // Live: diff with previous snapshot from singleton
+    if (prev?.symbols) {
+      const prevMap = new Map(prev.symbols.map(s => [s.symbol, s]));
+      const now = new Date().toISOString();
+      for (const [sym, cSnap] of currMap) {
+        const pSnap = prevMap.get(sym);
+        if (!pSnap) continue;
+
+        let ceBuy = 0, ceWrite = 0, peBuy = 0, peWrite = 0;
+        const prevStrikesMap = new Map(pSnap.strikes.map(s => [s.strike, s]));
+        for (const cStrike of cSnap.strikes) {
+          const pStrike = prevStrikesMap.get(cStrike.strike);
+          if (pStrike) {
+            const sf = computeStrikeFlow(pStrike, cStrike, cSnap.lotSize);
+            ceBuy += sf.ceBuy;
+            ceWrite += sf.ceWrite;
+            peBuy += sf.peBuy;
+            peWrite += sf.peWrite;
+          }
+        }
+        const netFlow = ceBuy - ceWrite - peBuy + peWrite;
+
+        const hist = flowHistoryRef.current.get(sym) || [];
+        hist.push({ timestamp: now, ceBuy, ceWrite, peBuy, peWrite, netFlow });
+        flowHistoryRef.current.set(sym, hist.slice(-500));
+      }
+    }
+
+    setTick(t => t + 1);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [snapshotTs]);
 
   // Get aggregated bars for selected symbol + timeframe
   const bars = useMemo(() => {
@@ -316,10 +279,6 @@ export default function MultiTimeframeTab() {
         <Badge variant="outline" className="bg-sky-600/20 text-sky-400 border-sky-500/30">
           {bars.length} bars
         </Badge>
-
-        <button onClick={fetchData} className="ml-auto text-muted-foreground hover:text-foreground transition" disabled={loading}>
-          <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
-        </button>
       </div>
 
       {/* Summary Cards */}

@@ -2,9 +2,9 @@
 
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { Badge } from '@/components/ui/badge';
-import { withCreds } from '@/lib/kite-creds';
 import { Wifi, WifiOff, RefreshCw, Trophy, ArrowUpDown, TrendingUp, TrendingDown, Clock, Zap, Layers } from 'lucide-react';
-import type { StrikeFlowData } from '@/lib/kite-api';
+import { useKiteSnapshot, type KiteSnapshot } from '@/hooks/use-kite-snapshot';
+import { toIST } from '@/lib/ist';
 
 // ═══════════════════════════════════════════
 // TYPES
@@ -116,13 +116,6 @@ function computeStrikeFlow(
 // ═══════════════════════════════════════════
 // HELPERS
 // ═══════════════════════════════════════════
-
-function toIST(isoStr: string): string {
-  const d = new Date(isoStr);
-  const utc = d.getTime() + d.getTimezoneOffset() * 60000;
-  const ist = new Date(utc + 5.5 * 60 * 60 * 1000);
-  return ist.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false, timeZone: 'UTC' });
-}
 
 function emptyBetRecord(): BetRecord {
   return { value: 0, time: '--:--:--' };
@@ -269,13 +262,13 @@ const SORT_LABELS: Record<string, string> = {
 // ═══════════════════════════════════════════
 
 export default function HighestBetTracker() {
+  const { curr, prev, pollCount } = useKiteSnapshot(30000);
   const [mode, setMode] = useState<string>('demo');
-  const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [lastUpdate, setLastUpdate] = useState('');
   const [intervalCount, setIntervalCount] = useState(0);
 
-  // Snapshots for diffing
+  // Snapshots for diffing (driven by singleton)
   const prevSnapRef = useRef<BatchSnapshot | null>(null);
   const currSnapRef = useRef<BatchSnapshot | null>(null);
 
@@ -294,144 +287,91 @@ export default function HighestBetTracker() {
   const [sortKey, setSortKey] = useState<SortKey>('netFlow');
   const [sortAsc, setSortAsc] = useState(false);
 
-  // Auto-refresh
-  const timerRef = useRef<NodeJS.Timeout | null>(null);
-  const mountedRef = useRef(true);
+  // Convert KiteSnapshot → BatchSnapshot for flow computation
+  const toBatch = useCallback((snap: KiteSnapshot): BatchSnapshot => ({
+    timestamp: snap.timestamp,
+    mode: snap.mode,
+    symbols: snap.symbols,
+  }), []);
 
-  const fetchData = useCallback(async () => {
-    try {
-      const res = await fetch(withCreds('/api/kite/highest-bet'));
-      const data = await res.json();
-
-      if (!mountedRef.current) return;
-
-      if (data.mode === 'error') {
-        setError(data.error || 'Unknown error');
-        return;
-      }
-
-      setMode(data.mode);
-      setError('');
-      setLastUpdate(toIST(data.timestamp));
-
-      const snapshot: BatchSnapshot = {
-        timestamp: data.timestamp,
-        mode: data.mode,
-        symbols: data.symbols,
-      };
-
-      // Update spot prices
-      const sp: Record<string, { price: number; change: number }> = {};
-      for (const s of data.symbols) {
-        sp[s.symbol] = { price: s.spotPrice, change: s.spotChange };
-      }
-      setSpotPrices(sp);
-
-      // Seed dayHighest with all symbols on first load (so table always renders)
-      if (Object.keys(dayHighest).length === 0 && data.symbols.length > 0) {
-        const seed: Record<string, SymbolDayHighest> = {};
-        for (const s of data.symbols) {
-          seed[s.symbol] = emptyDayHighest();
-        }
-        setDayHighest(seed);
-      }
-
-      // Compute flows if we have a previous snapshot
-      if (prevSnapRef.current && prevSnapRef.current.symbols.length > 0) {
-        const flows = computeIntervalFlows(prevSnapRef.current, snapshot);
-        setCurrentFlows(flows);
-        setIntervalCount(c => c + 1);
-
-        // Update day's highest
-        const istTime = toIST(data.timestamp);
-        setDayHighest(prev => {
-          const next = { ...prev };
-          let changed = false;
-
-          for (const flow of flows) {
-            const existing = next[flow.symbol] || emptyDayHighest();
-            const updated = { ...existing };
-
-            // Check each category
-            if (flow.cash > existing.cash.value) {
-              updated.cash = { value: flow.cash, time: istTime };
-              changed = true;
-            }
-            if (Math.abs(flow.future) > Math.abs(existing.future.value)) {
-              updated.future = { value: flow.future, time: istTime };
-              changed = true;
-            }
-            if (flow.ceBuy > existing.ceBuy.value) {
-              updated.ceBuy = { value: flow.ceBuy, time: istTime, strike: 0 };
-              changed = true;
-            }
-            if (flow.ceWrite > existing.ceWrite.value) {
-              updated.ceWrite = { value: flow.ceWrite, time: istTime, strike: 0 };
-              changed = true;
-            }
-            if (flow.peBuy > existing.peBuy.value) {
-              updated.peBuy = { value: flow.peBuy, time: istTime, strike: 0 };
-              changed = true;
-            }
-            if (flow.peWrite > existing.peWrite.value) {
-              updated.peWrite = { value: flow.peWrite, time: istTime, strike: 0 };
-              changed = true;
-            }
-
-            // Net flow = cumulative max absolute
-            if (Math.abs(flow.netFlow) > Math.abs(existing.netFlow)) {
-              updated.netFlow = flow.netFlow;
-            }
-
-            // Peak info: which type had the absolute highest
-            const cats = [
-              { type: 'CE Buy', val: updated.ceBuy.value, strike: updated.ceBuy.strike },
-              { type: 'CE Write', val: updated.ceWrite.value, strike: updated.ceWrite.strike },
-              { type: 'PE Buy', val: updated.peBuy.value, strike: updated.peBuy.strike },
-              { type: 'PE Write', val: updated.peWrite.value, strike: updated.peWrite.strike },
-              { type: 'Cash', val: updated.cash.value },
-              { type: 'Future', val: Math.abs(updated.future.value) },
-            ];
-            const peakCat = cats.reduce((a, b) => a.val > b.val ? a : b, cats[0]);
-            updated.peakType = peakCat.type;
-            updated.peakTime = peakCat.strike !== undefined ? (cats.find(c => c.type === peakCat.type)?.time || istTime) : istTime;
-
-            next[flow.symbol] = updated;
-          }
-
-          if (changed) saveToLS(next);
-          return next;
-        });
-      }
-
-      // Shift snapshots
-      prevSnapRef.current = currSnapRef.current;
-      currSnapRef.current = snapshot;
-
-      setLoading(false);
-    } catch (err) {
-      if (!mountedRef.current) return;
-      setError(err instanceof Error ? err.message : 'Fetch failed');
-      setLoading(false);
-    }
-  }, []);
-
+  // Process new snapshot data from singleton
   useEffect(() => {
-    mountedRef.current = true;
-    fetchData();
-    timerRef.current = setInterval(fetchData, 30000);
-    return () => {
-      mountedRef.current = false;
-      if (timerRef.current) clearInterval(timerRef.current);
-    };
-  }, [fetchData]);
+    if (!curr) return;
 
-  // Manual refresh
-  const handleRefresh = () => {
-    setLoading(true);
-    prevSnapRef.current = null; // Reset to get fresh diff
-    fetchData();
-  };
+    if (curr.mode === 'error') {
+      setError('Snapshot error');
+      return;
+    }
+
+    setMode(curr.mode);
+    setError('');
+    setLastUpdate(toIST(curr.timestamp));
+
+    const snapshot: BatchSnapshot = toBatch(curr);
+
+    // Update spot prices
+    const sp: Record<string, { price: number; change: number }> = {};
+    for (const s of curr.symbols) {
+      sp[s.symbol] = { price: s.spotPrice, change: s.spotChange };
+    }
+    setSpotPrices(sp);
+
+    // Seed dayHighest with all symbols on first load
+    if (Object.keys(dayHighest).length === 0 && curr.symbols.length > 0) {
+      const seed: Record<string, SymbolDayHighest> = {};
+      for (const s of curr.symbols) {
+        seed[s.symbol] = emptyDayHighest();
+      }
+      setDayHighest(seed);
+    }
+
+    // Compute flows if we have a previous snapshot
+    const prevSnap = prevSnapRef.current;
+    if (prevSnap && prevSnap.symbols.length > 0) {
+      const flows = computeIntervalFlows(prevSnap, snapshot);
+      setCurrentFlows(flows);
+
+      // Update day's highest
+      const istTime = toIST(curr.timestamp);
+      setDayHighest(prevDH => {
+        const next = { ...prevDH };
+        let changed = false;
+
+        for (const flow of flows) {
+          const existing = next[flow.symbol] || emptyDayHighest();
+          const updated = { ...existing };
+
+          if (flow.cash > existing.cash.value) { updated.cash = { value: flow.cash, time: istTime }; changed = true; }
+          if (Math.abs(flow.future) > Math.abs(existing.future.value)) { updated.future = { value: flow.future, time: istTime }; changed = true; }
+          if (flow.ceBuy > existing.ceBuy.value) { updated.ceBuy = { value: flow.ceBuy, time: istTime, strike: 0 }; changed = true; }
+          if (flow.ceWrite > existing.ceWrite.value) { updated.ceWrite = { value: flow.ceWrite, time: istTime, strike: 0 }; changed = true; }
+          if (flow.peBuy > existing.peBuy.value) { updated.peBuy = { value: flow.peBuy, time: istTime, strike: 0 }; changed = true; }
+          if (flow.peWrite > existing.peWrite.value) { updated.peWrite = { value: flow.peWrite, time: istTime, strike: 0 }; changed = true; }
+          if (Math.abs(flow.netFlow) > Math.abs(existing.netFlow)) { updated.netFlow = flow.netFlow; }
+
+          const cats = [
+            { type: 'CE Buy', val: updated.ceBuy.value, strike: updated.ceBuy.strike },
+            { type: 'CE Write', val: updated.ceWrite.value, strike: updated.ceWrite.strike },
+            { type: 'PE Buy', val: updated.peBuy.value, strike: updated.peBuy.strike },
+            { type: 'PE Write', val: updated.peWrite.value, strike: updated.peWrite.strike },
+            { type: 'Cash', val: updated.cash.value },
+            { type: 'Future', val: Math.abs(updated.future.value) },
+          ];
+          const peakCat = cats.reduce((a, b) => a.val > b.val ? a : b, cats[0]);
+          updated.peakType = peakCat.type;
+          updated.peakTime = peakCat.strike !== undefined ? (cats.find(c => c.type === peakCat.type)?.time || istTime) : istTime;
+
+          next[flow.symbol] = updated;
+        }
+
+        if (changed) saveToLS(next);
+        return next;
+      });
+    }
+
+    // Shift snapshots
+    prevSnapRef.current = snapshot;
+  }, [curr?.timestamp, toBatch, dayHighest]);
 
   // Sort logic
   const toggleSort = (key: SortKey) => {
@@ -539,7 +479,7 @@ export default function HighestBetTracker() {
           onClick={handleRefresh}
           className="text-xs px-2 py-1 rounded border border-border/50 hover:bg-muted/50 transition-colors flex items-center gap-1"
         >
-          <RefreshCw className={`h-3 w-3 ${loading ? 'animate-spin' : ''}`} /> Reset
+          <RefreshCw className="h-3 w-3" /> Reset
         </button>
       </div>
 
@@ -602,7 +542,7 @@ export default function HighestBetTracker() {
       )}
 
       {/* Loading state */}
-      {loading && sortedSymbols.length === 0 && (
+      {sortedSymbols.length === 0 && (
         <div className="rounded-lg border border-border/30 bg-card p-6 text-center text-muted-foreground text-sm">
           <RefreshCw className="h-5 w-5 animate-spin mx-auto mb-2" />
           Loading 19 symbols... (need 2 snapshots for flow data)
@@ -610,7 +550,7 @@ export default function HighestBetTracker() {
       )}
 
       {/* No data yet state */}
-      {!loading && sortedSymbols.length === 0 && (
+      {!curr && sortedSymbols.length === 0 && (
         <div className="rounded-lg border border-border/30 bg-card p-6 text-center text-muted-foreground text-sm">
           <Zap className="h-5 w-5 mx-auto mb-2 opacity-40" />
           Waiting for first data snapshot...<br />

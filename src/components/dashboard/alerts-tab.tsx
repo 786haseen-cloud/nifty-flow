@@ -7,7 +7,7 @@ import {
   Bell, BellRing, Plus, Trash2, Volume2, VolumeX, Chrome,
 } from 'lucide-react';
 import type { StrikeFlowData } from '@/lib/kite-api';
-import { withCreds } from '@/lib/kite-creds';
+import { useKiteSnapshot, type KiteSnapshot } from '@/hooks/use-kite-snapshot';
 
 // ═══════════════════════════════════════════
 // TYPES
@@ -59,12 +59,6 @@ interface SymbolSnapshot {
   lotSize: number;
   strikeStep: number;
   strikes: StrikeFlowData[];
-}
-
-interface BatchResponse {
-  mode: string;
-  timestamp: string;
-  symbols: SymbolSnapshot[];
 }
 
 interface ComputedFlows {
@@ -373,56 +367,36 @@ export default function AlertsTab() {
     triggeredThisCycleRef.current = triggered;
   }, [rules, fireAlert]);
 
-  // Polling effect
+  // Data source: shared singleton (no duplicate fetches)
+  const { curr, prev } = useKiteSnapshot(30000);
+
+  // React to new snapshot data
   useEffect(() => {
-    let cancelled = false;
-    const interval = setInterval(async () => {
-      if (cancelled) return;
+    if (!curr) return;
+    setMode(curr.mode);
 
-      try {
-        const res = await fetch(withCreds('/api/kite/highest-bet'));
-        const data: BatchResponse = await res.json();
-        if (cancelled) return;
+    const currMap = new Map<string, SymbolSnapshot>(
+      curr.symbols.map(s => [s.symbol, s]),
+    );
 
-        setMode(data.mode);
-        const snapMap = new Map<string, SymbolSnapshot>(
-          data.symbols.map(s => [s.symbol, s]),
-        );
+    if (curr.mode === 'demo') {
+      const flows = generateDemoFlows();
+      checkAlerts(flows);
+      return;
+    }
 
-        if (data.mode === 'demo') {
-          const flows = generateDemoFlows();
-          checkAlerts(flows);
-          return;
-        }
+    const prevMap = prev
+      ? new Map<string, SymbolSnapshot>(prev.symbols.map(s => [s.symbol, s]))
+      : currSnapRef.current;
 
-        prevSnapRef.current = currSnapRef.current;
-        currSnapRef.current = snapMap;
+    prevSnapRef.current = prevMap;
+    currSnapRef.current = currMap;
 
-        if (prevSnapRef.current.size > 0) {
-          const flows = computeAllFlows(prevSnapRef.current, currSnapRef.current);
-          checkAlerts(flows);
-        }
-      } catch {
-        // Fetch failed, silently ignore
-      }
-    }, 30000);
-
-    // Initial fetch
-    (async () => {
-      try {
-        const res = await fetch(withCreds('/api/kite/highest-bet'));
-        const data: BatchResponse = await res.json();
-        if (cancelled) return;
-        setMode(data.mode);
-        const snapMap = new Map<string, SymbolSnapshot>(
-          data.symbols.map(s => [s.symbol, s]),
-        );
-        currSnapRef.current = snapMap;
-      } catch { /* ignore */ }
-    })();
-
-    return () => { cancelled = true; clearInterval(interval); };
-  }, [checkAlerts]);
+    if (prevMap.size > 0) {
+      const flows = computeAllFlows(prevMap, currMap);
+      checkAlerts(flows);
+    }
+  }, [curr?.timestamp, checkAlerts]);
 
   // Summary stats
   const activeRules = rules.filter(r => r.active).length;

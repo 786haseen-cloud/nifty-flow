@@ -2,10 +2,12 @@
  * Shared hook: polls /api/kite/highest-bet once,
  * provides real-time data + previous snapshot for diffing
  * to all dashboard components via module-level singleton.
+ *
+ * OPTIMIZED: Timer auto-stops when no listeners remain (saves Vercel CPU).
  */
 'use client';
 
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { withCreds } from '@/lib/kite-creds';
 import type { StrikeFlowData } from '@/lib/kite-api';
 
@@ -45,6 +47,7 @@ let globalCurr: KiteSnapshot | null = null;
 let globalPrev: KiteSnapshot | null = null;
 const listeners = new Set<() => void>();
 let globalTimer: ReturnType<typeof setInterval> | null = null;
+let currentIntervalMs = 15000;
 let globalPollCount = 0;
 
 let _consecutiveErrors = 0;
@@ -82,14 +85,18 @@ async function pollOnce() {
   listeners.forEach(fn => fn());
 }
 
-function ensurePolling(intervalMs: number) {
+function startPolling(intervalMs: number) {
   if (globalTimer) return;
+  currentIntervalMs = intervalMs;
   pollOnce();
   globalTimer = setInterval(pollOnce, intervalMs);
-  // Auto-stop after 12 hours to prevent memory leaks
-  setTimeout(() => {
-    if (globalTimer) { clearInterval(globalTimer); globalTimer = null; }
-  }, 12 * 60 * 60 * 1000);
+}
+
+function stopPolling() {
+  if (globalTimer) {
+    clearInterval(globalTimer);
+    globalTimer = null;
+  }
 }
 
 export function useKiteSnapshot(intervalMs = 15000) {
@@ -98,8 +105,14 @@ export function useKiteSnapshot(intervalMs = 15000) {
 
   useEffect(() => {
     listeners.add(tick);
-    ensurePolling(intervalMs);
-    return () => { listeners.delete(tick); };
+    startPolling(intervalMs);
+    return () => {
+      listeners.delete(tick);
+      // Auto-stop when NO listeners remain (saves CPU)
+      if (listeners.size === 0) {
+        stopPolling();
+      }
+    };
   }, [tick, intervalMs]);
 
   return {
