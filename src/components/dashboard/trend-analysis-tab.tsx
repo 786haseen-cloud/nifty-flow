@@ -435,6 +435,7 @@ export default function TrendAnalysisTab() {
               Waiting for candle data...
             </div>
           )}
+          </div>
         </div>
 
         {/* Card 2 (top-right): Net Cash Flow — 15 Stocks */}
