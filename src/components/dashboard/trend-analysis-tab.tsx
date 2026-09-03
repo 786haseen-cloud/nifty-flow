@@ -18,7 +18,7 @@
  * extend the store's `pollOnce()` action to fetch new data.
  */
 
-import { useMemo } from 'react';
+import { useMemo, useEffect, useState } from 'react';
 import { Badge } from '@/components/ui/badge';
 import {
   LineChart, Line, BarChart, Bar, Area,
@@ -29,13 +29,13 @@ import { TrendingUp, TrendingDown, ArrowUpRight, ArrowDownRight, Activity, Walle
 import { useTrendStore } from '@/lib/trend-store';
 import {
   IDX_COLORS,
-  IDX_NAMES,
   INDEX_SYMBOLS,
   type NiftyCandle,
   type StockCashFlow,
   type CashFlowTrendPoint,
   type FlowTrendPoint,
 } from '@/lib/trend-types';
+import { getMarketPhase, getMarketPhaseLabel } from '@/lib/market-hours';
 import { useMagnetScan } from '@/hooks/use-magnet-scan';
 import MagnetCard, { MagnetSummaryRow } from '@/components/dashboard/magnet-card';
 import { SignalBanner } from '@/components/dashboard/signal-banner';
@@ -238,6 +238,14 @@ export default function TrendAnalysisTab() {
     ? new Date(magnetScan.lastPollAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })
     : '—';
 
+  // Market phase badge — re-checked every 30s so it flips at 09:15 / 15:40
+  const [phaseTick, setPhaseTick] = useState(0);
+  useEffect(() => {
+    const t = setInterval(() => setPhaseTick((v) => v + 1), 30_000);
+    return () => clearInterval(t);
+  }, []);
+  const marketPhase = useMemo(() => getMarketPhase(), [phaseTick]);
+
   // ─── Derived values ───
 
   const niftyCurrentPrice = niftyCandles.length > 0 ? niftyCandles[niftyCandles.length - 1].close : 0;
@@ -263,6 +271,10 @@ export default function TrendAnalysisTab() {
   const lastPollStr = lastPollAt > 0
     ? new Date(lastPollAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })
     : '—';
+
+  // Index flow totals (for the Index Options Money Flow card header)
+  const idxIntTotal = INDEX_SYMBOLS.reduce((s, k) => s + (currentIdxFlows[k] || 0), 0);
+  const idxCumTotal = INDEX_SYMBOLS.reduce((s, k) => s + (cumulativeFlow[k] || 0), 0);
 
   // ─── Dynamic X-axis domains for trend charts ───
   // cashFlowTrend and flowTrend use real wall-clock times which may fall
@@ -327,6 +339,9 @@ export default function TrendAnalysisTab() {
           <Badge variant="outline" className={trendMode === 'live' ? 'border-emerald-500/40 text-emerald-300' : 'border-orange-500/40 text-orange-300'}>
             {trendMode === 'live' ? 'LIVE' : trendMode === 'error' ? 'Error' : 'Demo'}
           </Badge>
+          <Badge variant="outline" className={marketPhase === 'open' ? 'border-emerald-500/40 text-emerald-300' : 'border-orange-500/40 text-orange-300'}>
+            {getMarketPhaseLabel(marketPhase)}
+          </Badge>
           <span className="text-xs text-muted-foreground">Trend Analysis — Price + Cash + Options Flow</span>
           <span className="text-[10px] text-muted-foreground">Persistent across tab switches</span>
         </div>
@@ -339,28 +354,42 @@ export default function TrendAnalysisTab() {
         </div>
       </div>
 
-      {/* Section 1: Nifty 50 Spot Price + Cash Flow Trend (stacked) */}
-      <div className="rounded-xl border border-border/50 bg-card/50 p-4">
-        <div className="flex items-center justify-between mb-3">
-          <div className="flex items-center gap-2">
-            <Activity className="h-4 w-4 text-emerald-400" />
-            <h3 className="text-sm font-semibold">Nifty 50 — Intraday Price Trend</h3>
+      {/* ─────────────────────────────────────────────────────────────
+          Section 1: Aligned 2×2 Grid — all four trend cards, same size
+            ┌──────────────────────────┬──────────────────────────┐
+            │  Nifty 50 Price Trend    │  Net Cash Flow (15 stk)  │
+            ├──────────────────────────┼──────────────────────────┤
+            │  Index Options Flow      │  Stock Options Flow      │
+            └──────────────────────────┴──────────────────────────┘
+          Uniform 2-line header (min-h-[52px]) + chart h-[210px] each,
+          so both rows align and movement is easy to compare.
+      ────────────────────────────────────────────────────────────── */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        {/* Card 1 (top-left): Nifty 50 — Intraday Price Trend */}
+        <div className="rounded-xl border border-border/50 bg-card/50 p-4 flex flex-col">
+          <div className="flex items-start justify-between gap-2 mb-2 min-h-[52px] flex-wrap">
+            <div className="min-w-0">
+              <div className="flex items-center gap-2">
+                <Activity className="h-4 w-4 text-emerald-400" />
+                <h3 className="text-sm font-semibold">Nifty 50 — Intraday Price Trend</h3>
+              </div>
+              <div className="text-[10px] text-muted-foreground">Session candles · freezes at market close</div>
+            </div>
+            <div className="text-right shrink-0">
+              {niftyCurrentPrice > 0 && (
+                <>
+                  <div className="text-sm font-mono font-semibold text-emerald-400">
+                    {niftyCurrentPrice.toLocaleString('en-IN')}
+                  </div>
+                  <div className={`text-[10px] font-mono flex items-center gap-0.5 justify-end ${niftyChange >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                    {niftyChange >= 0 ? <ArrowUpRight className="h-3 w-3" /> : <ArrowDownRight className="h-3 w-3" />}
+                    {niftyChange >= 0 ? '+' : ''}{niftyChange.toFixed(1)} ({niftyChangePct >= 0 ? '+' : ''}{niftyChangePct.toFixed(2)}%)
+                  </div>
+                </>
+              )}
+            </div>
           </div>
-          <div className="flex items-center gap-3 text-xs">
-            {niftyCurrentPrice > 0 && (
-              <>
-                <span className="font-mono font-semibold text-emerald-400">
-                  {niftyCurrentPrice.toLocaleString('en-IN')}
-                </span>
-                <span className={`flex items-center gap-0.5 font-mono ${niftyChange >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                  {niftyChange >= 0 ? <ArrowUpRight className="h-3 w-3" /> : <ArrowDownRight className="h-3 w-3" />}
-                  {niftyChange >= 0 ? '+' : ''}{niftyChange.toFixed(1)} ({niftyChangePct >= 0 ? '+' : ''}{niftyChangePct.toFixed(2)}%)
-                </span>
-              </>
-            )}
-          </div>
-        </div>
-        <div className="h-[200px]">
+          <div className="h-[210px]">
           {niftyChartData.length > 0 ? (
             <ResponsiveContainer width="100%" height="100%">
               <ComposedChart data={niftyChartData} margin={{ top: 5, right: 10, left: 10, bottom: 0 }}>
@@ -408,31 +437,35 @@ export default function TrendAnalysisTab() {
           )}
         </div>
 
-        {/* Net Cash Flow Trend — directly below Nifty price */}
-        <div className="mt-1 pt-3 border-t border-border/30">
-          <div className="flex items-center justify-between mb-2">
-            <div className="flex items-center gap-2">
-              <Wallet className="h-3.5 w-3.5 text-sky-400" />
-              <h4 className="text-xs font-semibold">Net Cash Flow — 15 Stocks (NSE + BSE, Cumulative since open)</h4>
+        {/* Card 2 (top-right): Net Cash Flow — 15 Stocks */}
+        <div className="rounded-xl border border-border/50 bg-card/50 p-4 flex flex-col">
+          <div className="flex items-start justify-between gap-2 mb-2 min-h-[52px] flex-wrap">
+            <div className="min-w-0">
+              <div className="flex items-center gap-2">
+                <Wallet className="h-4 w-4 text-sky-400" />
+                <h3 className="text-sm font-semibold">Net Cash Flow — 15 Stocks</h3>
+              </div>
+              <div className="text-[10px] text-muted-foreground flex items-center gap-2">
+                <span className="inline-flex items-center gap-1">
+                  <span className="inline-block w-2 h-2 rounded-full bg-emerald-500" />
+                  NSE: {cumNseCr.toFixed(1)} Cr
+                </span>
+                <span className="inline-flex items-center gap-1">
+                  <span className="inline-block w-2 h-2 rounded-full bg-sky-500" />
+                  BSE: {cumBseCr.toFixed(1)} Cr
+                </span>
+              </div>
             </div>
-            <div className="flex items-center gap-3 text-[10px]">
-              <div className="flex items-center gap-1">
-                <span className="inline-block w-2 h-2 rounded-full bg-emerald-500" />
-                <span className="text-muted-foreground">NSE: {cumNseCr.toFixed(1)} Cr</span>
+            <div className="text-right shrink-0">
+              <div className={`text-sm font-mono font-bold ${cumNetCr >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                Net: {cumNetCr >= 0 ? '+' : ''}{cumNetCr.toFixed(1)} Cr
               </div>
-              <div className="flex items-center gap-1">
-                <span className="inline-block w-2 h-2 rounded-full bg-sky-500" />
-                <span className="text-muted-foreground">BSE: {cumBseCr.toFixed(1)} Cr</span>
-              </div>
-              <div className={`font-mono font-semibold ${cumNetCr >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                Net: {cumNetCr.toFixed(1)} Cr
-              </div>
-              <span className={`font-mono ${currentIntervalCashFlow >= 0 ? 'text-emerald-300' : 'text-red-300'}`}>
+              <div className={`text-[10px] font-mono ${currentIntervalCashFlow >= 0 ? 'text-emerald-300' : 'text-red-300'}`}>
                 15s: {currentIntervalCashFlow >= 0 ? '+' : ''}{fmtRaw(currentIntervalCashFlow)} Cr
-              </span>
+              </div>
             </div>
           </div>
-          <div className="h-[130px]">
+          <div className="h-[210px]">
             {cashChartData.length > 1 ? (
               <ResponsiveContainer width="100%" height="100%">
                 <ComposedChart data={cashChartData} margin={{ top: 5, right: 10, left: 10, bottom: 0 }}>
@@ -482,39 +515,40 @@ export default function TrendAnalysisTab() {
             )}
           </div>
         </div>
-      </div>
 
-      {/* Index Options Flow + Current Flow Cards */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        {/* Index Options Money Flow Trend */}
-        <div className="rounded-xl border border-border/50 bg-card/50 p-4">
-          <div className="flex items-center justify-between mb-3">
-            <div className="flex items-center gap-2">
-              <TrendingUp className="h-4 w-4 text-purple-400" />
-              <h3 className="text-sm font-semibold">Index Options Money Flow</h3>
+        {/* Card 3 (bottom-left): Index Options Money Flow */}
+        <div className="rounded-xl border border-border/50 bg-card/50 p-4 flex flex-col">
+          <div className="flex items-start justify-between gap-2 mb-2 min-h-[52px] flex-wrap">
+            <div className="min-w-0">
+              <div className="flex items-center gap-2">
+                <TrendingUp className="h-4 w-4 text-purple-400" />
+                <h3 className="text-sm font-semibold">Index Options Money Flow</h3>
+              </div>
+              <div className="text-[10px] text-muted-foreground flex items-center gap-1.5 flex-wrap mt-0.5">
+                {INDEX_SYMBOLS.map((idx) => {
+                  const flow = currentIdxFlows[idx] || 0;
+                  const c = IDX_COLORS[idx];
+                  return (
+                    <span key={idx} className={`inline-flex items-center gap-1 ${c.bg} rounded px-1 py-0.5`}>
+                      <span className="inline-block w-1.5 h-1.5 rounded-full" style={{ backgroundColor: c.stroke }} />
+                      <span className={`font-mono ${flow >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                        {flow >= 0 ? '+' : ''}{fmtCr(flow)}
+                      </span>
+                    </span>
+                  );
+                })}
+              </div>
             </div>
-            <span className="text-[10px] text-muted-foreground">Cumulative Net Flow (Cr)</span>
+            <div className="text-right shrink-0">
+              <div className="text-sm font-mono font-bold text-purple-300">
+                Cum: {idxCumTotal >= 0 ? '+' : ''}{fmtCr(idxCumTotal)} Cr
+              </div>
+              <div className={`text-[10px] font-mono ${idxIntTotal >= 0 ? 'text-emerald-300' : 'text-red-300'}`}>
+                Int: {idxIntTotal >= 0 ? '+' : ''}{fmtCr(idxIntTotal)} Cr
+              </div>
+            </div>
           </div>
-          {/* Current interval cards */}
-          <div className="grid grid-cols-4 gap-2 mb-3">
-            {INDEX_SYMBOLS.map((idx) => {
-              const flow = currentIdxFlows[idx] || 0;
-              const cum = cumulativeFlow[idx] || 0;
-              const c = IDX_COLORS[idx];
-              return (
-                <div key={idx} className={`${c.bg} rounded-lg p-1.5 text-center`}>
-                  <div className="text-[9px] text-muted-foreground">{IDX_NAMES[idx]}</div>
-                  <div className={`text-xs font-mono font-semibold ${flow >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                    {flow >= 0 ? '+' : ''}{fmtCr(flow)}
-                  </div>
-                  <div className="text-[9px] text-muted-foreground font-mono">
-                    cum: {fmtCr(cum)}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-          <div className="h-[200px]">
+          <div className="h-[210px]">
             {flowChartData.length > 1 ? (
               <ResponsiveContainer width="100%" height="100%">
                 <LineChart data={flowChartData} margin={{ top: 5, right: 10, left: 10, bottom: 0 }}>
@@ -556,23 +590,26 @@ export default function TrendAnalysisTab() {
           </div>
         </div>
 
-        {/* Stock Options Money Flow Trend */}
-        <div className="rounded-xl border border-border/50 bg-card/50 p-4">
-          <div className="flex items-center justify-between mb-3">
-            <div className="flex items-center gap-2">
-              <TrendingDown className="h-4 w-4 text-orange-400" />
-              <h3 className="text-sm font-semibold">Stock Options Money Flow (15 F&O Stocks)</h3>
+        {/* Card 4 (bottom-right): Stock Options Money Flow (15 F&O Stocks) */}
+        <div className="rounded-xl border border-border/50 bg-card/50 p-4 flex flex-col">
+          <div className="flex items-start justify-between gap-2 mb-2 min-h-[52px] flex-wrap">
+            <div className="min-w-0">
+              <div className="flex items-center gap-2">
+                <TrendingDown className="h-4 w-4 text-orange-400" />
+                <h3 className="text-sm font-semibold">Stock Options Money Flow (15 F&O Stocks)</h3>
+              </div>
+              <div className="text-[10px] text-muted-foreground">ΔOI-weighted net flow · cumulative (Cr)</div>
             </div>
-            <div className="flex items-center gap-2">
-              <span className={`text-xs font-mono font-semibold ${currentStockFlow >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                Int: {currentStockFlow >= 0 ? '+' : ''}{fmtCr(currentStockFlow)} Cr
-              </span>
-              <span className="text-[10px] text-muted-foreground">
+            <div className="text-right shrink-0">
+              <div className={`text-sm font-mono font-bold ${cumulativeFlow.stockAggregate >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
                 Cum: {fmtCr(cumulativeFlow.stockAggregate || 0)} Cr
-              </span>
+              </div>
+              <div className={`text-[10px] font-mono ${currentStockFlow >= 0 ? 'text-emerald-300' : 'text-red-300'}`}>
+                Int: {currentStockFlow >= 0 ? '+' : ''}{fmtCr(currentStockFlow)} Cr
+              </div>
             </div>
           </div>
-          <div className="h-[230px]">
+          <div className="h-[210px]">
             {flowChartData.length > 1 ? (
               <ResponsiveContainer width="100%" height="100%">
                 <LineChart data={flowChartData} margin={{ top: 5, right: 10, left: 10, bottom: 0 }}>

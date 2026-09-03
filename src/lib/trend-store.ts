@@ -30,6 +30,7 @@
 import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
 import { withCreds } from './kite-creds';
+import { getMarketPhase } from './market-hours';
 import {
   INDEX_SYMBOLS,
   computeSymbolFlow,
@@ -171,7 +172,12 @@ export const useTrendStore = create<TrendState>()(
         // Trigger historical backfill in background (only once per day)
         // This fetches today's OI history from Kite and reconstructs the
         // morning-to-now options flow trend.
-        if (!get()._historicalBackfillDone && get().flowTrend.length === 0) {
+        // Market-hours gate: only backfill when session is open or just
+        // finished ('post') — pre-market/weekend backfill returns nothing
+        // and would retry in a loop.
+        const backfillPhase = getMarketPhase();
+        if ((backfillPhase === 'open' || backfillPhase === 'post') &&
+            !get()._historicalBackfillDone && get().flowTrend.length === 0) {
           // Wait a few seconds for the first poll to complete and set trendMode
           setTimeout(() => {
             const state = get();
@@ -196,10 +202,12 @@ export const useTrendStore = create<TrendState>()(
         // Self-healing watchdog: if lastPollAt becomes stale (> 90s),
         // the main poller likely died (browser throttled background tab,
         // unhandled edge case, etc.). Detect and restart.
+        // Market-hours gate: never restart outside the session — after close
+        // lastPollAt naturally goes stale and the watchdog would spin forever.
         const watchdog = setInterval(() => {
           const s = get();
           const gap = Date.now() - s.lastPollAt;
-          if (s.lastPollAt > 0 && gap > 90_000 && s.trendMode === 'live') {
+          if (s.lastPollAt > 0 && gap > 90_000 && s.trendMode === 'live' && getMarketPhase() === 'open') {
             console.warn(`[TrendStore] Watchdog: no poll for ${Math.round(gap / 1000)}s, restarting`);
             if (s._pollTimer) clearInterval(s._pollTimer);
             const newTimer = setInterval(() => {
@@ -418,6 +426,29 @@ export const useTrendStore = create<TrendState>()(
        * flow is wiped automatically the moment the new IST day begins.
        */
       pollOnce: async () => {
+        // ─── MARKET HOURS GATE (API quota saver) ───
+        // Outside the trading session we STOP live polling:
+        //   'pre'/'closed' (weekend)  → skip always
+        //   'post' (after 15:40 IST)  → allow ONE snapshot poll when the store
+        //                                is empty (so users opening the app in
+        //                                the evening still see today's chart +
+        //                                the historical backfill runs once),
+        //                                then skip all subsequent polls.
+        // Without this gate the 15s poller would run 24/7, burning Kite API
+        // quota and Vercel function invocations for flat after-hours data.
+        const phase = getMarketPhase();
+        if (phase !== 'open') {
+          const s = get();
+          const hasData = s.lastPollAt > 0 ||
+                          s.cashFlowTrend.length > 0 ||
+                          s.flowTrend.length > 0 ||
+                          s.niftyCandles.length > 0;
+          const allowSnapshot = phase === 'post' && !hasData;
+          if (!allowSnapshot) {
+            return; // skip this poll — no fetch, no API call
+          }
+        }
+
         // ─── In-poll date boundary check ───
         // If the IST date has changed since the last poll, clear the trend
         // data so the new day starts fresh. Without this, a user who leaves

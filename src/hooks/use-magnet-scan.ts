@@ -20,6 +20,7 @@
 
 import { useEffect, useState, useRef, useCallback } from 'react';
 import { withCreds } from '../lib/kite-creds';
+import { getMarketPhase } from '../lib/market-hours';
 import type { MagnetResult } from '../lib/magnet-engine';
 
 interface MagnetScanResponse {
@@ -39,8 +40,19 @@ export function useMagnetScan(enabled: boolean = true) {
   const [lastPollAt, setLastPollAt] = useState<number>(0);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const inFlightRef = useRef(false);
+  const hasDataRef = useRef(false);
 
   const fetchOnce = useCallback(async () => {
+    // ─── MARKET HOURS GATE (API quota saver) ───
+    // The magnet scan is the most expensive call in the app (~400 option
+    // quotes batched for 19 symbols). Outside the session:
+    //   'pre'/'closed' (weekend) → skip entirely
+    //   'post' (after 15:40 IST) → allow ONE fetch so the dashboard shows
+    //     the final state of the day, then stop polling.
+    if (getMarketPhase() !== 'open' && hasDataRef.current) {
+      return;
+    }
+
     if (inFlightRef.current) return;  // skip overlap
     inFlightRef.current = true;
     try {
@@ -50,6 +62,7 @@ export function useMagnetScan(enabled: boolean = true) {
         setData(json.symbols);
         setMode('live');
         setError(null);
+        hasDataRef.current = true;
       } else if (json.mode === 'demo') {
         setData([]);
         setMode('demo');
