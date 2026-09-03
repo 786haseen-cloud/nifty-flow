@@ -38,6 +38,7 @@ import {
 } from '@/lib/trend-types';
 import { useMagnetScan } from '@/hooks/use-magnet-scan';
 import MagnetCard, { MagnetSummaryRow } from '@/components/dashboard/magnet-card';
+import { SignalBanner } from '@/components/dashboard/signal-banner';
 
 // ─── Trading Session X-Axis Helpers ───
 // Charts display a fixed trading-session window 09:15 → 15:40 IST.
@@ -669,6 +670,9 @@ export default function TrendAnalysisTab() {
         {/* Live data */}
         {magnetScan.mode === 'live' && magnetScan.data.length > 0 && (
           <>
+            {/* HERO: Aggregate Market Signal Banner */}
+            <SignalBanner symbols={magnetScan.data} />
+
             {/* Aggregate summary row */}
             <MagnetSummaryRow symbols={magnetScan.data} />
 

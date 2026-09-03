@@ -116,6 +116,9 @@ export interface MagnetResult {
   daysToExpiry: number;
   lotSize: number;
   strikeStep: number;
+
+  // Trade signal (computed by computeSignal, attached at end of computeMagnet)
+  signal: SignalResult;
 }
 
 // ─── Black-Scholes helpers ───
@@ -575,7 +578,7 @@ export function computeMagnet(
     gammaRegime, Math.abs(totalGexCr), charmDirection, strikeStep
   );
 
-  return {
+  const result: MagnetResult = {
     symbol,
     name: meta.name,
     type: meta.type,
@@ -601,5 +604,611 @@ export function computeMagnet(
     daysToExpiry,
     lotSize,
     strikeStep,
+    // signal is assigned below (must exist on the type, so we initialize with null-like)
+    signal: null as unknown as SignalResult,
+  };
+
+  // Attach the trade signal (computed by computeSignal below)
+  result.signal = computeSignal(result);
+  return result;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// TRADE SIGNAL ENGINE
+// ═══════════════════════════════════════════════════════════════════
+//
+// Combines the 4 magnet/gamma logics into a single actionable signal:
+//   BUY CALL | BUY PUT | WAIT
+//
+// SCORING MODEL (range: -10 to +10, + = bull, − = bear)
+// ─────────────────────────────────────────────────────────────────
+// Factor                     Max ±  Bull condition                Bear condition
+// ─────────────────────────────────────────────────────────────────────────────
+// 1. Charm direction          ±3.0   ↑ up (dealers buy)            ↓ down (dealers sell)
+// 2. Zero-Γ position          ±2.0   Spot pushing up to flip       Spot pushing down to flip
+// 3. Magnet zone pull         ±1.5   Spot below zone (pulled up)   Spot above zone (pulled down)
+// 4. GEX walls around spot    ±1.5   Red above (calls explosive)   Red below (puts explosive)
+//                                     Green below (puts cushion)   Green above (calls capped)
+// 5. PCR sentiment            ±1.0   PCR > 1.2 (put writers)       PCR < 0.8 (call writers)
+// 6. Gamma regime             ±0.5   Positive (dips bought)        Negative (breaks run)
+// 7. Pinning modifier         ±1.0   Low pin (room to trend)       Low pin (room to trend)
+//                                     High pin & directional → −    High pin & directional → −
+//
+// Total max |score| ≈ 10.5
+//
+// THRESHOLDS
+//   |score| ≥ 6.0   → STRONG (high conviction)
+//   |score| ≥ 3.5   → MODERATE
+//   |score| ≥ 1.5   → WEAK
+//   else            → WAIT
+//
+// Pinning modifier:
+//   - Pinning ≥ 70% reduces trend signal strength by 40% (pin will fight you)
+//   - Pinning ≤ 35% amplifies trend signal strength by 20% (room to run)
+//
+// ═══════════════════════════════════════════════════════════════════
+
+export type SignalDirection = 'CALL' | 'PUT' | 'WAIT';
+
+export interface SignalReason {
+  factor: string;
+  direction: 'bull' | 'bear' | 'neutral';
+  weight: number;       // signed contribution to score
+  detail: string;       // human-readable explanation
+}
+
+export interface SignalResult {
+  direction: SignalDirection;
+  strength: 'STRONG' | 'MODERATE' | 'WEAK' | 'NONE';
+  score: number;            // -10 to +10
+  confidence: number;       // 0-100
+  reasons: SignalReason[];
+  suggestedStrike: number;  // option strike for entry
+  suggestedTarget: number;  // magnet zone center
+  suggestedStop: number;    // beyond zero-Γ or magnet edge
+  timing: 'NOW' | 'AFTERNOON' | 'EOD' | 'WAIT';
+  notes: string;
+}
+
+/**
+ * Compute the per-symbol trade signal from magnet/gamma data.
+ *
+ * Returns a SignalResult with direction, strength, confidence, entry/target/stop,
+ * timing, and a list of human-readable reasons showing which factors contributed.
+ */
+export function computeSignal(m: MagnetResult): SignalResult {
+  const reasons: SignalReason[] = [];
+  let score = 0;
+
+  // ── Factor 1: CHARM (±3.0 max) — strongest intraday drift predictor ──
+  // Charm tells you which direction dealers are FORCED to trade by time decay.
+  if (m.charmDirection === 'up') {
+    const w = 3.0;
+    score += w;
+    reasons.push({
+      factor: 'Charm Drift',
+      direction: 'bull',
+      weight: w,
+      detail: `Dealers must BUY over time (${m.charmMagnitudeCr.toFixed(1)} Cr/day forced flow)`,
+    });
+  } else if (m.charmDirection === 'down') {
+    const w = -3.0;
+    score += w;
+    reasons.push({
+      factor: 'Charm Drift',
+      direction: 'bear',
+      weight: w,
+      detail: `Dealers must SELL over time (${m.charmMagnitudeCr.toFixed(1)} Cr/day forced flow)`,
+    });
+  } else {
+    reasons.push({
+      factor: 'Charm Drift',
+      direction: 'neutral',
+      weight: 0,
+      detail: 'Charm flat — no forced dealer flow',
+    });
+  }
+
+  // ── Factor 2: ZERO-Γ POSITION (±2.0 max) — regime + flip triggers ──
+  // Spot close to zero-Γ = regime flip imminent (high-conviction trigger)
+  if (m.zeroGamma !== null && m.zeroGamma > 0) {
+    const distToFlipPct = ((m.spot - m.zeroGamma) / m.spot) * 100;
+    const absDist = Math.abs(distToFlipPct);
+
+    if (absDist < 0.3) {
+      // Spot very close to flip — directional trigger
+      // If charm aligned with the direction that would push past the flip, amplify
+      if (distToFlipPct < 0 && m.charmDirection === 'up') {
+        // Spot just below 0Γ, charm up → pushing into positive regime = BULL trigger
+        const w = 2.0;
+        score += w;
+        reasons.push({
+          factor: 'Zero-Γ Position',
+          direction: 'bull',
+          weight: w,
+          detail: `Spot ${absDist.toFixed(2)}% below 0Γ flip — charm pushing UP into positive regime (bull trigger)`,
+        });
+      } else if (distToFlipPct > 0 && m.charmDirection === 'down') {
+        // Spot just above 0Γ, charm down → pushing into negative regime = BEAR trigger
+        const w = -2.0;
+        score += w;
+        reasons.push({
+          factor: 'Zero-Γ Position',
+          direction: 'bear',
+          weight: w,
+          detail: `Spot ${absDist.toFixed(2)}% above 0Γ flip — charm pushing DOWN into negative regime (bear trigger)`,
+        });
+      } else {
+        // Spot near flip but charm not aligned — fragile, don't amplify
+        reasons.push({
+          factor: 'Zero-Γ Position',
+          direction: 'neutral',
+          weight: 0,
+          detail: `Spot ${absDist.toFixed(2)}% from 0Γ flip — regime fragile, wait for direction`,
+        });
+      }
+    } else if (distToFlipPct > 0) {
+      // Spot comfortably above 0Γ = positive regime, dips get bought
+      const w = 1.0;
+      score += w;
+      reasons.push({
+        factor: 'Zero-Γ Position',
+        direction: 'bull',
+        weight: w,
+        detail: `Spot ${absDist.toFixed(2)}% above 0Γ — positive regime (dips get bought, sticky)`,
+      });
+    } else {
+      // Spot comfortably below 0Γ = negative regime, breaks run
+      const w = -1.0;
+      score += w;
+      reasons.push({
+        factor: 'Zero-Γ Position',
+        direction: 'bear',
+        weight: w,
+        detail: `Spot ${absDist.toFixed(2)}% below 0Γ — negative regime (breaks amplify, volatile)`,
+      });
+    }
+  } else {
+    reasons.push({
+      factor: 'Zero-Γ Position',
+      direction: 'neutral',
+      weight: 0,
+      detail: 'Zero-Γ flip not detected',
+    });
+  }
+
+  // ── Factor 3: MAGNET ZONE PULL (±1.5 max) — destination bias ──
+  // If spot is below the zone, magnet pulls UP (bullish bias toward target).
+  // If spot is above the zone, magnet pulls DOWN (bearish bias toward target).
+  // If spot is INSIDE the zone, no directional bias (range).
+  if (m.magnetZone.length > 0 && m.magnetCenter > 0) {
+    const distToZonePct = ((m.spot - m.magnetCenter) / m.spot) * 100;
+    const absDist = Math.abs(distToZonePct);
+    const inZone = m.magnetZone.some(s => Math.abs(s - m.spot) <= m.strikeStep * 0.5);
+
+    if (inZone) {
+      reasons.push({
+        factor: 'Magnet Zone Pull',
+        direction: 'neutral',
+        weight: 0,
+        detail: 'Spot INSIDE magnet zone — no directional pull, range/chop expected',
+      });
+    } else if (absDist > 2.0) {
+      // Far from zone — magnet pull is weak
+      reasons.push({
+        factor: 'Magnet Zone Pull',
+        direction: 'neutral',
+        weight: 0,
+        detail: `Spot ${absDist.toFixed(2)}% from magnet center — pull too weak to act on`,
+      });
+    } else {
+      // Directional pull toward zone
+      const w = distToZonePct < 0 ? 1.5 : -1.5;
+      // Scale by proximity: closer = stronger pull
+      const proximityScale = Math.max(0.4, 1 - absDist / 2.5);
+      const weightedW = w * proximityScale;
+      score += weightedW;
+      reasons.push({
+        factor: 'Magnet Zone Pull',
+        direction: weightedW > 0 ? 'bull' : 'bear',
+        weight: weightedW,
+        detail: `Spot ${absDist.toFixed(2)}% ${distToZonePct < 0 ? 'below' : 'above'} magnet center (${Math.round(m.magnetCenter)}) — pull ${distToZonePct < 0 ? 'UP' : 'DOWN'} toward zone`,
+      });
+    }
+  }
+
+  // ── Factor 4: GEX WALLS AROUND SPOT (±1.5 max) — terrain ──
+  // Identify the nearest strikes immediately above and below spot.
+  // Red (negative GEX) above spot = upside breakouts run hard (bullish)
+  // Red below spot = downside breaks run hard (bearish)
+  // Green above spot = upside capped (bearish)
+  // Green below spot = downside cushioned (bullish)
+  if (m.gexStrikes.length > 0) {
+    const sorted = [...m.gexStrikes].sort((a, b) => a.strike - b.strike);
+    const aboveSpot = sorted.filter(g => g.strike > m.spot).slice(0, 2);
+    const belowSpot = sorted.filter(g => g.strike < m.spot).slice(-2).reverse();
+
+    let terrainScore = 0;
+    const details: string[] = [];
+
+    // Strikes above spot
+    for (const g of aboveSpot) {
+      const absGex = Math.abs(g.gexCr);
+      if (absGex < 0.1) continue; // noise filter
+      if (g.gexCr < 0) {
+        // Red above = bullish (breakouts run)
+        terrainScore += 0.75;
+        details.push(`red above ${g.strike}`);
+      } else {
+        // Green above = bearish (capped)
+        terrainScore -= 0.75;
+        details.push(`green wall above ${g.strike}`);
+      }
+    }
+
+    // Strikes below spot
+    for (const g of belowSpot) {
+      const absGex = Math.abs(g.gexCr);
+      if (absGex < 0.1) continue;
+      if (g.gexCr < 0) {
+        // Red below = bearish (breaks run)
+        terrainScore -= 0.75;
+        details.push(`red below ${g.strike}`);
+      } else {
+        // Green below = bullish (cushioned)
+        terrainScore += 0.75;
+        details.push(`green cushion below ${g.strike}`);
+      }
+    }
+
+    // Clamp to ±1.5
+    terrainScore = Math.max(-1.5, Math.min(1.5, terrainScore));
+    if (Math.abs(terrainScore) > 0.1) {
+      score += terrainScore;
+      reasons.push({
+        factor: 'GEX Walls Near Spot',
+        direction: terrainScore > 0 ? 'bull' : 'bear',
+        weight: terrainScore,
+        detail: `Terrain: ${details.join(', ')}`,
+      });
+    } else {
+      reasons.push({
+        factor: 'GEX Walls Near Spot',
+        direction: 'neutral',
+        weight: 0,
+        detail: 'Mixed terrain around spot — no clear wall bias',
+      });
+    }
+  }
+
+  // ── Factor 5: PCR SENTIMENT (±1.0 max) ──
+  // PCR > 1.2 → put writers dominant (bullish support)
+  // PCR < 0.8 → call writers dominant (bearish resistance)
+  if (m.pcr > 0) {
+    if (m.pcr >= 1.2) {
+      const w = 1.0;
+      score += w;
+      reasons.push({
+        factor: 'PCR Sentiment',
+        direction: 'bull',
+        weight: w,
+        detail: `PCR ${m.pcr.toFixed(2)} — put writers dominant (supportive)`,
+      });
+    } else if (m.pcr <= 0.8) {
+      const w = -1.0;
+      score += w;
+      reasons.push({
+        factor: 'PCR Sentiment',
+        direction: 'bear',
+        weight: w,
+        detail: `PCR ${m.pcr.toFixed(2)} — call writers dominant (resistance)`,
+      });
+    } else {
+      reasons.push({
+        factor: 'PCR Sentiment',
+        direction: 'neutral',
+        weight: 0,
+        detail: `PCR ${m.pcr.toFixed(2)} — balanced`,
+      });
+    }
+  }
+
+  // ── Factor 6: GAMMA REGIME (±0.5 max) ──
+  // Positive regime = dips get bought (slight bullish bias)
+  // Negative regime = breaks run (amplifies existing direction, but no inherent bias)
+  // We only give a small directional nudge in positive regime (mean-reversion supports longs)
+  if (m.gammaRegime === 'positive') {
+    const w = 0.5;
+    score += w;
+    reasons.push({
+      factor: 'Gamma Regime',
+      direction: 'bull',
+      weight: w,
+      detail: 'Positive gamma — dips get bought (mean-reversion supports longs)',
+    });
+  } else if (m.gammaRegime === 'negative') {
+    reasons.push({
+      factor: 'Gamma Regime',
+      direction: 'neutral',
+      weight: 0,
+      detail: 'Negative gamma — moves amplify (no directional bias, but be careful shorting premium)',
+    });
+  }
+
+  // ── Factor 7: PINNING MODIFIER (confidence impact, not direct score) ──
+  // High pinning → trend signal gets dampened (pin will fight you)
+  // Low pinning → trend signal gets amplified (room to run)
+  let pinMultiplier = 1.0;
+  if (m.pinningProbability >= 70) {
+    pinMultiplier = 0.6;
+    reasons.push({
+      factor: 'Pinning Probability',
+      direction: 'neutral',
+      weight: 0,
+      detail: `Pinning ${m.pinningProbability}% — HIGH pin dampens trend signal (range likely)`,
+    });
+  } else if (m.pinningProbability <= 35) {
+    pinMultiplier = 1.2;
+    reasons.push({
+      factor: 'Pinning Probability',
+      direction: 'neutral',
+      weight: 0,
+      detail: `Pinning ${m.pinningProbability}% — LOW pin amplifies trend signal (room to run)`,
+    });
+  } else {
+    reasons.push({
+      factor: 'Pinning Probability',
+      direction: 'neutral',
+      weight: 0,
+      detail: `Pinning ${m.pinningProbability}% — moderate, neutral impact`,
+    });
+  }
+
+  // Apply pin multiplier to final score
+  const adjustedScore = score * pinMultiplier;
+
+  // ── Determine direction + strength ──
+  const absScore = Math.abs(adjustedScore);
+  let direction: SignalDirection;
+  let strength: SignalResult['strength'];
+
+  if (adjustedScore >= 6.0) {
+    direction = 'CALL';
+    strength = 'STRONG';
+  } else if (adjustedScore >= 3.5) {
+    direction = 'CALL';
+    strength = 'MODERATE';
+  } else if (adjustedScore >= 1.5) {
+    direction = 'CALL';
+    strength = 'WEAK';
+  } else if (adjustedScore <= -6.0) {
+    direction = 'PUT';
+    strength = 'STRONG';
+  } else if (adjustedScore <= -3.5) {
+    direction = 'PUT';
+    strength = 'MODERATE';
+  } else if (adjustedScore <= -1.5) {
+    direction = 'PUT';
+    strength = 'WEAK';
+  } else {
+    direction = 'WAIT';
+    strength = 'NONE';
+  }
+
+  // ── Confidence (0-100) ──
+  // Scaled |score| / 10, modified by pinning alignment
+  const confidenceRaw = Math.min(100, (absScore / 10) * 100);
+  // If pinning is HIGH and signal is directional, reduce confidence (pin fights trend)
+  // If pinning is LOW and signal is directional, boost confidence
+  let confidence = confidenceRaw;
+  if (m.pinningProbability >= 70 && direction !== 'WAIT') {
+    confidence *= 0.7;
+  } else if (m.pinningProbability <= 35 && direction !== 'WAIT') {
+    confidence = Math.min(100, confidence * 1.15);
+  }
+  confidence = Math.round(confidence);
+
+  // ── Suggested strike for option entry ──
+  // For CALL: ATM strike or 1 strike OTM (just above spot) for cheap premium + good delta
+  // For PUT: ATM strike or 1 strike OTM (just below spot)
+  const atmStrike = Math.round(m.spot / m.strikeStep) * m.strikeStep;
+  let suggestedStrike: number;
+  if (direction === 'CALL') {
+    suggestedStrike = atmStrike + m.strikeStep; // 1 strike OTM (cheaper)
+  } else if (direction === 'PUT') {
+    suggestedStrike = atmStrike - m.strikeStep; // 1 strike OTM
+  } else {
+    suggestedStrike = atmStrike; // neutral
+  }
+
+  // ── Suggested target = magnet zone center ──
+  const suggestedTarget = m.magnetCenter > 0 ? Math.round(m.magnetCenter) : atmStrike;
+
+  // ── Suggested stop = beyond zero-Γ or magnet edge ──
+  let suggestedStop: number;
+  if (direction === 'CALL') {
+    // Stop below zero-Γ (if exists) or below magnet zone low
+    if (m.zeroGamma !== null && m.zeroGamma > 0 && m.zeroGamma < m.spot) {
+      suggestedStop = Math.round(m.zeroGamma - m.strikeStep * 0.5);
+    } else if (m.magnetZone.length > 0) {
+      suggestedStop = Math.min(...m.magnetZone) - m.strikeStep;
+    } else {
+      suggestedStop = atmStrike - m.strikeStep * 2;
+    }
+  } else if (direction === 'PUT') {
+    if (m.zeroGamma !== null && m.zeroGamma > 0 && m.zeroGamma > m.spot) {
+      suggestedStop = Math.round(m.zeroGamma + m.strikeStep * 0.5);
+    } else if (m.magnetZone.length > 0) {
+      suggestedStop = Math.max(...m.magnetZone) + m.strikeStep;
+    } else {
+      suggestedStop = atmStrike + m.strikeStep * 2;
+    }
+  } else {
+    suggestedStop = atmStrike;
+  }
+
+  // ── Timing ──
+  // If charm aligned with direction → AFTERNOON (charm flow kicks in 1:30-3:30)
+  // If regime flip imminent → NOW (catch the trigger)
+  // Else → NOW
+  let timing: SignalResult['timing'] = 'NOW';
+  if (direction === 'WAIT') {
+    timing = 'WAIT';
+  } else if (m.charmDirection === 'up' && direction === 'CALL') {
+    timing = 'AFTERNOON';
+  } else if (m.charmDirection === 'down' && direction === 'PUT') {
+    timing = 'AFTERNOON';
+  }
+
+  // ── Notes ──
+  let notes = '';
+  if (direction === 'WAIT') {
+    notes = 'Signals mixed or too weak. Wait for a clearer setup — either charm direction to align with magnet zone pull, or spot to push past zero-Γ flip.';
+  } else {
+    const parts: string[] = [];
+    if (m.pinningProbability >= 70) {
+      parts.push('WARNING: high pinning — pin may fight this trend, use tight stops.');
+    }
+    if (m.gammaRegime === 'negative') {
+      parts.push('Negative gamma — move could be explosive, size accordingly.');
+    }
+    if (timing === 'AFTERNOON') {
+      parts.push('Charm-aligned entry — best window is 1:30-3:30 pm IST.');
+    }
+    notes = parts.join(' ') || 'Standard directional setup.';
+  }
+
+  return {
+    direction,
+    strength,
+    score: Math.round(adjustedScore * 10) / 10,
+    confidence,
+    reasons: reasons.sort((a, b) => Math.abs(b.weight) - Math.abs(a.weight)),
+    suggestedStrike,
+    suggestedTarget,
+    suggestedStop,
+    timing,
+    notes,
+  };
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// AGGREGATE MARKET SIGNAL (across N symbols)
+// ═══════════════════════════════════════════════════════════════════
+
+export interface AggregateSignal {
+  direction: SignalDirection;
+  strength: SignalResult['strength'];
+  score: number;          // summed across indices (with weighting)
+  confidence: number;     // 0-100
+  bullCount: number;      // how many symbols say CALL
+  bearCount: number;      // how many symbols say PUT
+  waitCount: number;
+  topBull: { symbol: string; score: number; strength: string } | null;
+  topBear: { symbol: string; score: number; strength: string } | null;
+  notes: string;
+}
+
+/**
+ * Compute an aggregate market signal across multiple symbols.
+ *
+ * By default weights INDICES 3× and STOCKS 1× — indices drive the overall
+ * market direction, stocks confirm. If 3+ indices agree on direction, that's
+ * a high-conviction market call.
+ *
+ * @param symbols  array of MagnetResult (each must have signal attached)
+ */
+export function computeAggregateSignal(symbols: MagnetResult[]): AggregateSignal {
+  if (symbols.length === 0) {
+    return {
+      direction: 'WAIT',
+      strength: 'NONE',
+      score: 0,
+      confidence: 0,
+      bullCount: 0,
+      bearCount: 0,
+      waitCount: 0,
+      topBull: null,
+      topBear: null,
+      notes: 'No data available.',
+    };
+  }
+
+  let weightedScore = 0;
+  let bullCount = 0;
+  let bearCount = 0;
+  let waitCount = 0;
+  let topBull: AggregateSignal['topBull'] = null;
+  let topBear: AggregateSignal['topBear'] = null;
+
+  for (const s of symbols) {
+    if (!s.signal) continue;
+    const weight = s.type === 'index' ? 3 : 1;
+    weightedScore += s.signal.score * weight;
+
+    if (s.signal.direction === 'CALL') {
+      bullCount++;
+      if (!topBull || s.signal.score > topBull.score) {
+        topBull = { symbol: s.symbol, score: s.signal.score, strength: s.signal.strength };
+      }
+    } else if (s.signal.direction === 'PUT') {
+      bearCount++;
+      if (!topBear || s.signal.score < topBear.score) {
+        topBear = { symbol: s.symbol, score: s.signal.score, strength: s.signal.strength };
+      }
+    } else {
+      waitCount++;
+    }
+  }
+
+  const absScore = Math.abs(weightedScore);
+  let direction: SignalDirection;
+  let strength: AggregateSignal['strength'];
+
+  // Stronger thresholds for aggregate (since it's a market call)
+  if (weightedScore >= 15) {
+    direction = 'CALL';
+    strength = 'STRONG';
+  } else if (weightedScore >= 8) {
+    direction = 'CALL';
+    strength = 'MODERATE';
+  } else if (weightedScore >= 3) {
+    direction = 'CALL';
+    strength = 'WEAK';
+  } else if (weightedScore <= -15) {
+    direction = 'PUT';
+    strength = 'STRONG';
+  } else if (weightedScore <= -8) {
+    direction = 'PUT';
+    strength = 'MODERATE';
+  } else if (weightedScore <= -3) {
+    direction = 'PUT';
+    strength = 'WEAK';
+  } else {
+    direction = 'WAIT';
+    strength = 'NONE';
+  }
+
+  // Confidence: based on agreement ratio + score magnitude
+  const total = bullCount + bearCount + waitCount;
+  const agreementRatio = total > 0 ? Math.max(bullCount, bearCount) / total : 0;
+  const scoreMag = Math.min(1, absScore / 25);
+  const confidence = Math.round(agreementRatio * 60 + scoreMag * 40);
+
+  const notes = direction === 'WAIT'
+    ? `Market mixed — ${bullCount} bull / ${bearCount} bear / ${waitCount} wait. No clear edge.`
+    : `${bullCount} bull / ${bearCount} bear / ${waitCount} wait. Top ${direction === 'CALL' ? 'bull' : 'bear'}: ${direction === 'CALL' ? topBull?.symbol : topBear?.symbol} (${direction === 'CALL' ? topBull?.strength : topBear?.strength}).`;
+
+  return {
+    direction,
+    strength,
+    score: Math.round(weightedScore * 10) / 10,
+    confidence,
+    bullCount,
+    bearCount,
+    waitCount,
+    topBull,
+    topBear,
+    notes,
   };
 }

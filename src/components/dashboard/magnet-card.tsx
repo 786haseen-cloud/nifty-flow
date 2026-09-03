@@ -45,6 +45,7 @@ import {
   type LucideIcon,
 } from 'lucide-react';
 import type { MagnetResult } from '@/lib/magnet-engine';
+import { SignalChip, SignalReasonsTooltip } from './signal-banner';
 
 // ─── Helpers ───
 
@@ -187,9 +188,20 @@ export default function MagnetCard({ data, compact = false }: MagnetCardProps) {
         </div>
       </div>
 
-      {/* Pinning probability gauge */}
-      <div className="mb-2">
-        <PinGauge probability={data.pinningProbability} />
+      {/* Pinning probability gauge + signal chip */}
+      <div className="mb-2 flex items-center gap-2">
+        <div className="flex-1">
+          <PinGauge probability={data.pinningProbability} />
+        </div>
+        {data.signal && (
+          <div className="group relative">
+            <SignalChip signal={data.signal} size="xs" />
+            {/* Hover tooltip with reasons — hidden on small screens */}
+            <div className="hidden lg:block absolute right-0 top-full mt-1 z-20 opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity">
+              <SignalReasonsTooltip signal={data.signal} />
+            </div>
+          </div>
+        )}
       </div>
 
       {/* GEX Strip chart */}
