@@ -355,17 +355,22 @@ export default function TrendAnalysisTab() {
       </div>
 
       {/* ─────────────────────────────────────────────────────────────
-          Section 1: Aligned 2×2 Grid — all four trend cards, same size
-            ┌──────────────────────────┬──────────────────────────┐
-            │  Nifty 50 Price Trend    │  Net Cash Flow (15 stk)  │
-            ├──────────────────────────┼──────────────────────────┤
-            │  Index Options Flow      │  Stock Options Flow      │
-            └──────────────────────────┴──────────────────────────┘
-          Uniform 2-line header (min-h-[52px]) + chart h-[210px] each,
-          so both rows align and movement is easy to compare.
+          Section 1: Vertical stack — all four trend cards, one per row
+            ┌────────────────────────────────────────────┐
+            │  Nifty 50 Price Trend                      │
+            ├────────────────────────────────────────────┤
+            │  Net Cash Flow (15 stocks)                 │
+            ├────────────────────────────────────────────┤
+            │  Index Options Flow                        │
+            ├────────────────────────────────────────────┤
+            │  Stock Options Flow                        │
+            └────────────────────────────────────────────┘
+          Row-by-row full-width cards (user request) — uniform 2-line
+          header (min-h-[52px]) + chart h-[210px] each, so every card
+          is the same size and movement is easy to compare top-down.
       ────────────────────────────────────────────────────────────── */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        {/* Card 1 (top-left): Nifty 50 — Intraday Price Trend */}
+      <div className="grid grid-cols-1 gap-4">
+        {/* Card 1 (row 1): Nifty 50 — Intraday Price Trend */}
         <div className="rounded-xl border border-border/50 bg-card/50 p-4 flex flex-col">
           <div className="flex items-start justify-between gap-2 mb-2 min-h-[52px] flex-wrap">
             <div className="min-w-0">
@@ -438,7 +443,7 @@ export default function TrendAnalysisTab() {
           </div>
         </div>
 
-        {/* Card 2 (top-right): Net Cash Flow — 15 Stocks */}
+        {/* Card 2 (row 2): Net Cash Flow — 15 Stocks */}
         <div className="rounded-xl border border-border/50 bg-card/50 p-4 flex flex-col">
           <div className="flex items-start justify-between gap-2 mb-2 min-h-[52px] flex-wrap">
             <div className="min-w-0">
@@ -517,7 +522,7 @@ export default function TrendAnalysisTab() {
           </div>
         </div>
 
-        {/* Card 3 (bottom-left): Index Options Money Flow */}
+        {/* Card 3 (row 3): Index Options Money Flow */}
         <div className="rounded-xl border border-border/50 bg-card/50 p-4 flex flex-col">
           <div className="flex items-start justify-between gap-2 mb-2 min-h-[52px] flex-wrap">
             <div className="min-w-0">
@@ -591,7 +596,7 @@ export default function TrendAnalysisTab() {
           </div>
         </div>
 
-        {/* Card 4 (bottom-right): Stock Options Money Flow (15 F&O Stocks) */}
+        {/* Card 4 (row 4): Stock Options Money Flow (15 F&O Stocks) */}
         <div className="rounded-xl border border-border/50 bg-card/50 p-4 flex flex-col">
           <div className="flex items-start justify-between gap-2 mb-2 min-h-[52px] flex-wrap">
             <div className="min-w-0">
