@@ -364,7 +364,7 @@ export default function OIWallsTab() {
       setIsLive(false);
       setDemoData(demo);
       setSnapshot(null);
-      setLastUpdate(new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }));
+      setLastUpdate(new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false, timeZone: 'Asia/Kolkata' }));
       return;
     }
 
@@ -401,7 +401,7 @@ export default function OIWallsTab() {
     setIsLive(true);
     setDemoData(null);
     setSnapshot(data);
-    setLastUpdate(new Date(data.timestamp).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }));
+    setLastUpdate(new Date(data.timestamp).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false, timeZone: 'Asia/Kolkata' }));
 
     const prev = prevSnapshotRef.current;
     if (prev && prev.symbol === data.symbol && prev.strikes) {

@@ -57,8 +57,14 @@ function getISTDate(): string {
 }
 
 function getISTTime(): string {
+  // CRITICAL: 'en-IN' locale only changes FORMATTING, not the timezone.
+  // Without explicit timeZone, this uses the BROWSER's local timezone —
+  // a user in Jeddah (UTC+3) would get Jeddah time, misaligning the
+  // cash-flow / options-flow chart x-axis with the Nifty candle axis
+  // (which uses true IST from Kite timestamps). Always force IST here.
   return new Date().toLocaleTimeString('en-IN', {
     hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+    timeZone: 'Asia/Kolkata',
   });
 }
 

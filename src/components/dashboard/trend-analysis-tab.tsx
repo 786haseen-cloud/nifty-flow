@@ -235,7 +235,7 @@ export default function TrendAnalysisTab() {
   const magnetIndices = magnetScan.data.filter(s => s.type === 'index');
   const magnetStocks = magnetScan.data.filter(s => s.type === 'stock');
   const magnetLastStr = magnetScan.lastPollAt > 0
-    ? new Date(magnetScan.lastPollAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })
+    ? new Date(magnetScan.lastPollAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false, timeZone: 'Asia/Kolkata' })
     : '—';
 
   // Market phase badge — re-checked every 30s so it flips at 09:15 / 15:40
@@ -269,7 +269,7 @@ export default function TrendAnalysisTab() {
 
   // Last poll timestamp display
   const lastPollStr = lastPollAt > 0
-    ? new Date(lastPollAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })
+    ? new Date(lastPollAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false, timeZone: 'Asia/Kolkata' })
     : '—';
 
   // Index flow totals (for the Index Options Money Flow card header)
