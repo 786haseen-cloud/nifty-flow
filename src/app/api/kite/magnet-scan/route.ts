@@ -25,6 +25,7 @@ import {
   INDEX_SPECS,
   STOCK_SPECS,
   getOptionInstruments,
+  getFutureInstrument,
   getQuotes,
   type KiteInstrument,
   type KiteQuote,
@@ -51,6 +52,77 @@ function computeDTE(expiry: string): number {
   return Math.max(0.5, dte);
 }
 
+// ─── Phase 1 Enhancement: Server-Side Caches ───
+//
+// Two in-memory caches that persist across polls on the same Vercel
+// serverless instance (best-effort — Vercel may cold-start a new
+// instance, in which case caches start empty and rebuild over the
+// next 2 polls):
+//
+//   1. prevSnapshotCache: stores last OI snapshot per symbol → enables
+//      ΔOI computation for the "OI Buildup Direction" factor.
+//
+//   2. vixHistoryCache: stores INDIA VIX readings with timestamps →
+//      enables 30-min rate-of-change computation for the "VIX Regime"
+//      factor.
+//
+// Both caches auto-expire entries older than 2 hours (post-session
+// stale data shouldn't survive into the next trading day).
+
+interface CachedSnapshot {
+  strikes: StrikeOption[];
+  timestamp: number;
+}
+const prevSnapshotCache = new Map<string, CachedSnapshot>();
+
+interface CachedVIX {
+  value: number;
+  timestamp: number;
+}
+const vixHistoryCache: CachedVIX[] = [];
+const VIX_HISTORY_MAX = 60;             // keep last 60 readings (60min @ 60s poll)
+const VIX_LOOKBACK_MS = 30 * 60 * 1000; // 30 min lookback for ΔVIX%
+const CACHE_TTL_MS = 2 * 60 * 60 * 1000; // 2h TTL
+
+/** Prune stale entries from both caches. */
+function pruneCaches(): void {
+  const cutoff = Date.now() - CACHE_TTL_MS;
+  for (const [key, entry] of prevSnapshotCache.entries()) {
+    if (entry.timestamp < cutoff) prevSnapshotCache.delete(key);
+  }
+  while (vixHistoryCache.length > 0 && vixHistoryCache[0].timestamp < cutoff) {
+    vixHistoryCache.shift();
+  }
+}
+
+/**
+ * Compute VIX rate-of-change (%) over the last ~30 minutes.
+ * Returns null if no historical reading is available.
+ */
+function computeVixChangePct(currentVix: number): number | null {
+  if (vixHistoryCache.length === 0) return null;
+  const now = Date.now();
+  // Find the reading closest to (now - 30 min)
+  const target = now - VIX_LOOKBACK_MS;
+  let best: CachedVIX | null = null;
+  let bestDist = Infinity;
+  for (const v of vixHistoryCache) {
+    const d = Math.abs(v.timestamp - target);
+    if (d < bestDist) {
+      bestDist = d;
+      best = v;
+    }
+  }
+  if (!best || best.value <= 0) return null;
+  // Only return RoC if the best match is within 10 min of the 30-min target
+  // (otherwise we don't have enough history yet)
+  if (Math.abs(best.timestamp - target) > 10 * 60 * 1000) return null;
+  return ((currentVix - best.value) / best.value) * 100;
+}
+
+// India VIX kite symbol (NSE:INDIA VIX)
+const INDIA_VIX_SYMBOL = 'NSE:INDIA VIX';
+
 // ─── Route Handler ───
 
 export async function GET(req: NextRequest) {
@@ -71,7 +143,11 @@ export async function GET(req: NextRequest) {
 
   try {
     // Phase 1: Get spot prices for all 19 symbols in one batch
-    const kiteSymbols = allSpecs.map(s => s.spotKiteSymbol || s.kiteSymbol);
+    // Also fetch INDIA VIX in the same call (cheap — one extra symbol)
+    const kiteSymbols = [
+      ...allSpecs.map(s => s.spotKiteSymbol || s.kiteSymbol),
+      INDIA_VIX_SYMBOL,
+    ];
     const spotQuotes = await getQuotes(kiteSymbols);
     if ('_error' in spotQuotes) {
       return NextResponse.json({
@@ -80,6 +156,22 @@ export async function GET(req: NextRequest) {
         symbols: [],
       }, { status: 502 });
     }
+
+    // Extract India VIX (null if quote missing)
+    const vixQuote = spotQuotes[INDIA_VIX_SYMBOL] as KiteQuote | undefined;
+    const currentVix = vixQuote?.lastPrice && vixQuote.lastPrice > 0
+      ? vixQuote.lastPrice
+      : null;
+    const vixChangePct = currentVix !== null ? computeVixChangePct(currentVix) : null;
+
+    // Cache the current VIX reading for future 30-min RoC computation
+    if (currentVix !== null) {
+      vixHistoryCache.push({ value: currentVix, timestamp: Date.now() });
+      if (vixHistoryCache.length > VIX_HISTORY_MAX) vixHistoryCache.shift();
+    }
+
+    // Prune stale cache entries (cheap, runs once per poll)
+    pruneCaches();
 
     const spotMap = new Map<string, { price: number; time: string }>();
     for (const spec of allSpecs) {
@@ -93,6 +185,28 @@ export async function GET(req: NextRequest) {
             timeZone: 'Asia/Kolkata', // Vercel runs UTC — force IST for spot stamps
           }),
         });
+      }
+    }
+
+    // Phase 1.5 (NEW): Resolve FUTURE instrument tokens for all symbols that
+    // have a spot. We'll batch-fetch their quotes alongside options in Phase 3.
+    // This adds the "Futures Basis" factor to the signal engine.
+    const futureTokenMap = new Map<string, string>();  // symbol → future token (string)
+    const futureTokenToSymbol = new Map<string, string>();  // reverse lookup
+    const futureTokenList: string[] = [];
+    for (const spec of allSpecs) {
+      if (!spotMap.has(spec.symbol)) continue;
+      try {
+        const fut = await getFutureInstrument(spec.symbol);
+        if (fut) {
+          const tok = String(fut.instrumentToken);
+          futureTokenMap.set(spec.symbol, tok);
+          futureTokenToSymbol.set(tok, spec.symbol);
+          futureTokenList.push(tok);
+        }
+      } catch (err) {
+        // Future lookup failed for this symbol — non-fatal, basis will be null
+        console.warn(`[magnet-scan] getFutureInstrument(${spec.symbol}) failed:`, err);
       }
     }
 
@@ -146,14 +260,28 @@ export async function GET(req: NextRequest) {
       }
     }
 
-    // Phase 3: ONE batched getQuotes call for ALL option tokens
-    const optQuotes = await getQuotes(allOptionTokens);
-    if ('_error' in optQuotes) {
+    // Phase 3: ONE batched getQuotes call for ALL option tokens + future tokens
+    // (Futures quotes are batched in the same call — no extra round-trip)
+    const allTokens = [...allOptionTokens, ...futureTokenList];
+    const allQuotes = await getQuotes(allTokens);
+    if ('_error' in allQuotes) {
       return NextResponse.json({
         mode: 'error',
-        error: `Option quotes fetch failed: ${String(optQuotes._error)}`,
+        error: `Option quotes fetch failed: ${String(allQuotes._error)}`,
         symbols: [],
       }, { status: 502 });
+    }
+    const optQuotes = allQuotes;
+
+    // Extract future prices per symbol
+    const futurePriceMap = new Map<string, number>();  // symbol → future LTP
+    for (const tok of futureTokenList) {
+      const symbol = futureTokenToSymbol.get(tok);
+      if (!symbol) continue;
+      const q = allQuotes[tok] as KiteQuote | undefined;
+      if (q?.lastPrice && q.lastPrice > 0) {
+        futurePriceMap.set(symbol, q.lastPrice);
+      }
     }
 
     // Phase 4: Compute magnet result per symbol
@@ -204,6 +332,13 @@ export async function GET(req: NextRequest) {
 
       const dte = computeDTE(sd.expiry);
 
+      // Look up previous OI snapshot for this symbol (for OI buildup factor)
+      const prevCached = prevSnapshotCache.get(sd.symbol);
+      const prevStrikes = prevCached?.strikes ?? null;
+
+      // Look up future price for this symbol (for basis factor)
+      const futurePrice = futurePriceMap.get(sd.symbol) ?? null;
+
       const result = computeMagnet(
         sd.symbol,
         strikes,
@@ -212,9 +347,23 @@ export async function GET(req: NextRequest) {
         sd.strikeStep,
         dte,
         { name: sd.name, type: sd.type, spotTime: sd.spotTime },
+        {
+          futurePrice,
+          prevStrikes,
+          vix: currentVix,
+          vixChangePct,
+        },
       );
 
-      if (result) results.push(result);
+      // Cache the current OI snapshot for next poll's ΔOI computation.
+      // (Store a deep copy so the cached array isn't mutated by reference.)
+      if (result) {
+        prevSnapshotCache.set(sd.symbol, {
+          strikes: strikes.map(s => ({ ...s })),
+          timestamp: Date.now(),
+        });
+        results.push(result);
+      }
     }
 
     // Sort: indices first, then stocks

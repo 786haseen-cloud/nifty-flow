@@ -276,7 +276,7 @@ export function SignalReasonsTooltip({ signal }: { signal: SignalResult }) {
 
   const cfg = SIGNAL_CONFIG[signal.direction];
   return (
-    <div className="bg-card border border-border rounded-lg p-2 shadow-xl text-[10px] max-w-[280px]">
+    <div className="bg-card border border-border rounded-lg p-2 shadow-xl text-[10px] max-w-[320px]">
       <div className="font-bold mb-1" style={{ color: cfg.color }}>
         {cfg.label} · {signal.strength} · {signal.confidence}% confidence
       </div>
@@ -286,7 +286,7 @@ export function SignalReasonsTooltip({ signal }: { signal: SignalResult }) {
       <div className="space-y-0.5">
         {signal.reasons
           .filter(r => r.weight !== 0)
-          .slice(0, 5)
+          .slice(0, 11)
           .map((r, i) => (
             <div key={i} className="flex items-start gap-1">
               <span

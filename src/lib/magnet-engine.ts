@@ -117,6 +117,37 @@ export interface MagnetResult {
   lotSize: number;
   strikeStep: number;
 
+  // ─── Phase 1 enhancement factors (uncorrelated data sources) ───
+  // Each adds an independent directional vote to computeSignal().
+
+  /** Futures basis = (futurePrice - spot) / spot × 100, in percent.
+   *  Premium > 0 = longs paying up to hold (bullish).
+   *  Discount < 0 = longs unwinding (bearish).
+   *  null when future quote unavailable. */
+  basisPct: number | null;
+
+  /** ATM IV skew = IV(call) - IV(put), in percentage points.
+   *  Positive = calls pricier (bullish sentiment).
+   *  Negative = puts pricier (bearish sentiment / hedging demand).
+   *  null when ATM options lack reliable LTP. */
+  ivSkewPct: number | null;
+
+  /** OI buildup direction over the last polling interval.
+   *  'long_buildup'    = put writing + call covering  → STRONG BULL
+   *  'short_buildup'   = call writing + put covering  → STRONG BEAR
+   *  'long_unwinding'  = both sides covering          → neutral-cautious
+   *  'short_covering'  = both sides writing           → neutral-heavy
+   *  'neutral'         = mixed / first-snapshot       → no signal
+   *  Also includes a signed strength score in [-1, +1]. */
+  oiBuildup: 'long_buildup' | 'short_buildup' | 'long_unwinding' | 'short_covering' | 'neutral';
+  oiBuildupStrength: number;  // -1 (max bear) to +1 (max bull)
+
+  /** India VIX value + 30-min rate of change (percent).
+   *  Falling VIX = bull (fear receding); Rising VIX = bear (fear building).
+   *  null when VIX fetch failed. */
+  vix: number | null;
+  vixChangePct: number | null;  // change over last ~30 min
+
   // Trade signal (computed by computeSignal, attached at end of computeMagnet)
   signal: SignalResult;
 }
@@ -509,6 +540,267 @@ export function computePinningProbability(
   return probability;
 }
 
+// ─── Phase 1 Enhancement Factors ───
+//
+// Four independent directional signals from data sources NOT derived from
+// the same OI snapshot. Each is computed independently and added to the
+// trade signal with its own weight (see computeSignal for the weights).
+//
+//   1. Futures Basis      — institutional positioning in the futures market
+//   2. IV Skew            — what the market is PAYING for direction (sentiment)
+//   3. OI Buildup         — ΔOI pattern (long/short buildup vs covering)
+//   4. VIX Regime         — fear/greed outside the options chain
+//
+// All four are orthogonal to the original 4 magnet/gamma factors. When 6+
+// factors align in the same direction, conviction rises sharply because
+// the signal comes from independent data sources.
+
+/**
+ * Compute futures basis (cost of carry) as a percentage of spot.
+ *
+ *   basisPct = (futurePrice - spot) / spot × 100
+ *
+ * Interpretation:
+ *   Premium  (basisPct > 0): longs paying up to hold → bullish positioning
+ *   Discount (basisPct < 0): longs unwinding / shorts dominant → bearish
+ *
+ * For Indian F&O, normal cost-of-carry is roughly +0.05% to +0.15% per
+ * day for index futures (risk-free rate minus dividend yield). So we use
+ * thresholds calibrated to detect ABNORMAL premium/discount:
+ *
+ *   basisPct > +0.15%  → strong premium (+1.5)
+ *   +0.05% < x ≤ +0.15% → mild premium  (+1.0)
+ *   -0.05% ≤ x ≤ +0.05% → neutral        (0)
+ *   -0.15% ≤ x < -0.05% → mild discount  (-1.0)
+ *   basisPct < -0.15%  → strong discount (-1.5)
+ *
+ * NOTE: For weekly expiries (DTE < 7), the normal cost-of-carry is tiny,
+ * so any premium >0.05% is meaningful. We don't adjust thresholds here
+ * because the futures price already encodes the time-to-expiry.
+ */
+export function computeBasis(
+  spot: number,
+  futurePrice: number | null,
+): { basisPct: number | null; basis: number | null } {
+  if (!futurePrice || futurePrice <= 0 || spot <= 0) {
+    return { basisPct: null, basis: null };
+  }
+  const basis = futurePrice - spot;
+  const basisPct = (basis / spot) * 100;
+  return { basisPct, basis };
+}
+
+/**
+ * Compute ATM IV skew (risk reversal) using Brenner-Subrahmanyam IV.
+ *
+ *   IV_atm_call  ≈ √(2π/T) × (call_LTP / spot)
+ *   IV_atm_put   ≈ √(2π/T) × (put_LTP  / spot)
+ *   skew_pct     = (IV_call - IV_put) × 100   (in percentage points)
+ *
+ * Interpretation:
+ *   Positive skew → calls pricier → market paying for upside (bullish)
+ *   Negative skew → puts pricier  → market paying for downside hedge (bearish)
+ *
+ * Thresholds (in percentage points of IV):
+ *   skew > +3.0  → strong bull (+1.5)
+ *   +1.0 < x ≤ +3.0 → mild bull (+1.0)
+ *   -1.0 ≤ x ≤ +1.0 → neutral    (0)
+ *   -3.0 ≤ x < -1.0 → mild bear (-1.0)
+ *   skew < -3.0  → strong bear (-1.5)
+ *
+ * ATM strike = strike closest to spot.
+ */
+export function computeIVSkew(
+  strikes: StrikeOption[],
+  spot: number,
+  T: number,
+): { ivCall: number; ivPut: number; skewPct: number | null; atmStrike: number | null } {
+  if (strikes.length === 0 || spot <= 0 || T <= 0) {
+    return { ivCall: 0, ivPut: 0, skewPct: null, atmStrike: null };
+  }
+  // Find ATM strike (closest to spot)
+  let atm = strikes[0];
+  let atmDist = Math.abs(atm.strike - spot);
+  for (const s of strikes) {
+    const d = Math.abs(s.strike - spot);
+    if (d < atmDist) {
+      atm = s;
+      atmDist = d;
+    }
+  }
+  if (atm.ceLTP <= 0 || atm.peLTP <= 0) {
+    return { ivCall: 0, ivPut: 0, skewPct: null, atmStrike: atm.strike };
+  }
+  const ivCall = approxIV(atm.ceLTP, spot, T);
+  const ivPut = approxIV(atm.peLTP, spot, T);
+  const skewPct = (ivCall - ivPut) * 100;
+  return { ivCall, ivPut, skewPct, atmStrike: atm.strike };
+}
+
+/**
+ * Compute OI buildup direction from two consecutive snapshots.
+ *
+ * Classifies the net change in CE OI and PE OI into one of 5 patterns:
+ *
+ *   Pattern            CE ΔOI      PE ΔOI     Signal
+ *   ─────────────────────────────────────────────────────
+ *   long_buildup       negative    positive   STRONG BULL (put writing + call covering)
+ *   short_buildup      positive    negative   STRONG BEAR (call writing + put covering)
+ *   long_unwinding     negative    negative   mild bull  (both sides covering, caution)
+ *   short_covering     positive    positive   mild bear  (both sides writing, chop)
+ *   neutral            ~0          ~0         no signal
+ *
+ * The strength score in [-1, +1] is computed from the net ratio:
+ *
+ *   strength = (ΔPE_OI - ΔCE_OI) / (|ΔPE_OI| + |ΔCE_OI| + 1)
+ *
+ * This naturally gives:
+ *   long_buildup    → strength ≈ +1.0
+ *   short_buildup   → strength ≈ -1.0
+ *   long_unwinding  → strength ≈ 0   (both negative cancels out)
+ *   short_covering  → strength ≈ 0   (both positive cancels out)
+ *
+ * @param current    current per-strike OI snapshot
+ * @param previous   previous per-strike OI snapshot (null on first poll)
+ */
+export function computeOIBuildup(
+  current: StrikeOption[],
+  previous: StrikeOption[] | null,
+): {
+  pattern: 'long_buildup' | 'short_buildup' | 'long_unwinding' | 'short_covering' | 'neutral';
+  strength: number;
+  deltaCEOI: number;
+  deltaPEOI: number;
+} {
+  if (!previous || previous.length === 0) {
+    return { pattern: 'neutral', strength: 0, deltaCEOI: 0, deltaPEOI: 0 };
+  }
+
+  // Build lookup of previous OI by strike
+  const prevMap = new Map<number, { ceOI: number; peOI: number }>();
+  for (const s of previous) {
+    prevMap.set(s.strike, { ceOI: s.ceOI, peOI: s.peOI });
+  }
+
+  // Sum ΔOI across all matching strikes
+  let deltaCEOI = 0;
+  let deltaPEOI = 0;
+  for (const s of current) {
+    const prev = prevMap.get(s.strike);
+    if (!prev) continue;
+    deltaCEOI += (s.ceOI - prev.ceOI);
+    deltaPEOI += (s.peOI - prev.peOI);
+  }
+
+  // Noise threshold: ignore tiny ΔOI (< 0.5% of total OI)
+  const totalOI = current.reduce((sum, s) => sum + s.ceOI + s.peOI, 0);
+  const noiseThreshold = totalOI * 0.005;
+  const ceSignificant = Math.abs(deltaCEOI) > noiseThreshold;
+  const peSignificant = Math.abs(deltaPEOI) > noiseThreshold;
+
+  if (!ceSignificant && !peSignificant) {
+    return { pattern: 'neutral', strength: 0, deltaCEOI, deltaPEOI };
+  }
+
+  // Classify pattern
+  let pattern: 'long_buildup' | 'short_buildup' | 'long_unwinding' | 'short_covering' | 'neutral';
+  const ceUp = deltaCEOI > 0;
+  const peUp = deltaPEOI > 0;
+
+  if (!ceUp && peUp) {
+    pattern = 'long_buildup';        // call covering + put writing → BULL
+  } else if (ceUp && !peUp) {
+    pattern = 'short_buildup';       // call writing + put covering → BEAR
+  } else if (!ceUp && !peUp) {
+    pattern = 'long_unwinding';      // both covering → neutral-cautious
+  } else {
+    pattern = 'short_covering';      // both writing → neutral-heavy
+  }
+
+  // Strength = net ratio in [-1, +1]
+  // Positive = bull (put writing > call writing)
+  const denom = Math.abs(deltaCEOI) + Math.abs(deltaPEOI) + 1;
+  const strength = (deltaPEOI - deltaCEOI) / denom;
+
+  return { pattern, strength, deltaCEOI, deltaPEOI };
+}
+
+/**
+ * Compute VIX regime signal from value + 30-min rate of change.
+ *
+ * VIX behavior:
+ *   VIX < 13            = low vol / complacency (usually bull regime)
+ *   VIX 13-18           = normal
+ *   VIX 18-25           = elevated (mild bearish)
+ *   VIX > 25            = high fear (mean-revert risk; usually capitulation)
+ *
+ * Rate of change is more predictive than absolute level:
+ *   Falling VIX (Δ < -2%) = fear receding → BULL
+ *   Rising VIX (Δ > +2%)  = fear building  → BEAR
+ *
+ * Combined weight (±1.0 max):
+ *   VIX < 13 AND ΔVIX < -2% → +1.0  (strong bull: low + falling)
+ *   VIX < 13 AND ΔVIX flat  → +0.5  (mild bull: low + stable)
+ *   VIX 13-18 AND ΔVIX < -2% → +0.5 (mild bull: falling from normal)
+ *   VIX 13-18 AND flat       → 0
+ *   VIX 13-18 AND ΔVIX > +2% → -0.5 (mild bear: rising from normal)
+ *   VIX > 18 AND ΔVIX > +2% → -1.0 (strong bear: elevated + rising)
+ *   VIX > 25                → cap at -0.5 (capitulation can mean-revert)
+ *
+ * @param vix          current India VIX value (null if fetch failed)
+ * @param vixChangePct rate of change over last ~30 min (null if no history)
+ */
+export function computeVIXRegime(
+  vix: number | null,
+  vixChangePct: number | null,
+): { direction: 'bull' | 'bear' | 'neutral'; weight: number; detail: string } {
+  if (vix === null || vix <= 0) {
+    return { direction: 'neutral', weight: 0, detail: 'VIX unavailable' };
+  }
+
+  const dPct = vixChangePct ?? 0;
+  const absD = Math.abs(dPct);
+
+  // Capitulation override: VIX > 25 = panic, can mean-revert
+  if (vix > 25) {
+    if (dPct < -3) {
+      return { direction: 'bull', weight: 0.5, detail: `VIX ${vix.toFixed(1)} falling sharply (${dPct.toFixed(1)}%) — panic easing, mean-revert bounce likely` };
+    }
+    return { direction: 'bear', weight: -0.5, detail: `VIX ${vix.toFixed(1)} extreme — panic mode, mean-revert risk caps bearish conviction` };
+  }
+
+  // Elevated VIX (>18) + rising = bearish
+  if (vix > 18) {
+    if (dPct > 2) {
+      return { direction: 'bear', weight: -1.0, detail: `VIX ${vix.toFixed(1)} elevated and rising (${dPct.toFixed(1)}%) — fear building, bearish` };
+    }
+    if (dPct < -2) {
+      return { direction: 'neutral', weight: 0, detail: `VIX ${vix.toFixed(1)} elevated but falling (${dPct.toFixed(1)}%) — fear easing, watch for stabilization` };
+    }
+    return { direction: 'bear', weight: -0.5, detail: `VIX ${vix.toFixed(1)} elevated (${dPct.toFixed(1)}%) — mild bearish bias` };
+  }
+
+  // Normal VIX (13-18)
+  if (vix >= 13) {
+    if (dPct < -2) {
+      return { direction: 'bull', weight: 0.5, detail: `VIX ${vix.toFixed(1)} falling (${dPct.toFixed(1)}%) from normal — fear receding, mild bull` };
+    }
+    if (dPct > 2) {
+      return { direction: 'bear', weight: -0.5, detail: `VIX ${vix.toFixed(1)} rising (${dPct.toFixed(1)}%) from normal — mild bearish` };
+    }
+    return { direction: 'neutral', weight: 0, detail: `VIX ${vix.toFixed(1)} normal (${dPct.toFixed(1)}%) — neutral` };
+  }
+
+  // Low VIX (< 13) = complacency, usually bullish
+  if (dPct < -2) {
+    return { direction: 'bull', weight: 1.0, detail: `VIX ${vix.toFixed(1)} low AND falling (${dPct.toFixed(1)}%) — strong bull (complacency + easing)` };
+  }
+  if (dPct > 2) {
+    return { direction: 'neutral', weight: 0, detail: `VIX ${vix.toFixed(1)} low but rising (${dPct.toFixed(1)}%) — complacency cracking, cautious` };
+  }
+  return { direction: 'bull', weight: 0.5, detail: `VIX ${vix.toFixed(1)} low and stable — mild bull (complacency regime)` };
+}
+
 // ─── Master Compute ───
 
 /**
@@ -529,6 +821,12 @@ export function computeMagnet(
   strikeStep: number,
   daysToExpiry: number,
   meta: { name: string; type: 'index' | 'stock'; spotTime: string },
+  enhancements?: {
+    futurePrice?: number | null;
+    prevStrikes?: StrikeOption[] | null;
+    vix?: number | null;
+    vixChangePct?: number | null;
+  },
 ): MagnetResult | null {
   if (strikes.length < 3 || spot <= 0) return null;
 
@@ -578,6 +876,13 @@ export function computeMagnet(
     gammaRegime, Math.abs(totalGexCr), charmDirection, strikeStep
   );
 
+  // 6-9. Phase 1 enhancement factors (each is independent of the OI snapshot)
+  const { basisPct } = computeBasis(spot, enhancements?.futurePrice ?? null);
+  const { skewPct: ivSkewPct } = computeIVSkew(strikes, spot, T);
+  const oiBuildupResult = computeOIBuildup(strikes, enhancements?.prevStrikes ?? null);
+  const vixVal = enhancements?.vix ?? null;
+  const vixChangePct = enhancements?.vixChangePct ?? null;
+
   const result: MagnetResult = {
     symbol,
     name: meta.name,
@@ -604,6 +909,13 @@ export function computeMagnet(
     daysToExpiry,
     lotSize,
     strikeStep,
+    // Phase 1 enhancement factors
+    basisPct: basisPct ?? null,
+    ivSkewPct: ivSkewPct ?? null,
+    oiBuildup: oiBuildupResult.pattern,
+    oiBuildupStrength: oiBuildupResult.strength,
+    vix: vixVal,
+    vixChangePct: vixChangePct ?? null,
     // signal is assigned below (must exist on the type, so we initialize with null-like)
     signal: null as unknown as SignalResult,
   };
@@ -614,13 +926,24 @@ export function computeMagnet(
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// TRADE SIGNAL ENGINE
+// TRADE SIGNAL ENGINE (Phase 1 Enhanced — 11 factors)
 // ═══════════════════════════════════════════════════════════════════
 //
-// Combines the 4 magnet/gamma logics into a single actionable signal:
+// Combines 11 factors into a single actionable signal:
 //   BUY CALL | BUY PUT | WAIT
 //
-// SCORING MODEL (range: -10 to +10, + = bull, − = bear)
+// The first 7 factors derive from the options OI snapshot (magnet/gamma
+// family). The last 4 are PHASE 1 ENHANCEMENTS — independent data sources
+// that provide orthogonal directional votes:
+//   - Futures basis (institutional positioning in futures market)
+//   - IV skew (what market is paying for direction)
+//   - OI buildup (ΔOI pattern over last poll interval)
+//   - VIX regime (fear/greed outside the options chain)
+//
+// When 6+ factors align in the same direction, conviction is high because
+// the signal comes from independent data sources.
+//
+// SCORING MODEL (range: -15 to +15, + = bull, − = bear)
 // ─────────────────────────────────────────────────────────────────
 // Factor                     Max ±  Bull condition                Bear condition
 // ─────────────────────────────────────────────────────────────────────────────
@@ -631,15 +954,20 @@ export function computeMagnet(
 //                                     Green below (puts cushion)   Green above (calls capped)
 // 5. PCR sentiment            ±1.0   PCR > 1.2 (put writers)       PCR < 0.8 (call writers)
 // 6. Gamma regime             ±0.5   Positive (dips bought)        Negative (breaks run)
-// 7. Pinning modifier         ±1.0   Low pin (room to trend)       Low pin (room to trend)
-//                                     High pin & directional → −    High pin & directional → −
+// 7. Pinning modifier         ×0.6-1.2  Low pin amplifies trend; High pin dampens
+// ── Phase 1 enhancements (independent data sources) ───────────
+// 8. Futures basis            ±1.5   Premium (longs paying up)     Discount (longs unwinding)
+// 9. IV skew (risk reversal)  ±1.5   Calls pricier (bull sentiment) Puts pricier (hedging demand)
+// 10. OI buildup direction    ±1.5   Long buildup (put writing)    Short buildup (call writing)
+// 11. VIX regime              ±1.0   Low+falling (complacency)     High+rising (fear)
 //
-// Total max |score| ≈ 10.5
+// Total max raw |score| ≈ 15.0
+// After pin multiplier: max ≈ 18.0 (low pin) or 9.0 (high pin)
 //
-// THRESHOLDS
-//   |score| ≥ 6.0   → STRONG (high conviction)
-//   |score| ≥ 3.5   → MODERATE
-//   |score| ≥ 1.5   → WEAK
+// THRESHOLDS (calibrated to new max raw ±15)
+//   |score| ≥ 9.0   → STRONG (high conviction — most factors aligned)
+//   |score| ≥ 5.5   → MODERATE
+//   |score| ≥ 2.0   → WEAK
 //   else            → WAIT
 //
 // Pinning modifier:
@@ -964,30 +1292,235 @@ export function computeSignal(m: MagnetResult): SignalResult {
     });
   }
 
+  // ═════════════════════════════════════════════════════════════════
+  // PHASE 1 ENHANCEMENT FACTORS (uncorrelated data sources)
+  // ═════════════════════════════════════════════════════════════════
+  // These 4 factors use data NOT derived from the same OI snapshot.
+  // They provide INDEPENDENT directional votes that, when aligned with
+  // the magnet/gamma factors above, dramatically increase conviction.
+
+  // ── Factor 8: FUTURES BASIS (±1.5 max) ──
+  // Premium = longs paying up to hold (bullish)
+  // Discount = longs unwinding / shorts dominant (bearish)
+  if (m.basisPct !== null) {
+    const b = m.basisPct;
+    if (b > 0.15) {
+      const w = 1.5;
+      score += w;
+      reasons.push({
+        factor: 'Futures Basis',
+        direction: 'bull',
+        weight: w,
+        detail: `Future at ${b.toFixed(3)}% premium to spot — longs paying up to hold (bullish positioning)`,
+      });
+    } else if (b > 0.05) {
+      const w = 1.0;
+      score += w;
+      reasons.push({
+        factor: 'Futures Basis',
+        direction: 'bull',
+        weight: w,
+        detail: `Future at ${b.toFixed(3)}% mild premium — modest bullish bias`,
+      });
+    } else if (b < -0.15) {
+      const w = -1.5;
+      score += w;
+      reasons.push({
+        factor: 'Futures Basis',
+        direction: 'bear',
+        weight: w,
+        detail: `Future at ${b.toFixed(3)}% discount to spot — longs unwinding (bearish positioning)`,
+      });
+    } else if (b < -0.05) {
+      const w = -1.0;
+      score += w;
+      reasons.push({
+        factor: 'Futures Basis',
+        direction: 'bear',
+        weight: w,
+        detail: `Future at ${b.toFixed(3)}% mild discount — modest bearish bias`,
+      });
+    } else {
+      reasons.push({
+        factor: 'Futures Basis',
+        direction: 'neutral',
+        weight: 0,
+        detail: `Future basis ${b.toFixed(3)}% — within normal cost-of-carry`,
+      });
+    }
+  } else {
+    reasons.push({
+      factor: 'Futures Basis',
+      direction: 'neutral',
+      weight: 0,
+      detail: 'Future quote unavailable',
+    });
+  }
+
+  // ── Factor 9: IV SKEW / RISK REVERSAL (±1.5 max) ──
+  // Positive skew = calls pricier (bullish sentiment)
+  // Negative skew = puts pricier (bearish sentiment / hedging demand)
+  if (m.ivSkewPct !== null) {
+    const s = m.ivSkewPct;
+    if (s > 3.0) {
+      const w = 1.5;
+      score += w;
+      reasons.push({
+        factor: 'IV Skew',
+        direction: 'bull',
+        weight: w,
+        detail: `ATM IV skew +${s.toFixed(2)}pp (calls pricier) — strong bullish sentiment`,
+      });
+    } else if (s > 1.0) {
+      const w = 1.0;
+      score += w;
+      reasons.push({
+        factor: 'IV Skew',
+        direction: 'bull',
+        weight: w,
+        detail: `ATM IV skew +${s.toFixed(2)}pp — mild bullish sentiment`,
+      });
+    } else if (s < -3.0) {
+      const w = -1.5;
+      score += w;
+      reasons.push({
+        factor: 'IV Skew',
+        direction: 'bear',
+        weight: w,
+        detail: `ATM IV skew ${s.toFixed(2)}pp (puts pricier) — strong hedging demand / bearish`,
+      });
+    } else if (s < -1.0) {
+      const w = -1.0;
+      score += w;
+      reasons.push({
+        factor: 'IV Skew',
+        direction: 'bear',
+        weight: w,
+        detail: `ATM IV skew ${s.toFixed(2)}pp — mild bearish sentiment`,
+      });
+    } else {
+      reasons.push({
+        factor: 'IV Skew',
+        direction: 'neutral',
+        weight: 0,
+        detail: `ATM IV skew ${s.toFixed(2)}pp — balanced call/put pricing`,
+      });
+    }
+  } else {
+    reasons.push({
+      factor: 'IV Skew',
+      direction: 'neutral',
+      weight: 0,
+      detail: 'ATM option prices unavailable for skew calculation',
+    });
+  }
+
+  // ── Factor 10: OI BUILDUP DIRECTION (±1.5 max) ──
+  // Long buildup (put writing + call covering) = BULL
+  // Short buildup (call writing + put covering) = BEAR
+  // Long unwinding / short covering = neutral
+  const obu = m.oiBuildup;
+  const obuStr = m.oiBuildupStrength;
+  if (obu === 'long_buildup') {
+    const w = 1.5 * Math.min(1, Math.abs(obuStr));
+    score += w;
+    reasons.push({
+      factor: 'OI Buildup',
+      direction: 'bull',
+      weight: w,
+      detail: `Long buildup — put writing + call covering (strength ${obuStr.toFixed(2)})`,
+    });
+  } else if (obu === 'short_buildup') {
+    const w = -1.5 * Math.min(1, Math.abs(obuStr));
+    score += w;
+    reasons.push({
+      factor: 'OI Buildup',
+      direction: 'bear',
+      weight: w,
+      detail: `Short buildup — call writing + put covering (strength ${Math.abs(obuStr).toFixed(2)})`,
+    });
+  } else if (obu === 'long_unwinding') {
+    reasons.push({
+      factor: 'OI Buildup',
+      direction: 'neutral',
+      weight: 0,
+      detail: 'Long unwinding — both sides covering, caution',
+    });
+  } else if (obu === 'short_covering') {
+    reasons.push({
+      factor: 'OI Buildup',
+      direction: 'neutral',
+      weight: 0,
+      detail: 'Short covering — both sides writing, chop expected',
+    });
+  } else {
+    reasons.push({
+      factor: 'OI Buildup',
+      direction: 'neutral',
+      weight: 0,
+      detail: 'OI changes within noise threshold or first snapshot',
+    });
+  }
+
+  // ── Factor 11: VIX REGIME (±1.0 max) ──
+  // Low+falling VIX = bull; High+rising VIX = bear
+  const vixResult = computeVIXRegime(m.vix, m.vixChangePct);
+  if (vixResult.weight !== 0) {
+    score += vixResult.weight;
+    reasons.push({
+      factor: 'VIX Regime',
+      direction: vixResult.direction,
+      weight: vixResult.weight,
+      detail: vixResult.detail,
+    });
+  } else if (m.vix !== null) {
+    reasons.push({
+      factor: 'VIX Regime',
+      direction: 'neutral',
+      weight: 0,
+      detail: vixResult.detail,
+    });
+  } else {
+    reasons.push({
+      factor: 'VIX Regime',
+      direction: 'neutral',
+      weight: 0,
+      detail: 'VIX unavailable',
+    });
+  }
+
   // Apply pin multiplier to final score
   const adjustedScore = score * pinMultiplier;
 
   // ── Determine direction + strength ──
+  // Thresholds calibrated to new max raw score ≈ ±15 (Phase 1 enhancements
+  // added ±5.5 on top of original ±9.5). We want STRONG to mean "high
+  // conviction — most factors aligned", which empirically lands around
+  // 60% of max. So:
+  //   STRONG   |score| ≥ 9.0   (was 6.0  in 4-factor engine)
+  //   MODERATE |score| ≥ 5.5   (was 3.5)
+  //   WEAK     |score| ≥ 2.0   (was 1.5)
+  //   else     WAIT
   const absScore = Math.abs(adjustedScore);
   let direction: SignalDirection;
   let strength: SignalResult['strength'];
 
-  if (adjustedScore >= 6.0) {
+  if (adjustedScore >= 9.0) {
     direction = 'CALL';
     strength = 'STRONG';
-  } else if (adjustedScore >= 3.5) {
+  } else if (adjustedScore >= 5.5) {
     direction = 'CALL';
     strength = 'MODERATE';
-  } else if (adjustedScore >= 1.5) {
+  } else if (adjustedScore >= 2.0) {
     direction = 'CALL';
     strength = 'WEAK';
-  } else if (adjustedScore <= -6.0) {
+  } else if (adjustedScore <= -9.0) {
     direction = 'PUT';
     strength = 'STRONG';
-  } else if (adjustedScore <= -3.5) {
+  } else if (adjustedScore <= -5.5) {
     direction = 'PUT';
     strength = 'MODERATE';
-  } else if (adjustedScore <= -1.5) {
+  } else if (adjustedScore <= -2.0) {
     direction = 'PUT';
     strength = 'WEAK';
   } else {
@@ -996,8 +1529,8 @@ export function computeSignal(m: MagnetResult): SignalResult {
   }
 
   // ── Confidence (0-100) ──
-  // Scaled |score| / 10, modified by pinning alignment
-  const confidenceRaw = Math.min(100, (absScore / 10) * 100);
+  // Scaled |score| / 15 (new max raw), modified by pinning alignment
+  const confidenceRaw = Math.min(100, (absScore / 15) * 100);
   // If pinning is HIGH and signal is directional, reduce confidence (pin fights trend)
   // If pinning is LOW and signal is directional, boost confidence
   let confidence = confidenceRaw;
@@ -1165,23 +1698,29 @@ export function computeAggregateSignal(symbols: MagnetResult[]): AggregateSignal
   let direction: SignalDirection;
   let strength: AggregateSignal['strength'];
 
-  // Stronger thresholds for aggregate (since it's a market call)
-  if (weightedScore >= 15) {
+  // Stronger thresholds for aggregate (since it's a market call).
+  // Calibrated to new max per-symbol score ±15 (Phase 1 enhancements).
+  // 4 indices × 3 weight × ±15 = ±180; 15 stocks × 1 × ±15 = ±225 → max ±405
+  // Empirically scores cluster ~40-60% of theoretical max, so:
+  //   STRONG   |score| ≥ 22   (was 15 in 4-factor engine)
+  //   MODERATE |score| ≥ 12   (was 8)
+  //   WEAK     |score| ≥ 4    (was 3)
+  if (weightedScore >= 22) {
     direction = 'CALL';
     strength = 'STRONG';
-  } else if (weightedScore >= 8) {
+  } else if (weightedScore >= 12) {
     direction = 'CALL';
     strength = 'MODERATE';
-  } else if (weightedScore >= 3) {
+  } else if (weightedScore >= 4) {
     direction = 'CALL';
     strength = 'WEAK';
-  } else if (weightedScore <= -15) {
+  } else if (weightedScore <= -22) {
     direction = 'PUT';
     strength = 'STRONG';
-  } else if (weightedScore <= -8) {
+  } else if (weightedScore <= -12) {
     direction = 'PUT';
     strength = 'MODERATE';
-  } else if (weightedScore <= -3) {
+  } else if (weightedScore <= -4) {
     direction = 'PUT';
     strength = 'WEAK';
   } else {
@@ -1192,7 +1731,7 @@ export function computeAggregateSignal(symbols: MagnetResult[]): AggregateSignal
   // Confidence: based on agreement ratio + score magnitude
   const total = bullCount + bearCount + waitCount;
   const agreementRatio = total > 0 ? Math.max(bullCount, bearCount) / total : 0;
-  const scoreMag = Math.min(1, absScore / 25);
+  const scoreMag = Math.min(1, absScore / 35);
   const confidence = Math.round(agreementRatio * 60 + scoreMag * 40);
 
   const notes = direction === 'WAIT'

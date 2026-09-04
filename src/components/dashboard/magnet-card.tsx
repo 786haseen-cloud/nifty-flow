@@ -289,6 +289,46 @@ export default function MagnetCard({ data, compact = false }: MagnetCardProps) {
           <span className="text-muted-foreground">PCR: <span className="text-foreground">{data.pcr.toFixed(2)}</span></span>
           <span className="text-muted-foreground">0Γ: <span className="text-sky-300">{data.zeroGamma !== null ? fmtNum(Math.round(data.zeroGamma)) : '—'}</span></span>
         </div>
+        {/* Phase 1 enhancement factors — compact one-line summary */}
+        <div className="flex items-center justify-between text-[9px] font-mono text-muted-foreground">
+          <span>
+            FUT:{' '}
+            {data.basisPct !== null ? (
+              <span className={data.basisPct > 0.05 ? 'text-emerald-400' : data.basisPct < -0.05 ? 'text-red-400' : 'text-muted-foreground'}>
+                {data.basisPct > 0 ? '+' : ''}{data.basisPct.toFixed(2)}%
+              </span>
+            ) : '—'}
+          </span>
+          <span>
+            IVsk:{' '}
+            {data.ivSkewPct !== null ? (
+              <span className={data.ivSkewPct > 1 ? 'text-emerald-400' : data.ivSkewPct < -1 ? 'text-red-400' : 'text-muted-foreground'}>
+                {data.ivSkewPct > 0 ? '+' : ''}{data.ivSkewPct.toFixed(1)}
+              </span>
+            ) : '—'}
+          </span>
+          <span>
+            OI:{' '}
+            <span className={
+              data.oiBuildup === 'long_buildup' ? 'text-emerald-400' :
+              data.oiBuildup === 'short_buildup' ? 'text-red-400' :
+              'text-muted-foreground'
+            }>
+              {data.oiBuildup === 'long_buildup' ? 'LB' :
+               data.oiBuildup === 'short_buildup' ? 'SB' :
+               data.oiBuildup === 'long_unwinding' ? 'LU' :
+               data.oiBuildup === 'short_covering' ? 'SC' : '—'}
+            </span>
+          </span>
+          <span>
+            VIX:{' '}
+            {data.vix !== null ? (
+              <span className={data.vix < 13 ? 'text-emerald-400' : data.vix > 18 ? 'text-red-400' : 'text-muted-foreground'}>
+                {data.vix.toFixed(1)}
+              </span>
+            ) : '—'}
+          </span>
+        </div>
       </div>
     </div>
   );

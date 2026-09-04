@@ -538,6 +538,63 @@ export async function getOptionInstruments(
 }
 
 /**
+ * Get the nearest-expiry FUTURE instrument for a symbol.
+ *
+ * Used by the magnet-scan route to compute futures basis (cost-of-carry)
+ * as an independent directional signal — premium = longs paying up to
+ * hold (bullish), discount = longs unwinding (bearish).
+ *
+ * Returns the future's `instrumentToken` (for getQuotes) and `tradingSymbol`
+ * (for display), or null if no future contract is found.
+ *
+ * @param symbol  underlying symbol (e.g. 'NIFTY', 'RELIANCE')
+ */
+export async function getFutureInstrument(
+  symbol: string,
+): Promise<{ instrumentToken: number; tradingSymbol: string; expiry: string; lotSize: number } | null> {
+  const spec = getInstrumentSpec(symbol);
+  if (!spec) return null;
+
+  // Futures live on the same segment as options (NFO/BFO)
+  const instruments = await getInstruments(spec.segment);
+
+  // Determine expected instrumentType: FUTIDX for indices, FUTSTK for stocks
+  const isIndex = spec.instrumentType === 'OPTIDX';
+  const futType = isIndex ? 'FUTIDX' : 'FUTSTK';
+
+  const symUpper = symbol.toUpperCase();
+  const aliases = (spec.searchAliases || []).map(a => a.toUpperCase());
+  const searchTerms = [symUpper, ...aliases];
+
+  // Filter: must be a future, name/tradingSymbol must match
+  const futures = instruments.filter(i => {
+    if (i.instrumentType !== futType) return false;
+    if (!i.segment.startsWith(spec.segment)) return false;
+    const nameUp = i.name.toUpperCase();
+    const tsUp = i.tradingSymbol.toUpperCase();
+    return searchTerms.some(term => nameUp.includes(term) || tsUp.includes(term));
+  });
+
+  if (futures.length === 0) return null;
+
+  // Get unique expiries, sort by nearest
+  const expiries = [...new Set(futures.map(i => i.expiry))].sort();
+  const today = new Date();
+  const nearestExpiry = expiries.find(e => new Date(e) >= new Date(today.toDateString())) || expiries[0];
+
+  // Pick the future contract with nearest expiry
+  const futureContract = futures.find(i => i.expiry === nearestExpiry);
+  if (!futureContract) return null;
+
+  return {
+    instrumentToken: futureContract.instrumentToken,
+    tradingSymbol: futureContract.tradingSymbol,
+    expiry: futureContract.expiry,
+    lotSize: futureContract.lotSize,
+  };
+}
+
+/**
  * Build options flow data from quotes + OI changes
  * Lot size and strike step come DYNAMICALLY from Kite's CSV
  */
