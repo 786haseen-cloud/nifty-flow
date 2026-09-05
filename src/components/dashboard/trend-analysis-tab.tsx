@@ -39,6 +39,7 @@ import { getMarketPhase, getMarketPhaseLabel } from '@/lib/market-hours';
 import { useMagnetScan } from '@/hooks/use-magnet-scan';
 import MagnetCard, { MagnetSummaryRow } from '@/components/dashboard/magnet-card';
 import { SignalBanner } from '@/components/dashboard/signal-banner';
+import { RecentSignalsCard } from '@/components/dashboard/recent-signals-card';
 
 // ─── Trading Session X-Axis Helpers ───
 // Charts display a fixed trading-session window 09:15 → 15:40 IST.
@@ -781,6 +782,11 @@ export default function TrendAnalysisTab() {
                 Pinning Probability factors: distance, DTE, gamma regime, GEX magnitude, charm alignment.
                 Trade Signal uses 11 factors: Charm Drift (±3.0), Zero-Γ (±2.0), Magnet Zone Pull (±1.5), GEX Walls (±1.5), PCR (±1.0), Gamma Regime (±0.5), Pinning (×0.6-1.2), plus 4 Phase-1 enhancements — Futures Basis (±1.5), IV Skew (±1.5), OI Buildup (±1.5), VIX Regime (±1.0). Max raw score ±15; STRONG at |score| ≥ 9.0.
               </div>
+            </div>
+
+            {/* Recent Signals Card — last 5 signal flips across all 19 symbols */}
+            <div className="mt-3">
+              <RecentSignalsCard />
             </div>
           </>
         )}

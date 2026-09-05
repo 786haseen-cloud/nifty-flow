@@ -455,3 +455,50 @@ export async function checkRedisHealth(): Promise<{ ok: boolean; message: string
     return { ok: false, message: `Ping failed: ${err instanceof Error ? err.message : String(err)}` };
   }
 }
+
+// ─── Public API: getRecentSignalsGlobal ───
+
+/**
+ * Get the N most-recent signal entries ACROSS ALL symbols.
+ *
+ * Implementation: pulls the last entry from each symbol's sorted set in
+ * parallel, then merges + sorts globally by ts descending, returns top N.
+ *
+ * Cost: 19 zrange calls in parallel ≈ 30-50ms total (well within free tier).
+ *
+ * @param symbols  list of symbols to scan (typically INDEX_SPECS + STOCK_SPECS)
+ * @param limit    max entries to return (default 5)
+ */
+export async function getRecentSignalsGlobal(
+  symbols: string[],
+  limit: number = 5,
+): Promise<SignalHistoryEntry[]> {
+  const redis = getRedis();
+  if (!redis) return [];
+
+  try {
+    // Pull most-recent entry per symbol in parallel
+    const perSymbol = await Promise.all(
+      symbols.map(async (sym) => {
+        try {
+          const hKey = historyKey(sym);
+          // zrange -1 -1 returns just the most-recent entry as a 1-element array
+          const entries = await redis.zrange<SignalHistoryEntry[]>(hKey, -1, -1);
+          return entries && entries.length > 0 ? entries[0] : null;
+        } catch {
+          return null;
+        }
+      })
+    );
+
+    // Filter nulls, sort by ts desc, take top N
+    const all = perSymbol
+      .filter((e): e is SignalHistoryEntry => e !== null && typeof e.ts === 'number')
+      .sort((a, b) => b.ts - a.ts);
+
+    return all.slice(0, limit);
+  } catch (err) {
+    console.warn('[signal-history] getRecentSignalsGlobal failed:', err);
+    return [];
+  }
+}
