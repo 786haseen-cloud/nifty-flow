@@ -769,9 +769,13 @@ export function computeOIBuildup(
  *   Rising VIX (Δ > +2%)  = fear building  → BEAR
  *
  * Combined weight (±1.0 max):
- *   VIX < 13 AND ΔVIX < -2% → +1.0  (strong bull: low + falling)
- *   VIX < 13 AND ΔVIX flat  → +0.5  (mild bull: low + stable)
- *   VIX 13-18 AND ΔVIX < -2% → +0.5 (mild bull: falling from normal)
+ *   INDIA CALIBRATION (Sep 2026): India VIX lives at 10–15 most of the
+ *   year — "low VIX" is the NORMAL state, not a bullish signal. Only
+ *   genuinely FALLING fear earns credit now; low+stable scores 0.
+ *
+ *   VIX < 13 AND ΔVIX < -2% → +0.5  (fear receding from complacency)
+ *   VIX < 13 AND ΔVIX flat  →  0    (low+stable = Indian norm, neutral)
+ *   VIX 13-18 AND ΔVIX < -2% → 0   (falling from normal = no credit)
  *   VIX 13-18 AND flat       → 0
  *   VIX 13-18 AND ΔVIX > +2% → -0.5 (mild bear: rising from normal)
  *   VIX > 18 AND ΔVIX > +2% → -1.0 (strong bear: elevated + rising)
@@ -810,25 +814,22 @@ export function computeVIXRegime(
     return { direction: 'bear', weight: -0.5, detail: `VIX ${vix.toFixed(1)} elevated (${dPct.toFixed(1)}%) — mild bearish bias` };
   }
 
-  // Normal VIX (13-18)
+  // Normal VIX (13-18) — no bullish credit for merely normal (India norm)
   if (vix >= 13) {
-    if (dPct < -2) {
-      return { direction: 'bull', weight: 0.5, detail: `VIX ${vix.toFixed(1)} falling (${dPct.toFixed(1)}%) from normal — fear receding, mild bull` };
-    }
     if (dPct > 2) {
-      return { direction: 'bear', weight: -0.5, detail: `VIX ${vix.toFixed(1)} rising (${dPct.toFixed(1)}%) from normal — mild bearish` };
+      return { direction: 'bear', weight: -0.5, detail: `VIX ${vix.toFixed(1)} rising (${dPct.toFixed(1)}%) from normal — fear building, mild bearish` };
     }
     return { direction: 'neutral', weight: 0, detail: `VIX ${vix.toFixed(1)} normal (${dPct.toFixed(1)}%) — neutral` };
   }
 
-  // Low VIX (< 13) = complacency, usually bullish
+  // Low VIX (< 13) = Indian complacency norm — only FALLING fear earns credit
   if (dPct < -2) {
-    return { direction: 'bull', weight: 1.0, detail: `VIX ${vix.toFixed(1)} low AND falling (${dPct.toFixed(1)}%) — strong bull (complacency + easing)` };
+    return { direction: 'bull', weight: 0.5, detail: `VIX ${vix.toFixed(1)} low AND falling (${dPct.toFixed(1)}%) — fear receding, mild bull` };
   }
   if (dPct > 2) {
     return { direction: 'neutral', weight: 0, detail: `VIX ${vix.toFixed(1)} low but rising (${dPct.toFixed(1)}%) — complacency cracking, cautious` };
   }
-  return { direction: 'bull', weight: 0.5, detail: `VIX ${vix.toFixed(1)} low and stable — mild bull (complacency regime)` };
+  return { direction: 'neutral', weight: 0, detail: `VIX ${vix.toFixed(1)} low and stable — Indian norm, neutral` };
 }
 
 // ─── Master Compute ───
@@ -1239,57 +1240,84 @@ export function computeSignal(m: MagnetResult): SignalResult {
     }
   }
 
-  // ── Factor 5: PCR SENTIMENT (±1.0 max) ──
-  // PCR > 1.2 → put writers dominant (bullish support)
-  // PCR < 0.8 → call writers dominant (bearish resistance)
+  // ── Factor 5: PCR SENTIMENT (±1.0 max) — INDIA-CALIBRATED ──
+  // Indian F&O has a deep put-selling culture: PCR 1.1–1.3 is the NORMAL
+  // daily state, not a bullish signal. The old US thresholds (>1.2 = bull)
+  // handed ~+1.0 free bullish points almost every session. Recalibrated
+  // (Sep 2026) to Indian norms:
+  //   PCR ≥ 1.5   → +1.0   put walls far above Indian norm — genuine support
+  //   PCR 1.3–1.5 → +0.5   mildly supportive
+  //   PCR 0.7–1.3 →  0     normal Indian band — NEUTRAL
+  //   PCR 0.55–0.7→ −0.5   mildly resistive
+  //   PCR < 0.55  → −1.0   call-writer wall — genuine resistance
   if (m.pcr > 0) {
-    if (m.pcr >= 1.2) {
+    if (m.pcr >= 1.5) {
       const w = 1.0;
       score += w;
       reasons.push({
         factor: 'PCR Sentiment',
         direction: 'bull',
         weight: w,
-        detail: `PCR ${m.pcr.toFixed(2)} — put writers dominant (supportive)`,
+        detail: `PCR ${m.pcr.toFixed(2)} — put writers far above Indian norm (strong support)`,
       });
-    } else if (m.pcr <= 0.8) {
+    } else if (m.pcr >= 1.3) {
+      const w = 0.5;
+      score += w;
+      reasons.push({
+        factor: 'PCR Sentiment',
+        direction: 'bull',
+        weight: w,
+        detail: `PCR ${m.pcr.toFixed(2)} — mildly supportive (above Indian norm)`,
+      });
+    } else if (m.pcr >= 0.7) {
+      reasons.push({
+        factor: 'PCR Sentiment',
+        direction: 'neutral',
+        weight: 0,
+        detail: `PCR ${m.pcr.toFixed(2)} — normal Indian band (neutral)`,
+      });
+    } else if (m.pcr >= 0.55) {
+      const w = -0.5;
+      score += w;
+      reasons.push({
+        factor: 'PCR Sentiment',
+        direction: 'bear',
+        weight: w,
+        detail: `PCR ${m.pcr.toFixed(2)} — mildly resistive (below Indian norm)`,
+      });
+    } else {
       const w = -1.0;
       score += w;
       reasons.push({
         factor: 'PCR Sentiment',
         direction: 'bear',
         weight: w,
-        detail: `PCR ${m.pcr.toFixed(2)} — call writers dominant (resistance)`,
-      });
-    } else {
-      reasons.push({
-        factor: 'PCR Sentiment',
-        direction: 'neutral',
-        weight: 0,
-        detail: `PCR ${m.pcr.toFixed(2)} — balanced`,
+        detail: `PCR ${m.pcr.toFixed(2)} — call writers dominant (strong resistance)`,
       });
     }
   }
 
-  // ── Factor 6: GAMMA REGIME (±0.5 max) ──
-  // Positive regime = dips get bought (slight bullish bias)
-  // Negative regime = breaks run (amplifies existing direction, but no inherent bias)
-  // We only give a small directional nudge in positive regime (mean-reversion supports longs)
+  // ── Factor 6: GAMMA REGIME (±0.25) — INDIA-CALIBRATED ──
+  // Symmetric small nudge: positive regime = dips get bought (mild support);
+  // negative regime = breaks accelerate (mild drag). Previously positive
+  // gave +0.5 and negative gave 0 — another one-way structural tilt.
   if (m.gammaRegime === 'positive') {
-    const w = 0.5;
+    const w = 0.25;
     score += w;
     reasons.push({
       factor: 'Gamma Regime',
       direction: 'bull',
       weight: w,
-      detail: 'Positive gamma — dips get bought (mean-reversion supports longs)',
+      detail: 'Positive gamma — dips get bought (mild mean-reversion support)',
     });
   } else if (m.gammaRegime === 'negative') {
+    const w = -0.25;
+    score += w;
     reasons.push({
       factor: 'Gamma Regime',
-      direction: 'neutral',
-      weight: 0,
-      detail: 'Negative gamma — moves amplify (no directional bias, but be careful shorting premium)',
+      direction: 'bear',
+      weight: w,
+      detail: 'Negative gamma — breaks accelerate (mild drag, size moves accordingly)',
     });
   }
 

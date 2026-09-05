@@ -205,8 +205,11 @@ check(
 
 console.log('\n=== Test 4: VIX Regime ===');
 
-const vixLow = computeVIXRegime(11.5, -3.0);  // low + falling
-check('Low+falling VIX → strong bull', vixLow.direction === 'bull' && vixLow.weight === 1.0, `got ${vixLow.direction} ${vixLow.weight}`);
+const vixLow = computeVIXRegime(11.5, -3.0);  // low + falling (India-calibrated: +0.5 max)
+check('Low+falling VIX → mild bull (+0.5, India-calibrated)', vixLow.direction === 'bull' && vixLow.weight === 0.5, `got ${vixLow.direction} ${vixLow.weight}`);
+
+const vixLowStable = computeVIXRegime(11.5, 0.0);  // low + stable = Indian norm
+check('Low+stable VIX → neutral (Indian norm, no free bull)', vixLowStable.direction === 'neutral' && vixLowStable.weight === 0, `got ${vixLowStable.direction} ${vixLowStable.weight}`);
 
 const vixHigh = computeVIXRegime(20.0, 3.0);  // high + rising
 check('High+rising VIX → strong bear', vixHigh.direction === 'bear' && vixHigh.weight === -1.0, `got ${vixHigh.direction} ${vixHigh.weight}`);
