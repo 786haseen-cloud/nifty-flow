@@ -584,21 +584,21 @@ export interface StockQuickView {
 }
 
 const STOCK_BASE_PRICES = [
-  { symbol: 'HDFCBANK',  name: 'HDFC Bank',            base: 1680, niftyWeight: 9.97, sensexWeight: 12.03 },
-  { symbol: 'ICICIBANK', name: 'ICICI Bank',           base: 1250, niftyWeight: 9.09, sensexWeight: 10.96 },
-  { symbol: 'RELIANCE',  name: 'Reliance Industries',  base: 2950, niftyWeight: 7.92, sensexWeight: 9.56 },
-  { symbol: 'BHARTIARTL',name: 'Bharti Airtel',       base: 1620, niftyWeight: 5.55, sensexWeight: 6.70 },
-  { symbol: 'LT',        name: 'Larsen & Toubro',      base: 3600, niftyWeight: 4.25, sensexWeight: 5.13 },
-  { symbol: 'SBIN',      name: 'State Bank India',     base: 830,  niftyWeight: 3.95, sensexWeight: 4.77 },
-  { symbol: 'INFY',      name: 'Infosys',              base: 1580, niftyWeight: 3.67, sensexWeight: 4.43 },
-  { symbol: 'AXISBANK',  name: 'Axis Bank',            base: 1170, niftyWeight: 3.13, sensexWeight: 3.78 },
-  { symbol: 'M&M',       name: 'Mahindra & Mahindra',  base: 2900, niftyWeight: 2.74, sensexWeight: 3.30 },
-  { symbol: 'BAJFINANCE',name: 'Bajaj Finance',        base: 7200, niftyWeight: 2.61, sensexWeight: 3.15 },
-  { symbol: 'KOTAKBANK', name: 'Kotak Bank',           base: 1800, niftyWeight: 2.58, sensexWeight: 3.11 },
-  { symbol: 'ITC',       name: 'ITC Limited',          base: 470,  niftyWeight: 2.40, sensexWeight: 2.90 },
-  { symbol: 'TCS',       name: 'Tata Consultancy',     base: 3900, niftyWeight: 2.16, sensexWeight: 2.60 },
-  { symbol: 'ETERNAL',   name: 'Eternal Ltd',          base: 280,  niftyWeight: 2.06, sensexWeight: 2.49 },
-  { symbol: 'TITAN',     name: 'Titan Company',        base: 3550, niftyWeight: 1.87, sensexWeight: 2.25 },
+  { symbol: 'HDFCBANK',  name: 'HDFC Bank',            base: 1680, niftyWeight: 9.89, sensexWeight: 11.92 },
+  { symbol: 'ICICIBANK', name: 'ICICI Bank',           base: 1250, niftyWeight: 9.35, sensexWeight: 11.26 },
+  { symbol: 'RELIANCE',  name: 'Reliance Industries',  base: 2950, niftyWeight: 8.02, sensexWeight: 9.67 },
+  { symbol: 'BHARTIARTL',name: 'Bharti Airtel',       base: 1620, niftyWeight: 5.30, sensexWeight: 6.39 },
+  { symbol: 'LT',        name: 'Larsen & Toubro',      base: 3600, niftyWeight: 4.23, sensexWeight: 5.09 },
+  { symbol: 'SBIN',      name: 'State Bank India',     base: 830,  niftyWeight: 3.88, sensexWeight: 4.67 },
+  { symbol: 'INFY',      name: 'Infosys',              base: 1580, niftyWeight: 3.68, sensexWeight: 4.43 },
+  { symbol: 'AXISBANK',  name: 'Axis Bank',            base: 1170, niftyWeight: 3.28, sensexWeight: 3.95 },
+  { symbol: 'KOTAKBANK', name: 'Kotak Bank',           base: 1800, niftyWeight: 2.84, sensexWeight: 3.42 },
+  { symbol: 'M&M',       name: 'Mahindra & Mahindra',  base: 2900, niftyWeight: 2.64, sensexWeight: 3.18 },
+  { symbol: 'BAJFINANCE',name: 'Bajaj Finance',        base: 7200, niftyWeight: 2.56, sensexWeight: 3.09 },
+  { symbol: 'ITC',       name: 'ITC Limited',          base: 470,  niftyWeight: 2.33, sensexWeight: 2.81 },
+  { symbol: 'TCS',       name: 'Tata Consultancy',     base: 3900, niftyWeight: 2.19, sensexWeight: 2.64 },
+  { symbol: 'ETERNAL',   name: 'Eternal Ltd',          base: 280,  niftyWeight: 2.15, sensexWeight: 2.59 },
+  { symbol: 'TITAN',     name: 'Titan Company',        base: 3550, niftyWeight: 1.89, sensexWeight: 2.28 },
 ];
 
 export function generateDemoStocks(): StockQuickView[] {

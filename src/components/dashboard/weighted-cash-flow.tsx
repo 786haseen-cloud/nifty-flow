@@ -18,22 +18,23 @@ import {
 } from '@/lib/demo-data';
 
 // Stock base prices with weights (for Sensex weight lookup in table)
+// Weights: Sep 2026 rebalance — kept in sync with types.ts TOP_STOCKS
 const STOCK_CONFIG = [
-  { symbol: 'HDFCBANK',  sensexWeight: 12.03 },
-  { symbol: 'ICICIBANK', sensexWeight: 10.96 },
-  { symbol: 'RELIANCE',  sensexWeight: 9.56 },
-  { symbol: 'BHARTIARTL',sensexWeight: 6.70 },
-  { symbol: 'LT',        sensexWeight: 5.13 },
-  { symbol: 'SBIN',      sensexWeight: 4.77 },
+  { symbol: 'HDFCBANK',  sensexWeight: 11.92 },
+  { symbol: 'ICICIBANK', sensexWeight: 11.26 },
+  { symbol: 'RELIANCE',  sensexWeight: 9.67 },
+  { symbol: 'BHARTIARTL',sensexWeight: 6.39 },
+  { symbol: 'LT',        sensexWeight: 5.09 },
+  { symbol: 'SBIN',      sensexWeight: 4.67 },
   { symbol: 'INFY',      sensexWeight: 4.43 },
-  { symbol: 'AXISBANK',  sensexWeight: 3.78 },
-  { symbol: 'M&M',       sensexWeight: 3.30 },
-  { symbol: 'BAJFINANCE',sensexWeight: 3.15 },
-  { symbol: 'KOTAKBANK', sensexWeight: 3.11 },
-  { symbol: 'ITC',       sensexWeight: 2.90 },
-  { symbol: 'TCS',       sensexWeight: 2.60 },
-  { symbol: 'ETERNAL',   sensexWeight: 2.49 },
-  { symbol: 'TITAN',     sensexWeight: 2.25 },
+  { symbol: 'AXISBANK',  sensexWeight: 3.95 },
+  { symbol: 'KOTAKBANK', sensexWeight: 3.42 },
+  { symbol: 'M&M',       sensexWeight: 3.18 },
+  { symbol: 'BAJFINANCE',sensexWeight: 3.09 },
+  { symbol: 'ITC',       sensexWeight: 2.81 },
+  { symbol: 'TCS',       sensexWeight: 2.64 },
+  { symbol: 'ETERNAL',   sensexWeight: 2.59 },
+  { symbol: 'TITAN',     sensexWeight: 2.28 },
 ];
 
 export default function WeightedCashFlowChart() {

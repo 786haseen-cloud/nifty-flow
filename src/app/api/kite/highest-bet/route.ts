@@ -142,9 +142,9 @@ async function fetchLiveData(): Promise<HighestBetResponse> {
 
     const KITE_STOCK_NAMES: Record<string, string[]> = {
       'LT': ['LARSEN', 'LT'],
-      'MARUTI': ['MARUTI SUZUKI', 'MARUTI'],
-      'HINDUNILVR': ['HINDUSTAN UNILEVER', 'HINDUNILVR'],
-      'TATAMOTORS': ['TATA MOTORS', 'TMCV', 'TMPV'],
+      'M&M': ['MAHINDRA & MAHINDRA', 'M&M'],
+      'ETERNAL': ['ETERNAL', 'ZOMATO'],
+      'TITAN': ['TITAN COMPANY', 'TITAN'],
     };
     const altStockNames = KITE_STOCK_NAMES[spec.symbol.toUpperCase()] || [spec.symbol.toUpperCase()];
     // Find current-month future instrument
@@ -252,14 +252,14 @@ async function fetchLiveData(): Promise<HighestBetResponse> {
     // ('CE'/'PE') back to legacy ('OPTIDX'/'OPTSTK') when parsing the CSV.
     //
     // Stock name mapping: Kite uses underlying name for F&O (e.g. 'LARSEN & TOUBRO'
-    // for LT options, 'MARUTI SUZUKI INDIA' for MARUTI options). We map our short
+    // for LT options, 'MAHINDRA & MAHINDRA' for M&M options). We map our short
     // symbol to the possible Kite names/tradingSymbol prefixes.
     // Stock alt-name mapping for F&O underlying name mismatches
     const KITE_STOCK_NAMES: Record<string, string[]> = {
       'LT': ['LARSEN', 'LT'],
-      'MARUTI': ['MARUTI SUZUKI', 'MARUTI'],
-      'HINDUNILVR': ['HINDUSTAN UNILEVER', 'HINDUNILVR'],
-      'TATAMOTORS': ['TATA MOTORS', 'TMCV', 'TMPV'],
+      'M&M': ['MAHINDRA & MAHINDRA', 'M&M'],
+      'ETERNAL': ['ETERNAL', 'ZOMATO'],
+      'TITAN': ['TITAN COMPANY', 'TITAN'],
     };
     // CRITICAL FIX: For index symbols, use KITE_FNO_ALT_NAMES which includes
     // Kite's actual CSV names (e.g. 'NIFTY BANK' for BANKNIFTY options).
@@ -437,25 +437,25 @@ function generateDemoData(): HighestBetResponse {
   const basePrices: Record<string, number> = {
     NIFTY: 24350, BANKNIFTY: 51200, SENSEX: 80450, FINNIFTY: 23100,
     RELIANCE: 2950, TCS: 3850, HDFCBANK: 1680, INFY: 1860,
-    ICICIBANK: 1245, HINDUNILVR: 2380, SBIN: 815, BHARTIARTL: 1620,
+    ICICIBANK: 1245, SBIN: 815, BHARTIARTL: 1620,
     ITC: 465, KOTAKBANK: 1780, LT: 3540, AXISBANK: 1145,
-    BAJFINANCE: 7150, MARUTI: 12450, TATAMOTORS: 955,
+    BAJFINANCE: 7150, 'M&M': 2940, ETERNAL: 710, TITAN: 3560,
   };
 
   const lotSizes: Record<string, number> = {
     NIFTY: 75, BANKNIFTY: 30, SENSEX: 10, FINNIFTY: 50,
     RELIANCE: 250, TCS: 150, HDFCBANK: 550, INFY: 600,
-    ICICIBANK: 700, HINDUNILVR: 300, SBIN: 1500, BHARTIARTL: 475,
+    ICICIBANK: 700, SBIN: 1500, BHARTIARTL: 475,
     ITC: 1600, KOTAKBANK: 400, LT: 150, AXISBANK: 900,
-    BAJFINANCE: 125, MARUTI: 50, TATAMOTORS: 2250,
+    BAJFINANCE: 125, 'M&M': 600, ETERNAL: 750, TITAN: 250,
   };
 
   const strikeSteps: Record<string, number> = {
     NIFTY: 50, BANKNIFTY: 100, SENSEX: 100, FINNIFTY: 50,
     RELIANCE: 20, TCS: 10, HDFCBANK: 10, INFY: 10,
-    ICICIBANK: 10, HINDUNILVR: 10, SBIN: 5, BHARTIARTL: 10,
+    ICICIBANK: 10, SBIN: 5, BHARTIARTL: 10,
     ITC: 5, KOTAKBANK: 10, LT: 20, AXISBANK: 10,
-    BAJFINANCE: 50, MARUTI: 50, TATAMOTORS: 10,
+    BAJFINANCE: 50, 'M&M': 10, ETERNAL: 5, TITAN: 20,
   };
 
   const prev = _prevDemoResponse;

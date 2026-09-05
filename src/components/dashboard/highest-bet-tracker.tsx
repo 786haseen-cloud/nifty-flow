@@ -419,12 +419,13 @@ export default function HighestBetTracker() {
   const SECTORS: Record<string, string[]> = {
     'Banking': ['HDFCBANK', 'ICICIBANK', 'SBIN', 'KOTAKBANK', 'AXISBANK'],
     'IT': ['TCS', 'INFY'],
-    'FMCG': ['HINDUNILVR', 'ITC'],
+    'FMCG': ['ITC'],
     'Energy': ['RELIANCE'],
-    'Auto': ['MARUTI', 'TATAMOTORS'],
+    'Auto': ['M&M'],
     'Finance': ['BAJFINANCE'],
     'Infra': ['LT'],
     'Telecom': ['BHARTIARTL'],
+    'Consumer': ['TITAN', 'ETERNAL'],
   };
 
   const sectorFlow = Object.entries(SECTORS).map(([sector, stocks]) => {

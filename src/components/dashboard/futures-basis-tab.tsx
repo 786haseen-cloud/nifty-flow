@@ -4,6 +4,7 @@ import { useState, useEffect, useRef } from 'react';
 import { Badge } from '@/components/ui/badge';
 import { Activity, TrendingUp, TrendingDown, ArrowUpRight, ArrowDownRight, ArrowUpDown, Minus, RefreshCw, Wifi, WifiOff } from 'lucide-react';
 import { useKiteSnapshot } from '@/hooks/use-kite-snapshot';
+import { TRACKED_SYMBOLS } from '@/lib/types';
 
 // ═══════════════════════════════════════════
 // TYPES
@@ -38,12 +39,12 @@ const SECTORS: Record<string, string> = {
   KOTAKBANK: 'Banking',
   AXISBANK: 'Banking',
   BAJFINANCE: 'Financial Services',
-  HINDUNILVR: 'FMCG',
   ITC: 'FMCG',
   BHARTIARTL: 'Telecom',
   LT: 'Infrastructure',
-  MARUTI: 'Auto',
-  TATAMOTORS: 'Auto',
+  'M&M': 'Auto',
+  TITAN: 'Consumer',
+  ETERNAL: 'Consumer',
 };
 
 const SECTOR_COLORS: Record<string, string> = {
@@ -55,6 +56,7 @@ const SECTOR_COLORS: Record<string, string> = {
   'Telecom': 'text-cyan-400 border-cyan-500/30',
   'Infrastructure': 'text-orange-400 border-orange-500/30',
   'Auto': 'text-red-400 border-red-500/30',
+  'Consumer': 'text-lime-400 border-lime-500/30',
   'Index': 'text-sky-400 border-sky-500/30',
 };
 
@@ -269,18 +271,13 @@ export default function FuturesBasisTab() {
 // ═══════════════════════════════════════════
 
 function generateDemoBasis(): BasisData[] {
-  const symbols = [
-    'NIFTY', 'BANKNIFTY', 'SENSEX', 'FINNIFTY',
-    'RELIANCE', 'TCS', 'HDFCBANK', 'INFY', 'ICICIBANK',
-    'HINDUNILVR', 'SBIN', 'BHARTIARTL', 'ITC', 'KOTAKBANK',
-    'LT', 'AXISBANK', 'BAJFINANCE', 'MARUTI', 'TATAMOTORS',
-  ];
+  const symbols = TRACKED_SYMBOLS;
   const basePrices: Record<string, number> = {
     NIFTY: 24350, BANKNIFTY: 51200, SENSEX: 80450, FINNIFTY: 23100,
     RELIANCE: 2950, TCS: 3850, HDFCBANK: 1680, INFY: 1860,
-    ICICIBANK: 1245, HINDUNILVR: 2380, SBIN: 815, BHARTIARTL: 1620,
+    ICICIBANK: 1245, SBIN: 815, BHARTIARTL: 1620,
     ITC: 465, KOTAKBANK: 1780, LT: 3540, AXISBANK: 1145,
-    BAJFINANCE: 7150, MARUTI: 12450, TATAMOTORS: 955,
+    BAJFINANCE: 7150, 'M&M': 2940, ETERNAL: 710, TITAN: 3560,
   };
 
   return symbols.map(sym => {

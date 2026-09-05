@@ -72,7 +72,7 @@ export async function GET(req: NextRequest) {
 
   try {
     // Phase 1: Get spot prices for all symbols in one batch
-    // Use spotKiteSymbol if the cash ticker differs from F&O ticker (e.g. TATAMOTORS → NSE:TATAMOTORS)
+    // Use spotKiteSymbol if the cash ticker differs from F&O ticker (rare; kept for safety)
     const kiteSymbols = allSpecs.map(s => s.spotKiteSymbol || s.kiteSymbol);
     const spotQuotes = await getQuotes(kiteSymbols);
     if ('_error' in spotQuotes) {

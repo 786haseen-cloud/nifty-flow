@@ -5,6 +5,7 @@ import { Badge } from '@/components/ui/badge';
 import { Clock, Wifi, WifiOff, TrendingUp, TrendingDown, ArrowUpDown, BarChart3 } from 'lucide-react';
 import { useKiteSnapshot } from '@/hooks/use-kite-snapshot';
 import type { StrikeFlowData } from '@/lib/kite-api';
+import { TRACKED_SYMBOLS as SYMBOLS } from '@/lib/types';
 
 // ═══════════════════════════════════════════
 // TYPES
@@ -72,12 +73,7 @@ function computeStrikeFlow(
 // ═══════════════════════════════════════════
 
 const POLL_INTERVAL = 15000; // 15s poll (faster for more data points)
-const SYMBOLS = [
-  'NIFTY', 'BANKNIFTY', 'SENSEX', 'FINNIFTY',
-  'RELIANCE', 'TCS', 'HDFCBANK', 'INFY', 'ICICIBANK',
-  'HINDUNILVR', 'SBIN', 'BHARTIARTL', 'ITC', 'KOTAKBANK',
-  'LT', 'AXISBANK', 'BAJFINANCE', 'MARUTI', 'TATAMOTORS',
-];
+// Symbol list from shared source of truth (types.ts TRACKED_SYMBOLS)
 
 const TIMEFRAMES = [
   { label: '5 Min', minutes: 5, bars: 85 },    // 9:15 to 15:40 = 85 x 5min bars

@@ -702,6 +702,8 @@ export interface InstrumentSpec {
   kiteSymbol: string;        // Kite quote symbol (used for spot price by default)
   spotKiteSymbol?: string;   // Override for spot price if cash ticker differs from F&O ticker
   searchAliases?: string[];  // Extra strings to match Kite option names/tradingSymbols
+  niftyWeight?: number;      // % weight in Nifty 50 (top-15 tracking, Sep 2026 rebalance)
+  sensexWeight?: number;     // % weight in SENSEX (top-15 tracking, Sep 2026 rebalance)
 }
 
 // ═══ INDEX SPECIFICATIONS ═══
@@ -713,23 +715,25 @@ export const INDEX_SPECS: InstrumentSpec[] = [
 ];
 
 // ═══ STOCK F&O SPECIFICATIONS ═══
-// BSE has NO stock options — only NSE
+// The 15 largest NIFTY 50 constituents by index weight (same 15 names are
+// also the top 15 of SENSEX). Weights: Sep 2026 index composition.
+// BSE has NO stock options — only NSE.
 export const STOCK_SPECS: InstrumentSpec[] = [
-  { symbol: 'RELIANCE',   name: 'Reliance Industries', exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTSTK', strikesAround: 4, kiteSymbol: 'NSE:RELIANCE' },
-  { symbol: 'TCS',        name: 'Tata Consultancy',    exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTSTK', strikesAround: 4, kiteSymbol: 'NSE:TCS' },
-  { symbol: 'HDFCBANK',   name: 'HDFC Bank',           exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTSTK', strikesAround: 4, kiteSymbol: 'NSE:HDFCBANK' },
-  { symbol: 'INFY',       name: 'Infosys',             exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTSTK', strikesAround: 4, kiteSymbol: 'NSE:INFY' },
-  { symbol: 'ICICIBANK',  name: 'ICICI Bank',          exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTSTK', strikesAround: 4, kiteSymbol: 'NSE:ICICIBANK' },
-  { symbol: 'HINDUNILVR', name: 'Hindustan Unilever',  exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTSTK', strikesAround: 4, kiteSymbol: 'NSE:HINDUNILVR', searchAliases: ['HINDUSTAN UNILEVER'] },
-  { symbol: 'SBIN',       name: 'State Bank of India', exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTSTK', strikesAround: 4, kiteSymbol: 'NSE:SBIN' },
-  { symbol: 'BHARTIARTL', name: 'Bharti Airtel',       exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTSTK', strikesAround: 4, kiteSymbol: 'NSE:BHARTIARTL' },
-  { symbol: 'ITC',        name: 'ITC Limited',          exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTSTK', strikesAround: 4, kiteSymbol: 'NSE:ITC' },
-  { symbol: 'KOTAKBANK',  name: 'Kotak Mahindra Bank', exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTSTK', strikesAround: 4, kiteSymbol: 'NSE:KOTAKBANK' },
-  { symbol: 'LT',         name: 'Larsen & Toubro',     exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTSTK', strikesAround: 4, kiteSymbol: 'NSE:LT', searchAliases: ['L&T', 'LARSEN'] },
-  { symbol: 'AXISBANK',   name: 'Axis Bank',            exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTSTK', strikesAround: 4, kiteSymbol: 'NSE:AXISBANK' },
-  { symbol: 'BAJFINANCE', name: 'Bajaj Finance',       exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTSTK', strikesAround: 4, kiteSymbol: 'NSE:BAJFINANCE', searchAliases: ['BAJAJ FINANCE'] },
-  { symbol: 'MARUTI',     name: 'Maruti Suzuki',       exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTSTK', strikesAround: 4, kiteSymbol: 'NSE:MARUTI' },
-  { symbol: 'TATAMOTORS', name: 'Tata Motors (TMCV)', exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTSTK', strikesAround: 4, kiteSymbol: 'NSE:TMCV', spotKiteSymbol: 'NSE:TATAMOTORS', searchAliases: ['TMCV', 'TATA MOTORS'] },
+  { symbol: 'HDFCBANK',   name: 'HDFC Bank',           exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTSTK', strikesAround: 4, kiteSymbol: 'NSE:HDFCBANK',   niftyWeight: 9.89, sensexWeight: 11.92 },
+  { symbol: 'ICICIBANK',  name: 'ICICI Bank',          exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTSTK', strikesAround: 4, kiteSymbol: 'NSE:ICICIBANK',  niftyWeight: 9.35, sensexWeight: 11.26 },
+  { symbol: 'RELIANCE',   name: 'Reliance Industries', exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTSTK', strikesAround: 4, kiteSymbol: 'NSE:RELIANCE',   niftyWeight: 8.02, sensexWeight: 9.67 },
+  { symbol: 'BHARTIARTL', name: 'Bharti Airtel',       exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTSTK', strikesAround: 4, kiteSymbol: 'NSE:BHARTIARTL', niftyWeight: 5.30, sensexWeight: 6.39 },
+  { symbol: 'LT',         name: 'Larsen & Toubro',     exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTSTK', strikesAround: 4, kiteSymbol: 'NSE:LT', searchAliases: ['L&T', 'LARSEN'], niftyWeight: 4.23, sensexWeight: 5.09 },
+  { symbol: 'SBIN',       name: 'State Bank of India', exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTSTK', strikesAround: 4, kiteSymbol: 'NSE:SBIN',       niftyWeight: 3.88, sensexWeight: 4.67 },
+  { symbol: 'INFY',       name: 'Infosys',             exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTSTK', strikesAround: 4, kiteSymbol: 'NSE:INFY',       niftyWeight: 3.68, sensexWeight: 4.43 },
+  { symbol: 'AXISBANK',   name: 'Axis Bank',           exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTSTK', strikesAround: 4, kiteSymbol: 'NSE:AXISBANK',   niftyWeight: 3.28, sensexWeight: 3.95 },
+  { symbol: 'KOTAKBANK',  name: 'Kotak Mahindra Bank', exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTSTK', strikesAround: 4, kiteSymbol: 'NSE:KOTAKBANK',  niftyWeight: 2.84, sensexWeight: 3.42 },
+  { symbol: 'M&M',        name: 'Mahindra & Mahindra', exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTSTK', strikesAround: 4, kiteSymbol: 'NSE:M&M', searchAliases: ['MAHINDRA', 'MAHINDRA & MAHINDRA'], niftyWeight: 2.64, sensexWeight: 3.18 },
+  { symbol: 'BAJFINANCE', name: 'Bajaj Finance',       exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTSTK', strikesAround: 4, kiteSymbol: 'NSE:BAJFINANCE', searchAliases: ['BAJAJ FINANCE'], niftyWeight: 2.56, sensexWeight: 3.09 },
+  { symbol: 'ITC',        name: 'ITC Limited',          exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTSTK', strikesAround: 4, kiteSymbol: 'NSE:ITC',        niftyWeight: 2.33, sensexWeight: 2.81 },
+  { symbol: 'TCS',        name: 'Tata Consultancy',    exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTSTK', strikesAround: 4, kiteSymbol: 'NSE:TCS',        niftyWeight: 2.19, sensexWeight: 2.64 },
+  { symbol: 'ETERNAL',    name: 'Eternal (Zomato)',    exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTSTK', strikesAround: 4, kiteSymbol: 'NSE:ETERNAL', searchAliases: ['ZOMATO'], niftyWeight: 2.15, sensexWeight: 2.59 },
+  { symbol: 'TITAN',      name: 'Titan Company',       exchange: 'NSE', segment: 'NFO', instrumentType: 'OPTSTK', strikesAround: 4, kiteSymbol: 'NSE:TITAN',      niftyWeight: 1.89, sensexWeight: 2.28 },
 ];
 
 // Helper: get spec by symbol

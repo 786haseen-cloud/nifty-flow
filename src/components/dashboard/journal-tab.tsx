@@ -5,6 +5,7 @@ import {
   Plus, X, CheckCircle, BookOpen, Target, Trophy,
   TrendingUp, TrendingDown,
 } from 'lucide-react';
+import { TRACKED_SYMBOLS as SYMBOLS } from '@/lib/types';
 
 // ─── Types ────────────────────────────────────────────────────────────
 
@@ -36,21 +37,20 @@ interface Signal {
 
 // ─── Constants ────────────────────────────────────────────────────────
 
-const SYMBOLS = [
-  'NIFTY', 'BANKNIFTY', 'SENSEX', 'FINNIFTY', 'RELIANCE', 'TCS',
-  'HDFCBANK', 'INFY', 'ICICIBANK', 'HINDUNILVR', 'SBIN', 'BHARTIARTL',
-  'ITC', 'KOTAKBANK', 'LT', 'AXISBANK', 'BAJFINANCE', 'MARUTI', 'TATAMOTORS',
-];
+// SYMBOLS imported from types.ts TRACKED_SYMBOLS (single source of truth)
 
 const DIRECTIONS = [
   'BUY CE', 'SELL CE', 'BUY PE', 'SELL PE', 'BUY FUTURE', 'SELL FUTURE',
 ];
 
+// LOT_SIZES are informational (journal entry helper) — live lot sizes are
+// always fetched dynamically from Kite's instrument master.
 const LOT_SIZES: Record<string, number> = {
   NIFTY: 75, BANKNIFTY: 30, SENSEX: 10, FINNIFTY: 50, RELIANCE: 250,
-  TCS: 150, HDFCBANK: 550, INFY: 600, ICICIBANK: 700, HINDUNILVR: 300,
+  TCS: 150, HDFCBANK: 550, INFY: 600, ICICIBANK: 700,
   SBIN: 1500, BHARTIARTL: 475, ITC: 1600, KOTAKBANK: 400, LT: 150,
-  AXISBANK: 900, BAJFINANCE: 125, MARUTI: 50, TATAMOTORS: 2250,
+  AXISBANK: 900, BAJFINANCE: 125,
+  'M&M': 600, ETERNAL: 750, TITAN: 250,
 };
 
 const TABS = ['New Trade', 'Open', 'History', 'Signals'] as const;

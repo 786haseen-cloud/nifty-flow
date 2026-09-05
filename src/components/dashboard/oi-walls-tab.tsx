@@ -115,21 +115,21 @@ const ALL_SYMBOLS = [
   ...STOCK_SPECS.map(s => ({ symbol: s.symbol, name: s.name, type: 'stock' as const })),
 ];
 
-// Demo base prices per symbol
+// Demo base prices per symbol (kept in sync with Sep 2026 top-15 list)
 const DEMO_BASE_PRICES: Record<string, number> = {
   NIFTY: 24350, BANKNIFTY: 52400, SENSEX: 80200, FINNIFTY: 23100,
   RELIANCE: 2950, TCS: 4120, HDFCBANK: 1720, INFY: 1910,
-  ICICIBANK: 1285, HINDUNILVR: 2480, SBIN: 825, BHARTIARTL: 1620,
+  ICICIBANK: 1285, SBIN: 825, BHARTIARTL: 1620,
   ITC: 465, KOTAKBANK: 1790, LT: 3580, AXISBANK: 1145,
-  BAJFINANCE: 7280, MARUTI: 12450, TATAMOTORS: 960,
+  BAJFINANCE: 7280, 'M&M': 2940, ETERNAL: 710, TITAN: 3560,
 };
 
 const DEMO_STRIKE_STEPS: Record<string, number> = {
   NIFTY: 50, BANKNIFTY: 100, SENSEX: 100, FINNIFTY: 50,
   RELIANCE: 20, TCS: 20, HDFCBANK: 10, INFY: 20,
-  ICICIBANK: 10, HINDUNILVR: 20, SBIN: 5, BHARTIARTL: 10,
+  ICICIBANK: 10, SBIN: 5, BHARTIARTL: 10,
   ITC: 5, KOTAKBANK: 10, LT: 20, AXISBANK: 10,
-  BAJFINANCE: 50, MARUTI: 50, TATAMOTORS: 10,
+  BAJFINANCE: 50, 'M&M': 10, ETERNAL: 5, TITAN: 20,
 };
 
 // ═══════════════════════════════════════════

@@ -57,13 +57,8 @@ export interface TrendResponse {
   error?: string;
 }
 
-// Nifty 50 weights for the 15 F&O stocks
-const NIFTY_WEIGHTS: Record<string, number> = {
-  HDFCBANK: 9.97, ICICIBANK: 9.09, RELIANCE: 7.92, BHARTIARTL: 5.55,
-  LT: 4.25, SBIN: 3.95, INFY: 3.67, AXISBANK: 3.13,
-  BAJFINANCE: 2.61, KOTAKBANK: 2.58, ITC: 2.40, TCS: 2.16,
-  HINDUNILVR: 2.06, MARUTI: 2.06, TATAMOTORS: 1.87,
-};
+// Nifty 50 weights live on InstrumentSpec (kite-api.ts STOCK_SPECS) —
+// single source of truth, Sep 2026 rebalance.
 
 // ─── LIVE MODE ───
 
@@ -96,7 +91,7 @@ async function fetchTrendData(): Promise<TrendResponse> {
   const tokenMetaMap: Record<string, TokenMeta> = {};
 
   for (const spec of STOCK_SPECS) {
-    const weight = NIFTY_WEIGHTS[spec.symbol] || 2.0;
+    const weight = spec.niftyWeight ?? 2.0;
 
     // Find NSE:EQ instrument
     const nseInst = allInstruments.find(
@@ -285,7 +280,7 @@ function generateDemoTrends(): TrendResponse {
   }
 
   const stockCashFlow: StockCashFlow[] = STOCK_SPECS.map((spec) => {
-    const w = NIFTY_WEIGHTS[spec.symbol] || 2.0;
+    const w = spec.niftyWeight ?? 2.0;
     const basePrice = 1000 + Math.random() * 3000;
     const nseCF = (Math.random() - 0.45) * 500000000;
     const bseCF = (Math.random() - 0.45) * 100000000;

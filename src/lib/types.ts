@@ -415,25 +415,34 @@ export const INDICES = [
 ] as const;
 
 // Top 15 Nifty50 Stocks with actual weightages for BOTH indices
+// (the same 15 names are also SENSEX's top 15).
 // Stocks impact on indices calculated as per their weightage
+// Weights: Sep 2026 index rebalance (user-provided composition).
 // Sorted by Nifty50 weight (highest first)
 export const TOP_STOCKS = [
-  { symbol: 'HDFCBANK', name: 'HDFC Bank',           lotSize: 550,  step: 5,    niftyWeight: 9.97, sensexWeight: 12.03 },
-  { symbol: 'ICICIBANK', name: 'ICICI Bank',          lotSize: 700,  step: 5,    niftyWeight: 9.09, sensexWeight: 10.96 },
-  { symbol: 'RELIANCE',  name: 'Reliance Industries',  lotSize: 250,  step: 10,   niftyWeight: 7.92, sensexWeight: 9.56 },
-  { symbol: 'BHARTIARTL',name: 'Bharti Airtel',       lotSize: 1100, step: 5,    niftyWeight: 5.55, sensexWeight: 6.70 },
-  { symbol: 'LT',        name: 'Larsen & Toubro',      lotSize: 150,  step: 10,   niftyWeight: 4.25, sensexWeight: 5.13 },
-  { symbol: 'SBIN',      name: 'State Bank India',     lotSize: 3750, step: 2.5,  niftyWeight: 3.95, sensexWeight: 4.77 },
-  { symbol: 'INFY',      name: 'Infosys',              lotSize: 300,  step: 5,    niftyWeight: 3.67, sensexWeight: 4.43 },
-  { symbol: 'AXISBANK',  name: 'Axis Bank',            lotSize: 900,  step: 2.5,  niftyWeight: 3.13, sensexWeight: 3.78 },
-  { symbol: 'M&M',       name: 'Mahindra & Mahindra',  lotSize: 600,  step: 2.5,  niftyWeight: 2.74, sensexWeight: 3.30 },
-  { symbol: 'BAJFINANCE',name: 'Bajaj Finance',        lotSize: 125,  step: 10,   niftyWeight: 2.61, sensexWeight: 3.15 },
-  { symbol: 'KOTAKBANK', name: 'Kotak Bank',           lotSize: 400,  step: 5,    niftyWeight: 2.58, sensexWeight: 3.11 },
-  { symbol: 'ITC',       name: 'ITC Limited',          lotSize: 1600, step: 2.5,  niftyWeight: 2.40, sensexWeight: 2.90 },
-  { symbol: 'TCS',       name: 'Tata Consultancy',     lotSize: 150,  step: 5,    niftyWeight: 2.16, sensexWeight: 2.60 },
-  { symbol: 'ETERNAL',   name: 'Eternal Ltd',          lotSize: 750,  step: 2.5,  niftyWeight: 2.06, sensexWeight: 2.49 },
-  { symbol: 'TITAN',     name: 'Titan Company',        lotSize: 250,  step: 10,   niftyWeight: 1.87, sensexWeight: 2.25 },
+  { symbol: 'HDFCBANK', name: 'HDFC Bank',           lotSize: 550,  step: 5,    niftyWeight: 9.89, sensexWeight: 11.92 },
+  { symbol: 'ICICIBANK', name: 'ICICI Bank',          lotSize: 700,  step: 5,    niftyWeight: 9.35, sensexWeight: 11.26 },
+  { symbol: 'RELIANCE',  name: 'Reliance Industries',  lotSize: 250,  step: 10,   niftyWeight: 8.02, sensexWeight: 9.67 },
+  { symbol: 'BHARTIARTL',name: 'Bharti Airtel',       lotSize: 1100, step: 5,    niftyWeight: 5.30, sensexWeight: 6.39 },
+  { symbol: 'LT',        name: 'Larsen & Toubro',      lotSize: 150,  step: 10,   niftyWeight: 4.23, sensexWeight: 5.09 },
+  { symbol: 'SBIN',      name: 'State Bank India',     lotSize: 3750, step: 2.5,  niftyWeight: 3.88, sensexWeight: 4.67 },
+  { symbol: 'INFY',      name: 'Infosys',              lotSize: 300,  step: 5,    niftyWeight: 3.68, sensexWeight: 4.43 },
+  { symbol: 'AXISBANK',  name: 'Axis Bank',            lotSize: 900,  step: 2.5,  niftyWeight: 3.28, sensexWeight: 3.95 },
+  { symbol: 'KOTAKBANK', name: 'Kotak Bank',           lotSize: 400,  step: 5,    niftyWeight: 2.84, sensexWeight: 3.42 },
+  { symbol: 'M&M',       name: 'Mahindra & Mahindra',  lotSize: 600,  step: 2.5,  niftyWeight: 2.64, sensexWeight: 3.18 },
+  { symbol: 'BAJFINANCE',name: 'Bajaj Finance',        lotSize: 125,  step: 10,   niftyWeight: 2.56, sensexWeight: 3.09 },
+  { symbol: 'ITC',       name: 'ITC Limited',          lotSize: 1600, step: 2.5,  niftyWeight: 2.33, sensexWeight: 2.81 },
+  { symbol: 'TCS',       name: 'Tata Consultancy',     lotSize: 150,  step: 5,    niftyWeight: 2.19, sensexWeight: 2.64 },
+  { symbol: 'ETERNAL',   name: 'Eternal Ltd',          lotSize: 750,  step: 2.5,  niftyWeight: 2.15, sensexWeight: 2.59 },
+  { symbol: 'TITAN',     name: 'Titan Company',        lotSize: 250,  step: 10,   niftyWeight: 1.89, sensexWeight: 2.28 },
 ] as const;
+
+// Shared tracked-symbol list (4 indices + top-15 stocks) — single source of
+// truth so UI tabs never drift from the spec lists again.
+export const TRACKED_SYMBOLS: string[] = [
+  'NIFTY', 'BANKNIFTY', 'SENSEX', 'FINNIFTY',
+  ...TOP_STOCKS.map(s => s.symbol),
+];
 
 export const RISK_FREE_RATE = 0.065;
 

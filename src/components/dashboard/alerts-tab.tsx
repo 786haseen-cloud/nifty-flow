@@ -7,18 +7,14 @@ import {
   Bell, BellRing, Plus, Trash2, Volume2, VolumeX, Chrome,
 } from 'lucide-react';
 import type { StrikeFlowData } from '@/lib/kite-api';
+import { TRACKED_SYMBOLS as SYMBOLS } from '@/lib/types';
 import { useKiteSnapshot, type KiteSnapshot } from '@/hooks/use-kite-snapshot';
 
 // ═══════════════════════════════════════════
 // TYPES
 // ═══════════════════════════════════════════
 
-const SYMBOLS = [
-  'NIFTY', 'BANKNIFTY', 'SENSEX', 'FINNIFTY',
-  'RELIANCE', 'TCS', 'HDFCBANK', 'INFY', 'ICICIBANK',
-  'HINDUNILVR', 'SBIN', 'BHARTIARTL', 'ITC', 'KOTAKBANK',
-  'LT', 'AXISBANK', 'BAJFINANCE', 'MARUTI', 'TATAMOTORS',
-];
+// Symbol list from shared source of truth (types.ts TRACKED_SYMBOLS)
 
 const CATEGORIES = ['CE Buy', 'CE Write', 'PE Buy', 'PE Write', 'Cash', 'Future', 'Net Flow'] as const;
 type Category = (typeof CATEGORIES)[number];
