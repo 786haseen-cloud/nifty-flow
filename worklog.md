@@ -58,3 +58,23 @@ Stage Summary:
 - Typical day now ~+7.0 CALL MODERATE instead of +9.0 STRONG; STRONG requires genuine factor alignment
 - Mild/moderate down days now produce PUT signals (basis/IV-skew/OI/charm flip negative and are no longer offset by free bullish points)
 - Futures Basis left as-is (data-signed, flips bearish on real down days); carry-adjusted threshold noted as Phase-2 candidate
+
+---
+Task ID: 3
+Agent: Main
+Task: Update tracked stocks to Sep 2026 NIFTY50/SENSEX top-15 by index weight (user provided both weight lists)
+
+Work Log:
+- Diffed user's new top-15 vs codebase: removed HINDUNILVR/MARUTI/TATAMOTORS; added M&M/ETERNAL/TITAN (ETERNAL already existed in demo/types lists but not in live STOCK_SPECS)
+- kite-api.ts: added niftyWeight/sensexWeight to InstrumentSpec; rewrote STOCK_SPECS ordered by new NIFTY weight with Kite aliases (M&M→MAHINDRA, ETERNAL→ZOMATO, TITAN→TITAN COMPANY)
+- types.ts: TOP_STOCKS weights + reorder; added TRACKED_SYMBOLS shared export (single source of truth for 4 indices + 15 stocks)
+- trends/route.ts: deleted duplicated NIFTY_WEIGHTS map; uses spec.niftyWeight
+- Synced 7 UI surfaces: alerts-tab, multi-timeframe-tab, journal-tab (incl LOT_SIZES), futures-basis-tab (SECTORS + Consumer color + demo prices), highest-bet-tracker (SECTORS groups), weighted-cash-flow (STOCK_CONFIG sensex weights), oi-walls-tab (demo prices/strike steps)
+- highest-bet/route.ts: KITE_STOCK_NAMES aliases + demo fallbacks updated
+- Verified M&M '&' symbol safety: getQuotes resolves via instruments CSV to numeric tokens (no URL encoding issue); trends route NSE cash equality match on 'M&M' works
+- Sweep: zero HINDUNILVR/MARUTI/TATAMOTORS/TMCV refs left in src/; tsc error count 35→35 (all pre-existing); tests 32+9 pass; build clean
+
+Stage Summary:
+- Commit 9c0727e pushed origin/main (Vercel auto-deploy)
+- All 19 tracked symbols now: NIFTY, BANKNIFTY, SENSEX, FINNIFTY + HDFCBANK, ICICIBANK, RELIANCE, BHARTIARTL, LT, SBIN, INFY, AXISBANK, KOTAKBANK, M&M, BAJFINANCE, ITC, TCS, ETERNAL, TITAN
+- Weights centralized on InstrumentSpec for future weighted index-impact features
