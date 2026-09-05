@@ -38,3 +38,23 @@ Stage Summary:
 - Modified: `src/components/dashboard/oi-walls-tab.tsx` (added ~200 lines)
 - Placed on OI Walls tab (not new tab) as discussed with user
 - Feature: batched scan of 4 indices + 15 stocks' max pain with composite gravity signal
+
+---
+Task ID: 2
+Agent: Main
+Task: India-market recalibration of PCR/Gamma/VIX factors (user approved with "go")
+
+Work Log:
+- Diagnosed structural CALL bias: US-calibrated thresholds gifted ~+1.75/day free bullish points in Indian market structure
+- Recalibrated Factor 5 PCR Sentiment: >=1.5 +1.0 / 1.3-1.5 +0.5 / 0.7-1.3 neutral / 0.55-0.7 -0.5 / <0.55 -1.0 (Indian put-selling norm 1.1-1.3 = neutral)
+- Recalibrated Factor 6 Gamma Regime: symmetric ±0.25 (was +0.5/0)
+- Recalibrated Factor 11 VIX: low+stable = 0 (was +0.5), low+falling +0.5 (was +1.0), normal+falling 0 (was +0.5); bearish side unchanged
+- Updated scoring-model comment block + computeVIXRegime docstring with India calibration notes
+- Updated test-phase1-enhancements.ts: VIX low+falling expectation 1.0→0.5, added low+stable→neutral test
+- Ran tests: 32/32 phase1, 9/9 signal-history, magnet-engine scenarios OK; tsc pre-existing 35 errors unchanged, zero in touched files
+- Build passed; committed b6e8788 and pushed origin/main (Vercel auto-deploy)
+
+Stage Summary:
+- Typical day now ~+7.0 CALL MODERATE instead of +9.0 STRONG; STRONG requires genuine factor alignment
+- Mild/moderate down days now produce PUT signals (basis/IV-skew/OI/charm flip negative and are no longer offset by free bullish points)
+- Futures Basis left as-is (data-signed, flips bearish on real down days); carry-adjusted threshold noted as Phase-2 candidate
