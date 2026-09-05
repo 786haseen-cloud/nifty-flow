@@ -329,6 +329,44 @@ export default function MagnetCard({ data, compact = false }: MagnetCardProps) {
             ) : '—'}
           </span>
         </div>
+        {/* Pattern-match overlay — "Last N similar setups: X/N won" */}
+        {data.patternMatch && data.patternMatch.total > 0 && (
+          <div
+            className="flex items-center justify-between text-[9px] font-mono pt-1 border-t border-border/20"
+            title={data.patternMatch.summary}
+          >
+            <span className="text-muted-foreground">
+              7d:{' '}
+              <span className={
+                data.patternMatch.winRate >= 65 ? 'text-emerald-400 font-semibold' :
+                data.patternMatch.winRate <= 35 && data.patternMatch.total >= 3 ? 'text-red-400 font-semibold' :
+                'text-foreground'
+              }>
+                {data.patternMatch.wins}/{data.patternMatch.wins + data.patternMatch.losses}
+              </span>
+              {' '}won
+            </span>
+            <span className="text-muted-foreground">
+              {data.patternMatch.confidenceBoost > 0 && (
+                <span className="text-emerald-400">+{data.patternMatch.confidenceBoost.toFixed(1)} ✦</span>
+              )}
+              {data.patternMatch.confidenceBoost < 0 && (
+                <span className="text-red-400">{data.patternMatch.confidenceBoost.toFixed(1)} ⚠</span>
+              )}
+              {data.patternMatch.confidenceBoost === 0 && (
+                <span className="text-muted-foreground">
+                  avg {data.patternMatch.avgMovePct >= 0 ? '+' : ''}{data.patternMatch.avgMovePct.toFixed(2)}%
+                </span>
+              )}
+            </span>
+          </div>
+        )}
+        {(!data.patternMatch || data.patternMatch.total === 0) && data.signal?.direction && data.signal.direction !== 'WAIT' && (
+          <div className="flex items-center justify-between text-[9px] font-mono pt-1 border-t border-border/20 text-muted-foreground/60">
+            <span>7d: no similar setups yet</span>
+            <span>—</span>
+          </div>
+        )}
       </div>
     </div>
   );

@@ -150,6 +150,36 @@ export interface MagnetResult {
 
   // Trade signal (computed by computeSignal, attached at end of computeMagnet)
   signal: SignalResult;
+
+  // Pattern-match overlay (populated by magnet-scan route after Redis lookup,
+  // NOT by computeMagnet itself. null when Redis unavailable or no history yet.)
+  patternMatch?: PatternMatchSummary | null;
+}
+
+/**
+ * Summary of similar historical setups — used to bump confidence and show
+ * "Last N similar: X/N won" overlay on each magnet card.
+ *
+ * Populated by signal-history.patternMatch() and attached to MagnetResult
+ * by the magnet-scan API route.
+ */
+export interface PatternMatchSummary {
+  /** Total similar setups found in last 7 days. */
+  total: number;
+  /** # that resolved to a win. */
+  wins: number;
+  /** # that resolved to a loss. */
+  losses: number;
+  /** # that expired unresolved. */
+  expired: number;
+  /** Win rate 0-100 (over resolved wins+losses+partial). 0 when total=0. */
+  winRate: number;
+  /** Average spot move (% signed in predicted direction). */
+  avgMovePct: number;
+  /** Suggested confidence adjustment (-2..+2) based on win rate & sample size. */
+  confidenceBoost: number;
+  /** Short human-readable summary for UI tooltip / footer. */
+  summary: string;
 }
 
 // ─── Black-Scholes helpers ───

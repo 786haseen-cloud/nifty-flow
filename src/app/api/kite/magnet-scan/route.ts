@@ -36,6 +36,7 @@ import {
   type MagnetResult,
   type StrikeOption,
 } from '@/lib/magnet-engine';
+import { persistSignal, patternMatch } from '@/lib/signal-history';
 
 // ─── Helpers ───
 
@@ -365,6 +366,53 @@ export async function GET(req: NextRequest) {
         results.push(result);
       }
     }
+
+    // Phase 5 (NEW): Persist each signal to Upstash Redis (7-day rolling history)
+    // and attach a pattern-match summary to each result.
+    //
+    // persistSignal() has built-in write throttling — only writes when signal
+    // direction/strength/score meaningfully changes. patternMatch() has a 90s
+    // in-memory cache so repeated calls within a poll cycle are cheap.
+    //
+    // Both calls are non-fatal: if Redis isn't configured or fails, results
+    // still return with `patternMatch: null` and the dashboard renders fine.
+    //
+    // We fire all persist+patternMatch calls in parallel to keep latency low
+    // (each Redis call is ~10-30ms over HTTP — 19 in parallel = ~30ms total
+    // vs. 19 × 30ms = 570ms serial).
+    await Promise.all(results.map(async (r) => {
+      try {
+        // Persist (throttled internally — may be a no-op)
+        await persistSignal({
+          symbol: r.symbol,
+          spot: r.spot,
+          direction: r.signal.direction,
+          strength: r.signal.strength,
+          score: r.signal.score,
+          confidence: r.signal.confidence,
+          maxPain: r.maxPain,
+          magnetCenter: r.magnetCenter,
+          zeroGamma: r.zeroGamma,
+          pinning: r.pinningProbability,
+          basisPct: r.basisPct,
+          ivSkewPct: r.ivSkewPct,
+          oiBuildup: r.oiBuildup,
+          vix: r.vix,
+        });
+
+        // Pattern match (only for directional signals — WAIT returns null)
+        const pm = await patternMatch(
+          r.symbol,
+          r.signal.direction,
+          r.signal.score,
+          r.oiBuildup,
+        );
+        r.patternMatch = pm;
+      } catch (err) {
+        // Non-fatal — leave patternMatch as undefined
+        console.warn(`[magnet-scan] signal-history for ${r.symbol} failed:`, err);
+      }
+    }));
 
     // Sort: indices first, then stocks
     results.sort((a, b) => {
