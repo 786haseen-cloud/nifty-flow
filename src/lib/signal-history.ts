@@ -502,3 +502,96 @@ export async function getRecentSignalsGlobal(
     return [];
   }
 }
+
+// ─── Public API: getRedisStatus (diagnostics) ───
+
+export interface RedisStatusInfo {
+  /** Both env vars present? */
+  configured: boolean;
+  urlPresent: boolean;
+  tokenPresent: boolean;
+  /** Live PING round-trip result. null = not configured (never attempted). */
+  pingOk: boolean | null;
+  pingError?: string;
+  pingLatencyMs?: number;
+  /** How many of the scanned symbols have a non-empty history set. */
+  symbolsWithHistory: number;
+  /** Total signal entries across all scanned symbols. */
+  totalEntries: number;
+  /** Newest entry timestamp (unix ms) across all symbols, or null. */
+  newestTs: number | null;
+  /** Oldest entry timestamp (unix ms) across all symbols, or null. */
+  oldestTs: number | null;
+}
+
+/**
+ * Full diagnostic of the Redis connection + data census.
+ *
+ * Cost when configured: 2 commands per symbol (zrange first + last) ≈ 38
+ * commands total — acceptable for a manually-hit diagnostic endpoint.
+ * Never returns secrets — only booleans, counts, and timestamps.
+ */
+export async function getRedisStatus(symbols: string[]): Promise<RedisStatusInfo> {
+  const urlPresent = Boolean(process.env.UPSTASH_REDIS_REST_URL);
+  const tokenPresent = Boolean(process.env.UPSTASH_REDIS_REST_TOKEN);
+  const configured = urlPresent && tokenPresent;
+
+  const info: RedisStatusInfo = {
+    configured,
+    urlPresent,
+    tokenPresent,
+    pingOk: null,
+    symbolsWithHistory: 0,
+    totalEntries: 0,
+    newestTs: null,
+    oldestTs: null,
+  };
+  if (!configured) return info;
+
+  const redis = getRedis();
+  if (!redis) return info;
+
+  // 1. Ping with latency
+  const t0 = Date.now();
+  try {
+    const pong = await redis.ping();
+    info.pingOk = pong === 'PONG';
+    info.pingLatencyMs = Date.now() - t0;
+  } catch (err) {
+    info.pingOk = false;
+    info.pingError = err instanceof Error ? err.message : String(err);
+    return info;
+  }
+
+  // 2. Data census — zcard (exact count) + zrange(newest entry) per symbol
+  try {
+    const perSymbol = await Promise.all(
+      symbols.map(async (sym) => {
+        try {
+          const hKey = historyKey(sym);
+          const [count, newestArr] = await Promise.all([
+            redis.zcard(hKey),
+            redis.zrange<SignalHistoryEntry[]>(hKey, -1, -1),
+          ]);
+          const newest = newestArr?.[0];
+          return {
+            count: typeof count === 'number' ? count : 0,
+            newestTs: newest && typeof newest.ts === 'number' ? newest.ts : null,
+          };
+        } catch {
+          return { count: 0, newestTs: null };
+        }
+      })
+    );
+
+    info.totalEntries = perSymbol.reduce((acc, s) => acc + s.count, 0);
+    info.symbolsWithHistory = perSymbol.filter(s => s.count > 0).length;
+
+    const newestAll = perSymbol.map(s => s.newestTs).filter((v): v is number => v !== null);
+    info.newestTs = newestAll.length ? Math.max(...newestAll) : null;
+  } catch {
+    // census is best-effort — ping result is the primary signal
+  }
+
+  return info;
+}
