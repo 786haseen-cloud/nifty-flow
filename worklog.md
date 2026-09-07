@@ -134,3 +134,44 @@ Stage Summary:
 - Storage cost: ~80 Upstash commands/day (negligible vs. signal-history's ~3,200)
 - Files: src/lib/participant-service.ts (new), src/app/api/participants/daily/route.ts (new), src/components/dashboard/participant-flow-card.tsx (new), src/lib/magnet-engine.ts (edited), src/app/api/kite/magnet-scan/route.ts (edited), src/components/dashboard/trend-analysis-tab.tsx (edited), scripts/test-phase1-enhancements.ts (edited)
 - Next: User starts pasting daily FII/DII/Client/PropDesk numbers from NSE website after market close. Factor 12 takes effect the next trading day. After 2-3 weeks of accumulated data, can backtest and tune the smart-money / contrarian / dampener thresholds.
+
+---
+Task ID: 4
+Agent: Main
+Task: CSV upload feature for Participant Flow card — auto-parse NSE reports instead of manual typing
+
+Work Log:
+- Examined both uploaded NSE CSV files to understand their formats:
+  * fii-dii-nse-latest.csv: "FII/DII Activity" report (cash market) — has DII + FII/FPI rows with BUY/SELL/NET in ₹ Crores. Format: header row with embedded newlines, then data rows with quoted fields.
+  * fao_participant_oi_07092026.csv: "Participant-wise OI in Equity Derivatives" — has Client/DII/FII/Pro rows with OI in *number of contracts* (not ₹ Cr). Snapshot, not flow.
+- Built src/lib/participant-csv-parser.ts (285 lines):
+  * Pure function — no I/O, takes filename + content string, returns structured ParsedParticipantCsv
+  * Auto-detects format from filename hints + header inspection
+  * parseFiiDiiCash() — extracts FII + DII net (₹ Cr) from FII/DII Activity report
+  * parseFaoParticipantOi() — extracts Client/DII/FII/Pro long+short contracts (saved for future Phase 2b positioning factor; does NOT feed Factor 12 because contracts ≠ ₹ Cr)
+  * Custom CSV parser handles quoted fields, embedded newlines, comma-thousand numbers, accounting-style negatives (123.45)
+  * Date parsing: DD-MMM-YYYY (NSE format), YYYY-MM-DD, DD/MM/YYYY, and DDMMYYYY from filename
+- Built src/app/api/participants/parse-csv/route.ts:
+  * Accepts multipart/form-data with single `file` field
+  * Max 1 MB (NSE CSVs typically < 10 KB)
+  * Returns { ok, parsed: ParsedParticipantCsv }
+- Updated src/components/dashboard/participant-flow-card.tsx:
+  * Added CSV upload zone with drag-and-drop support
+  * "Choose CSV file" button triggers hidden <input type="file">
+  * On file select → POST to /api/participants/parse-csv → server parses → form fields auto-populated
+  * Parse result summary panel shows what was detected + any warnings
+  * User reviews the populated values, can edit, then clicks Save (existing flow)
+  * Removed need to manually type 4 numbers — now 2 clicks (upload + save)
+- Built scripts/test-csv-parser.ts to verify parser against the actual uploaded CSVs:
+  * fii-dii-nse-latest.csv → correctly parsed FII +268.94 Cr, DII +597.67 Cr for 2026-09-07
+  * fao_participant_oi_07092026.csv → correctly parsed positioning data (Client 14.4M L / 10.8M S contracts, etc.)
+- Both formats auto-detected from filename + header inspection
+
+Stage Summary:
+- CSV parser correctly handles both NSE file formats the user uploaded
+- File 1 (FII/DII cash) → FII +268.94 Cr, DII +597.67 Cr — feeds Factor 12
+- File 2 (F&O participant OI) → positioning data saved for Phase 2b (FII/DII/Client/Pro in contracts, not ₹ Cr — cannot feed Factor 12 directly)
+- Build succeeds, both new routes registered (/api/participants/daily + /api/participants/parse-csv)
+- Type-check clean for all touched files
+- Files: src/lib/participant-csv-parser.ts (new, 285 lines), src/app/api/participants/parse-csv/route.ts (new), src/components/dashboard/participant-flow-card.tsx (edited), scripts/test-csv-parser.ts (new)
+- Next: User uploads FII/DII cash CSV → form auto-populates → clicks Save → Factor 12 takes effect next trading day. Phase 2b (positioning factor from F&O OI file) can be built later when we have 2-3 weeks of accumulated positioning data.

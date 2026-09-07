@@ -30,12 +30,12 @@
  * the Save button.
  */
 
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
   ReferenceLine, ResponsiveContainer,
 } from 'recharts';
-import { Users, Save, RefreshCw, AlertCircle, CheckCircle2 } from 'lucide-react';
+import { Users, Save, RefreshCw, AlertCircle, CheckCircle2, Upload, FileText } from 'lucide-react';
 import { withCreds } from '@/lib/kite-creds';
 
 // ─── Types (mirror participant-service.ts) ───
@@ -64,6 +64,30 @@ interface ParticipantResponse {
   error?: string;
 }
 
+// Mirror of ParsedParticipantCsv from src/lib/participant-csv-parser.ts
+interface ParsedParticipantCsv {
+  format: string;
+  date: string | null;
+  fii: number;
+  dii: number;
+  client: number;
+  propdesk: number;
+  positioning?: {
+    client: { longContracts: number; shortContracts: number };
+    dii: { longContracts: number; shortContracts: number };
+    fii: { longContracts: number; shortContracts: number };
+    pro: { longContracts: number; shortContracts: number };
+  };
+  summary: string;
+  warnings: string[];
+}
+
+interface ParseCsvResponse {
+  ok: boolean;
+  parsed?: ParsedParticipantCsv;
+  error?: string;
+}
+
 const POLL_INTERVAL_MS = 60_000; // 60s — bias changes once a day, no need to hammer
 
 // ─── Component ───
@@ -85,6 +109,11 @@ export function ParticipantFlowCard() {
   const [dii, setDii] = useState('');
   const [client, setClient] = useState('');
   const [propdesk, setPropdesk] = useState('');
+
+  // CSV upload state
+  const [parsing, setParsing] = useState(false);
+  const [parseResult, setParseResult] = useState<ParsedParticipantCsv | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const fetchData = useCallback(async () => {
     try {
@@ -155,6 +184,71 @@ export function ParticipantFlowCard() {
     }
   }, [formDate, fii, dii, client, propdesk, fetchData]);
 
+  // ── CSV file upload handler ──
+  // User selects a CSV → POST to /api/participants/parse-csv → server auto-detects
+  // format (NSE FII/DII cash, NSE F&O participant OI, etc.) and returns parsed
+  // values. We populate the form fields with whatever was extracted so the user
+  // can review + edit before saving.
+  const handleFileUpload = useCallback(async (file: File) => {
+    setParsing(true);
+    setError(null);
+    setSaveOk(null);
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      const res = await fetch(withCreds('/api/participants/parse-csv'), {
+        method: 'POST',
+        body: formData,
+      });
+      if (!res.ok) {
+        const errJson = await res.json().catch(() => ({}));
+        throw new Error(errJson.error || `HTTP ${res.status}`);
+      }
+      const json: ParseCsvResponse = await res.json();
+      if (!json.ok || !json.parsed) {
+        throw new Error(json.error || 'Parse failed');
+      }
+      const parsed = json.parsed;
+      setParseResult(parsed);
+
+      // Populate form fields with whatever was extracted
+      if (parsed.date) setFormDate(parsed.date);
+      if (parsed.fii !== 0 || parsed.format === 'fii_dii_cash') setFii(String(parsed.fii));
+      if (parsed.dii !== 0 || parsed.format === 'fii_dii_cash') setDii(String(parsed.dii));
+      if (parsed.client !== 0) setClient(String(parsed.client));
+      if (parsed.propdesk !== 0) setPropdesk(String(parsed.propdesk));
+
+      setSaveOk(`Parsed ${parsed.format.replace(/_/g, ' ')} — review fields below and click Save`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setError(`CSV parse failed: ${msg}`);
+      setParseResult(null);
+    } finally {
+      setParsing(false);
+      // Reset file input so the same file can be re-uploaded if needed
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+  }, []);
+
+  // Triggered when user selects a file in the input
+  const onFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) handleFileUpload(file);
+  }, [handleFileUpload]);
+
+  // Drag-and-drop support
+  const onDrop = useCallback((e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const file = e.dataTransfer.files?.[0];
+    if (file) handleFileUpload(file);
+  }, [handleFileUpload]);
+
+  const onDragOver = useCallback((e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+  }, []);
+
   // Build chart data from history (oldest → newest for left-to-right timeline)
   const chartData = (data?.history ?? [])
     .slice()
@@ -207,6 +301,71 @@ export function ParticipantFlowCard() {
             <code className="bg-black/30 px-1 rounded ml-1">UPSTASH_REDIS_REST_TOKEN</code> env vars in Vercel
             to enable participant flow persistence. Factor 12 will remain neutral (0) until then.
           </div>
+        </div>
+      )}
+
+      {/* CSV upload zone */}
+      <div
+        onDrop={onDrop}
+        onDragOver={onDragOver}
+        className="rounded-lg border border-dashed border-amber-500/30 bg-amber-500/5 p-3 mb-3"
+      >
+        <div className="flex items-center gap-2 mb-1.5">
+          <Upload className="h-3.5 w-3.5 text-amber-400" />
+          <span className="text-[11px] font-medium text-amber-300">
+            Upload NSE CSV (auto-detects format)
+          </span>
+          {parsing && (
+            <span className="text-[10px] text-muted-foreground flex items-center gap-1">
+              <RefreshCw className="h-2.5 w-2.5 animate-spin" />
+              Parsing...
+            </span>
+          )}
+        </div>
+        <div className="flex items-center gap-2">
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".csv,.txt"
+            onChange={onFileChange}
+            disabled={parsing}
+            className="hidden"
+            id="participant-csv-upload"
+          />
+          <button
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={parsing}
+            className="h-7 px-2.5 text-[11px] font-medium bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/30 text-amber-300 rounded transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-1.5"
+          >
+            <FileText className="h-3 w-3" />
+            Choose CSV file
+          </button>
+          <span className="text-[10px] text-muted-foreground">
+            or drag &amp; drop here
+          </span>
+        </div>
+        <div className="text-[10px] text-muted-foreground mt-1.5 leading-relaxed">
+          Accepted: NSE <strong>FII/DII Activity</strong> (cash market — feeds Factor 12),
+          NSE <strong>F&O Participant OI</strong> (positioning — saved for Phase 2b).
+          Max 1 MB. Parsing is server-side; nothing is uploaded to third parties.
+        </div>
+      </div>
+
+      {/* Parse result summary */}
+      {parseResult && (
+        <div className="rounded-lg border border-sky-500/30 bg-sky-500/5 p-2.5 text-[11px] text-sky-200 mb-3">
+          <div className="flex items-start gap-1.5">
+            <FileText className="h-3 w-3 mt-0.5 shrink-0" />
+            <div className="leading-relaxed">{parseResult.summary}</div>
+          </div>
+          {parseResult.warnings.length > 0 && (
+            <ul className="mt-1.5 ml-4 list-disc text-[10px] text-orange-300 space-y-0.5">
+              {parseResult.warnings.map((w, i) => (
+                <li key={i}>{w}</li>
+              ))}
+            </ul>
+          )}
         </div>
       )}
 
