@@ -209,10 +209,23 @@ function detectFormat(filename: string, rows: string[][]): CsvFormat {
   const fn = filename.toLowerCase();
   // Hint from filename
   if (fn.includes('fii') && fn.includes('dii')) return 'fii_dii_cash';
-  if (fn.includes('fao') && fn.includes('participant_oi')) return 'fao_participant_oi';
-  if (fn.includes('fao') && fn.includes('volume')) return 'fao_participant_volume';
+  // Distinguish OI vs Volume from filename first
+  if (fn.includes('fao') && (fn.includes('participant_oi') || fn.includes('oi_'))) return 'fao_participant_oi';
+  if (fn.includes('fao') && (fn.includes('participant_vol') || fn.includes('vol_') || fn.includes('volume'))) {
+    return 'fao_participant_volume';
+  }
 
-  // Inspect content — look at first non-empty row
+  // Inspect content — title row first (most reliable for F&O files since
+  // both OI and Volume files share identical column structure)
+  const titleRow = rows[0]?.join(' ').toLowerCase() ?? '';
+  if (titleRow.includes('trading volume') && titleRow.includes('equity derivatives')) {
+    return 'fao_participant_volume';
+  }
+  if (titleRow.includes('open interest') && titleRow.includes('equity derivatives')) {
+    return 'fao_participant_oi';
+  }
+
+  // Fall back to header inspection
   const header = rows.find(r => r.length > 0) ?? [];
   const headerStr = header.join(' ').toLowerCase();
 
@@ -220,6 +233,7 @@ function detectFormat(filename: string, rows: string[][]): CsvFormat {
     return 'fii_dii_cash';
   }
   if (headerStr.includes('client type') && headerStr.includes('future index long') && headerStr.includes('total long contracts')) {
+    // Ambiguous — default to OI (the more commonly downloaded report)
     return 'fao_participant_oi';
   }
   if (headerStr.includes('client type') && (headerStr.includes('buy value') || headerStr.includes('buyqty'))) {
@@ -393,15 +407,36 @@ export function parseParticipantCsv(filename: string, content: string): ParsedPa
       }
       return { format, ...parsed };
     }
-    case 'fao_participant_volume':
-      // Future implementation
-      return {
-        format,
-        date: dateFromFilename(filename),
-        fii: 0, dii: 0, client: 0, propdesk: 0,
-        summary: 'Participant volume format detected but parser not yet implemented',
-        warnings: ['Not yet implemented — please use FII/DII cash CSV for now'],
-      };
+    case 'fao_participant_volume': {
+      // Volume file has identical column structure to OI file — same parser
+      // extracts long/short contract counts per participant. The semantic
+      // difference (volume = trades during day, OI = positions at close) is
+      // captured in the `format` field for downstream consumers.
+      const parsed = parseFaoParticipantOi(rows);
+      // Override the summary to mention "trading volume" instead of "OI snapshot"
+      if (parsed.positioning) {
+        const p = parsed.positioning;
+        parsed.summary = `F&O participant trading volume parsed. Activity data (today's total trades) saved for future use. ` +
+          `Client: ${p.client.longContracts.toLocaleString()}L / ${p.client.shortContracts.toLocaleString()}S contracts traded. ` +
+          `FII: ${p.fii.longContracts.toLocaleString()}L / ${p.fii.shortContracts.toLocaleString()}S. ` +
+          `DII: ${p.dii.longContracts.toLocaleString()}L / ${p.dii.shortContracts.toLocaleString()}S. ` +
+          `Pro: ${p.pro.longContracts.toLocaleString()}L / ${p.pro.shortContracts.toLocaleString()}S. ` +
+          `For Factor 12 (₹ Cr flow), also upload the FII/DII cash market CSV.`;
+      }
+      // Update warning text
+      parsed.warnings = parsed.warnings.map(w =>
+        w.includes('F&O participant OI file contains contract counts')
+          ? 'F&O participant volume file contains contract counts (trading activity), not ₹ Crore. ' +
+            'FII/DII/Client/PropDesk flow values are NOT populated. ' +
+            'Use the FII/DII cash market report for Factor 12 inputs. ' +
+            'Volume data (long/short contracts traded today) saved for future Phase 2c (activity factor).'
+          : w
+      );
+      if (!parsed.date) {
+        parsed.date = dateFromFilename(filename);
+      }
+      return { format, ...parsed };
+    }
     case 'unknown':
     default:
       return {
@@ -409,7 +444,7 @@ export function parseParticipantCsv(filename: string, content: string): ParsedPa
         date: null,
         fii: 0, dii: 0, client: 0, propdesk: 0,
         summary: `Could not detect CSV format. Filename: ${filename}. First row: ${rows[0]?.join(', ') ?? '(empty)'}`,
-        warnings: ['Unknown CSV format. Supported: NSE FII/DII Activity, NSE F&O Participant OI'],
+        warnings: ['Unknown CSV format. Supported: NSE FII/DII Activity, NSE F&O Participant OI, NSE F&O Participant Volume'],
       };
   }
 }

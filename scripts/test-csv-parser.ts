@@ -7,6 +7,7 @@ import { parseParticipantCsv } from '../src/lib/participant-csv-parser';
 const files = [
   '/home/z/my-project/upload/fii-dii-nse-latest.csv',
   '/home/z/my-project/upload/fao_participant_oi_07092026.csv',
+  '/home/z/my-project/upload/fao_participant_vol_07092026.csv',
 ];
 
 for (const f of files) {
