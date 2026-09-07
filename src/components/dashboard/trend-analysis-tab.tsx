@@ -784,12 +784,19 @@ export default function TrendAnalysisTab() {
               </div>
             </div>
 
-            {/* Recent Signals Card — last 5 signal flips across all 19 symbols */}
-            <div className="mt-3">
-              <RecentSignalsCard />
-            </div>
           </>
         )}
+
+        {/* Recent Signals Card — last 5 signal flips across all 19 symbols.
+            NOTE: This card pulls from Upstash Redis (7-day rolling history),
+            which is a SEPARATE data source from the Kite magnet scan above.
+            It must render regardless of magnet mode (live/demo/error/loading)
+            so the user can always see signal history even when Kite creds are
+            not yet configured or the market is closed. The card has its own
+            graceful states for loading / no-Upstash / no-data-yet. */}
+        <div className="mt-3">
+          <RecentSignalsCard />
+        </div>
       </div>
 
       {/* Section 4: Dual Exchange Cash Flow */}
