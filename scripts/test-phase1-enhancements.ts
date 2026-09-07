@@ -71,6 +71,8 @@ function makeBaseMagnet(overrides: Partial<MagnetResult> = {}): MagnetResult {
     oiBuildupStrength: 0,
     vix: null,
     vixChangePct: null,
+    participantBias: 0,
+    participantBiasDetail: '',
     signal: null as unknown as SignalResult,
   };
   return { ...base, ...overrides };
@@ -321,6 +323,78 @@ check(
   mixedSig.strength === 'WEAK' || mixedSig.strength === 'NONE',
   `got ${mixedSig.strength}`
 );
+
+// ─── Test 8: Factor 12 — Participant Bias (Phase 2) ───
+
+console.log('\n=== Test 8: Factor 12 — Participant Bias ===');
+
+// Import computeParticipantBias directly
+const { computeParticipantBias } = require('../src/lib/participant-service');
+
+// 8a: Strong FII+Prop buying → strong CALL bias
+const bullBias = computeParticipantBias({
+  date: '2026-09-07', fii: 2000, dii: -500, client: -800, propdesk: 800, ts: Date.now(),
+});
+console.log(`  Bull scenario: FII+2000, Prop+800, Client-800 → ${bullBias.weight >= 0 ? '+' : ''}${bullBias.weight.toFixed(2)} (${bullBias.direction})`);
+check('Strong smart buying → bull bias', bullBias.direction === 'bull');
+check('Bull bias weight >= +1.5', bullBias.weight >= 1.5, `got ${bullBias.weight.toFixed(2)}`);
+check('Bull bias weight <= +2.0 (capped)', bullBias.weight <= 2.0, `got ${bullBias.weight.toFixed(2)}`);
+
+// 8b: Strong FII+Prop selling → strong PUT bias
+const bearBias = computeParticipantBias({
+  date: '2026-09-07', fii: -2200, dii: 600, client: 900, propdesk: -600, ts: Date.now(),
+});
+console.log(`  Bear scenario: FII-2200, Prop-600, Client+900 → ${bearBias.weight >= 0 ? '+' : ''}${bearBias.weight.toFixed(2)} (${bearBias.direction})`);
+check('Strong smart selling → bear bias', bearBias.direction === 'bear');
+check('Bear bias weight <= -1.5', bearBias.weight <= -1.5, `got ${bearBias.weight.toFixed(2)}`);
+check('Bear bias weight >= -2.0 (capped)', bearBias.weight >= -2.0, `got ${bearBias.weight.toFixed(2)}`);
+
+// 8c: No data → neutral
+const noBias = computeParticipantBias(null);
+console.log(`  No data → ${noBias.weight.toFixed(2)} (${noBias.direction})`);
+check('No data → weight 0', noBias.weight === 0);
+check('No data → neutral', noBias.direction === 'neutral');
+
+// 8d: DII absorbs FII selling → dampened bearish
+const dampenedBias = computeParticipantBias({
+  date: '2026-09-07', fii: -1500, dii: 1400, client: 200, propdesk: -100, ts: Date.now(),
+});
+console.log(`  Dampened: FII-1500, DII+1400 (opposes) → ${dampenedBias.weight >= 0 ? '+' : ''}${dampenedBias.weight.toFixed(2)}`);
+check('DII opposing FII dampens bias', dampenedBias.weight > -1.5, `got ${dampenedBias.weight.toFixed(2)}`);
+
+// 8e: Factor 12 lifts STRONG threshold when institutions confirm
+// Take a moderate CALL signal (just below STRONG) and add participant bias
+const modCallMagnet = makeBaseMagnet({
+  charmDirection: 'up',       // +3.0
+  pcr: 1.6,                   // +1.0 (strong put writing)
+  basisPct: 0.10,             // +0.75 (premium)
+  ivSkewPct: 2.0,             // +1.0 (mild calls pricier)
+  oiBuildup: 'long_buildup',  // +1.5
+  oiBuildupStrength: 0.7,
+  vix: 11.0,                  // low + falling = +0.5
+  vixChangePct: -2.0,
+  pinningProbability: 50,
+});
+const modCallSig = computeSignal(modCallMagnet);
+console.log(`  Moderate CALL without bias: ${modCallSig.score.toFixed(2)} (${modCallSig.strength})`);
+
+const strongCallMagnet = makeBaseMagnet({
+  charmDirection: 'up',
+  pcr: 1.6,
+  basisPct: 0.10,
+  ivSkewPct: 2.0,
+  oiBuildup: 'long_buildup',
+  oiBuildupStrength: 0.7,
+  vix: 11.0,
+  vixChangePct: -2.0,
+  pinningProbability: 50,
+  participantBias: 2.0,           // Strong institutional confirmation
+  participantBiasDetail: 'Test: FII+2000, Prop+800',
+});
+const strongCallSig = computeSignal(strongCallMagnet);
+console.log(`  Same CALL with +2.0 bias: ${strongCallSig.score.toFixed(2)} (${strongCallSig.strength})`);
+check('Participant bias adds to score', strongCallSig.score > modCallSig.score, `without: ${modCallSig.score}, with: ${strongCallSig.score}`);
+check('Factor 12 appears in reasons', strongCallSig.reasons.some(r => r.factor === 'Participant Bias' && r.weight === 2.0));
 
 // ─── Summary ───
 

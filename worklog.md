@@ -78,3 +78,59 @@ Stage Summary:
 - Commit 9c0727e pushed origin/main (Vercel auto-deploy)
 - All 19 tracked symbols now: NIFTY, BANKNIFTY, SENSEX, FINNIFTY + HDFCBANK, ICICIBANK, RELIANCE, BHARTIARTL, LT, SBIN, INFY, AXISBANK, KOTAKBANK, M&M, BAJFINANCE, ITC, TCS, ETERNAL, TITAN
 - Weights centralized on InstrumentSpec for future weighted index-impact features
+
+---
+Task ID: 3
+Agent: Main
+Task: Phase 2 — Factor 12 (Participant Bias): FII/DII/Client/PropDesk daily institutional flow as basket-level signal factor
+
+Work Log:
+- Audited codebase for cash-flow / NSE / BSE usage — confirmed "Net Cash Flow — 15 Stocks" card is display-only, never feeds the magnet engine. No double-counting in scoring.
+- Designed Factor 12 scoring logic: FII+PropDesk = smart money (primary direction, ±2.0 max at ±2500 Cr), Client = contrarian fade (±0.4 max at ±2000 Cr), DII = counterweight dampener (±0.5 max when opposing smart money).
+- Built src/lib/participant-service.ts (260 lines):
+  * Upstash Redis integration (same pattern as signal-history.ts)
+  * Key: `participants:YYYY-MM-DD`, TTL 30 days (longer than signals — backtest data)
+  * getMostRecentParticipantFlow() walks backwards day-by-day from IST today (max 14 days lookback)
+  * getCachedParticipantBias() with 5-min in-memory cache (data changes once/day, cache saves ~3,800 Redis calls/day)
+  * Graceful degradation: returns neutral 0 when no data / Redis unconfigured
+  * computeParticipantBias() pure function — fully unit-testable
+- Built src/app/api/participants/daily/route.ts:
+  * POST — validates date + 4 numeric fields, stores in Upstash, invalidates bias cache
+  * GET — returns last 7 days of history + current bias for the dashboard card
+- Wired Factor 12 into src/lib/magnet-engine.ts:
+  * Added `participantBias` and `participantBiasDetail` fields to MagnetResult interface
+  * Added optional `participantBias` and `participantBiasDetail` to computeMagnet's enhancements param
+  * Added Factor 12 block in computeSignal() after Factor 11 (VIX Regime), before pin multiplier
+  * Updated scoring model comment header: 11 → 12 factors, max raw score ±15 → ±17
+  * When participantBias = 0 (no data), factor is neutral — engine behaves exactly as Phase 1
+- Updated src/app/api/kite/magnet-scan/route.ts:
+  * Imports getCachedParticipantBias from participant-service
+  * Fetches bias ONCE per scan (basket-level — same for all 19 symbols), before the symbol loop
+  * Passes bias to computeMagnet via enhancements for every symbol
+  * Exposes `participantBias: { weight, detail }` in the response for UI display
+- Built src/components/dashboard/participant-flow-card.tsx (290 lines):
+  * 4 labeled Cr inputs (FII / DII / Client / PropDesk) + date picker
+  * Save button → POST /api/participants/daily, then refetch
+  * Pre-fills form with most recent entry for quick editing
+  * 7-day history bar chart (FII red / DII green / Client blue / Prop orange)
+  * Shows current Factor 12 contribution + bias detail string
+  * Warning when Upstash not configured
+- Integrated card into src/components/dashboard/trend-analysis-tab.tsx (Section 3.4, above the Magnet grid)
+- Updated scripts/test-phase1-enhancements.ts:
+  * Added participantBias + participantBiasDetail to base MagnetResult
+  * Added Test 8 (Factor 12 — Participant Bias): 9 new test cases
+    - Strong smart buying → bull bias (≥+1.5, ≤+2.0)
+    - Strong smart selling → bear bias (≤-1.5, ≥-2.0)
+    - No data → neutral 0
+    - DII opposing FII dampens bias
+    - Factor 12 lifts MODERATE → STRONG when institutions confirm
+    - Factor 12 appears in reasons[] array with correct weight
+
+Stage Summary:
+- All 43 Phase 1 + 9 Phase 2 tests pass (52 total); signal-history tests 9/9; magnet-engine tests pass
+- Production build succeeds; new /api/participants/daily route registered
+- No new TypeScript errors in any touched file
+- Factor 12 is OPT-IN: until user pastes data, behavior is identical to Phase 1 (zero-scored neutral)
+- Storage cost: ~80 Upstash commands/day (negligible vs. signal-history's ~3,200)
+- Files: src/lib/participant-service.ts (new), src/app/api/participants/daily/route.ts (new), src/components/dashboard/participant-flow-card.tsx (new), src/lib/magnet-engine.ts (edited), src/app/api/kite/magnet-scan/route.ts (edited), src/components/dashboard/trend-analysis-tab.tsx (edited), scripts/test-phase1-enhancements.ts (edited)
+- Next: User starts pasting daily FII/DII/Client/PropDesk numbers from NSE website after market close. Factor 12 takes effect the next trading day. After 2-3 weeks of accumulated data, can backtest and tune the smart-money / contrarian / dampener thresholds.

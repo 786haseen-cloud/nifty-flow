@@ -148,6 +148,16 @@ export interface MagnetResult {
   vix: number | null;
   vixChangePct: number | null;  // change over last ~30 min
 
+  // ─── Phase 2 enhancement: Factor 12 (basket-level) ───
+  /** Participant flow bias from daily FII/DII/Client/PropDesk data.
+   *  Basket-level uniform shift (same for all 19 symbols), computed by
+   *  participant-service.computeParticipantBias() from the most recent
+   *  trading day's data. ±2.0 max. 0 = no data / neutral. */
+  participantBias: number;
+  /** Human-readable detail string for the reasons[] array. Empty when
+   *  no participant data is available. */
+  participantBiasDetail: string;
+
   // Trade signal (computed by computeSignal, attached at end of computeMagnet)
   signal: SignalResult;
 
@@ -857,6 +867,10 @@ export function computeMagnet(
     prevStrikes?: StrikeOption[] | null;
     vix?: number | null;
     vixChangePct?: number | null;
+    /** Factor 12 — basket-level participant bias (±2.0). Default 0. */
+    participantBias?: number | null;
+    /** Factor 12 — detail string for the reasons[] array. Default empty. */
+    participantBiasDetail?: string | null;
   },
 ): MagnetResult | null {
   if (strikes.length < 3 || spot <= 0) return null;
@@ -947,6 +961,9 @@ export function computeMagnet(
     oiBuildupStrength: oiBuildupResult.strength,
     vix: vixVal,
     vixChangePct: vixChangePct ?? null,
+    // Phase 2 enhancement: Factor 12 (participant bias — basket-level)
+    participantBias: enhancements?.participantBias ?? 0,
+    participantBiasDetail: enhancements?.participantBiasDetail ?? '',
     // signal is assigned below (must exist on the type, so we initialize with null-like)
     signal: null as unknown as SignalResult,
   };
@@ -957,24 +974,27 @@ export function computeMagnet(
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// TRADE SIGNAL ENGINE (Phase 1 Enhanced — 11 factors)
+// TRADE SIGNAL ENGINE (Phase 2 Enhanced — 12 factors)
 // ═══════════════════════════════════════════════════════════════════
 //
-// Combines 11 factors into a single actionable signal:
+// Combines 12 factors into a single actionable signal:
 //   BUY CALL | BUY PUT | WAIT
 //
 // The first 7 factors derive from the options OI snapshot (magnet/gamma
-// family). The last 4 are PHASE 1 ENHANCEMENTS — independent data sources
-// that provide orthogonal directional votes:
+// family). The next 4 are PHASE 1 ENHANCEMENTS — independent intraday
+// data sources. Factor 12 is a PHASE 2 ENHANCEMENT — basket-level
+// institutional positioning from daily NSE participant-wise reports.
+//
 //   - Futures basis (institutional positioning in futures market)
 //   - IV skew (what market is paying for direction)
 //   - OI buildup (ΔOI pattern over last poll interval)
 //   - VIX regime (fear/greed outside the options chain)
+//   - Participant bias (FII/Prop smart money vs Client contrarian)
 //
 // When 6+ factors align in the same direction, conviction is high because
 // the signal comes from independent data sources.
 //
-// SCORING MODEL (range: -15 to +15, + = bull, − = bear)
+// SCORING MODEL (range: -17 to +17, + = bull, − = bear)
 // ─────────────────────────────────────────────────────────────────
 // Factor                     Max ±  Bull condition                Bear condition
 // ─────────────────────────────────────────────────────────────────────────────
@@ -983,19 +1003,25 @@ export function computeMagnet(
 // 3. Magnet zone pull         ±1.5   Spot below zone (pulled up)   Spot above zone (pulled down)
 // 4. GEX walls around spot    ±1.5   Red above (calls explosive)   Red below (puts explosive)
 //                                     Green below (puts cushion)   Green above (calls capped)
-// 5. PCR sentiment            ±1.0   PCR > 1.2 (put writers)       PCR < 0.8 (call writers)
+// 5. PCR sentiment            ±1.0   PCR > 1.5 (put writers)       PCR < 0.55 (call writers)
 // 6. Gamma regime             ±0.5   Positive (dips bought)        Negative (breaks run)
 // 7. Pinning modifier         ×0.6-1.2  Low pin amplifies trend; High pin dampens
-// ── Phase 1 enhancements (independent data sources) ───────────
+// ── Phase 1 enhancements (intraday independent data sources) ────
 // 8. Futures basis            ±1.5   Premium (longs paying up)     Discount (longs unwinding)
 // 9. IV skew (risk reversal)  ±1.5   Calls pricier (bull sentiment) Puts pricier (hedging demand)
 // 10. OI buildup direction    ±1.5   Long buildup (put writing)    Short buildup (call writing)
 // 11. VIX regime              ±1.0   Low+falling (complacency)     High+rising (fear)
+// ── Phase 2 enhancement (basket-level daily institutional flow) ─
+// 12. Participant bias        ±2.0   FII+Prop net buying           FII+Prop net selling
+//                                     (Client contrarian fade)     (Client contrarian fade)
+//                                     (DII dampener if opposed)    (DII dampener if opposed)
 //
-// Total max raw |score| ≈ 15.0
-// After pin multiplier: max ≈ 18.0 (low pin) or 9.0 (high pin)
+// Total max raw |score| ≈ 17.0 (was 15.0 in Phase 1)
+// After pin multiplier: max ≈ 20.4 (low pin) or 10.2 (high pin)
 //
-// THRESHOLDS (calibrated to new max raw ±15)
+// THRESHOLDS (kept at Phase 1 calibration — ±2.0 from Factor 12 just
+// makes STRONG more reachable when institutions confirm; doesn't shift
+// the neutral band):
 //   |score| ≥ 9.0   → STRONG (high conviction — most factors aligned)
 //   |score| ≥ 5.5   → MODERATE
 //   |score| ≥ 2.0   → WEAK
@@ -1544,6 +1570,35 @@ export function computeSignal(m: MagnetResult): SignalResult {
       direction: 'neutral',
       weight: 0,
       detail: 'VIX unavailable',
+    });
+  }
+
+  // ── Factor 12: PARTICIPANT BIAS (±2.0 max) — Phase 2 basket-level ──
+  // Daily FII/DII/Client/PropDesk net buy/sell from NSE participant reports.
+  // Basket-level — same value for all 19 symbols (computed once per scan
+  // from the most recent trading day's data, not per-symbol).
+  //
+  // Logic (see participant-service.computeParticipantBias for full detail):
+  //   - Smart money (FII + PropDesk) → primary direction, ±2.0 max at ±2500 Cr
+  //   - Retail (Client) → contrarian fade, ±0.4 max at ±2000 Cr
+  //   - DII opposing smart → dampener, ±0.5 max
+  //
+  // When participantBias is 0 (no data pasted yet), this factor is neutral
+  // and the engine behaves exactly as it did in Phase 1.
+  if (m.participantBias !== 0) {
+    score += m.participantBias;
+    reasons.push({
+      factor: 'Participant Bias',
+      direction: m.participantBias > 0 ? 'bull' : 'bear',
+      weight: m.participantBias,
+      detail: m.participantBiasDetail || `Factor 12 = ${m.participantBias >= 0 ? '+' : ''}${m.participantBias.toFixed(2)}`,
+    });
+  } else {
+    reasons.push({
+      factor: 'Participant Bias',
+      direction: 'neutral',
+      weight: 0,
+      detail: m.participantBiasDetail || 'No recent participant flow data',
     });
   }
 

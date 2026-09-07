@@ -37,6 +37,7 @@ import {
   type StrikeOption,
 } from '@/lib/magnet-engine';
 import { persistSignal, patternMatch } from '@/lib/signal-history';
+import { getCachedParticipantBias } from '@/lib/participant-service';
 
 // ─── Helpers ───
 
@@ -173,6 +174,22 @@ export async function GET(req: NextRequest) {
 
     // Prune stale cache entries (cheap, runs once per poll)
     pruneCaches();
+
+    // ── Phase 2 (NEW): Fetch basket-level participant bias once per scan ──
+    // This is FII/DII/Client/PropDesk net flow from yesterday's NSE report,
+    // user-pasted via /api/participants/daily. Cached 5 min server-side.
+    // Returns 0 / neutral when no data has been pasted yet — non-fatal.
+    // Same bias applied to all 19 symbols (it's basket-level context, not
+    // per-symbol data).
+    let participantBias: number = 0;
+    let participantBiasDetail: string = '';
+    try {
+      const biasResult = await getCachedParticipantBias();
+      participantBias = biasResult.weight;
+      participantBiasDetail = biasResult.detail;
+    } catch (err) {
+      console.warn('[magnet-scan] participant bias fetch failed:', err);
+    }
 
     const spotMap = new Map<string, { price: number; time: string }>();
     for (const spec of allSpecs) {
@@ -353,6 +370,9 @@ export async function GET(req: NextRequest) {
           prevStrikes,
           vix: currentVix,
           vixChangePct,
+          // Phase 2: basket-level participant bias (same for all symbols)
+          participantBias,
+          participantBiasDetail,
         },
       );
 
@@ -423,6 +443,11 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({
       mode: 'live',
       symbols: results,
+      // Phase 2: expose basket-level participant bias for UI display
+      participantBias: {
+        weight: participantBias,
+        detail: participantBiasDetail,
+      },
       timestamp: new Date().toISOString(),
     });
   } catch (err) {

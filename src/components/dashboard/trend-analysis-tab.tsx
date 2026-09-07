@@ -40,6 +40,7 @@ import { useMagnetScan } from '@/hooks/use-magnet-scan';
 import MagnetCard, { MagnetSummaryRow } from '@/components/dashboard/magnet-card';
 import { SignalBanner } from '@/components/dashboard/signal-banner';
 import { RecentSignalsCard } from '@/components/dashboard/recent-signals-card';
+import { ParticipantFlowCard } from '@/components/dashboard/participant-flow-card';
 
 // ─── Trading Session X-Axis Helpers ───
 // Charts display a fixed trading-session window 09:15 → 15:40 IST.
@@ -655,6 +656,15 @@ export default function TrendAnalysisTab() {
           </div>
         </div>
       </div>
+
+      {/* Section 3.4: Participant Flow Card — FII/DII/Client/PropDesk daily input
+          ============================================================
+          User-paste input for Factor 12 of the magnet engine. User pastes
+          yesterday's NSE participant-wise numbers (₹ Cr) here once a day;
+          the magnet-scan route picks them up via /api/participants/daily
+          (Upstash Redis, 30-day TTL).
+      */}
+      <ParticipantFlowCard />
 
       {/* Section 3.5: Magnet & Gamma Dashboard — GEX / Zero-Γ / Charm / Pinning Probability
           ============================================================
