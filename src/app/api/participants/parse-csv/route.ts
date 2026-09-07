@@ -26,6 +26,7 @@
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { parseParticipantCsv, type ParsedParticipantCsv } from '@/lib/participant-csv-parser';
+import { saveParticipantPositioning } from '@/lib/participant-service';
 
 const MAX_FILE_SIZE = 1 * 1024 * 1024; // 1 MB
 
@@ -60,7 +61,34 @@ export async function POST(request: NextRequest) {
     const filename = file.name || 'upload.csv';
     const parsed: ParsedParticipantCsv = parseParticipantCsv(filename, content);
 
-    return NextResponse.json({ ok: true, parsed });
+    // ── Phase 2b/2c prep: persist positioning data (Reports 2 + 3) ──
+    // When the parsed CSV is an F&O participant OI or Volume report, also
+    // save the positioning data to Upstash (35-day TTL) so we have history
+    // for Phase 2b (futures positioning factor) and 2c (option footprint).
+    // Failure here is non-fatal — the parse result is still returned for
+    // the user to review.
+    let positioningSaved: { reportType: string; date: string } | null = null;
+    if (
+      parsed.date &&
+      parsed.positioning &&
+      (parsed.format === 'fao_participant_oi' || parsed.format === 'fao_participant_volume')
+    ) {
+      try {
+        const reportType = parsed.format === 'fao_participant_oi' ? 'fao_oi' : 'fao_vol';
+        const saved = await saveParticipantPositioning({
+          date: parsed.date,
+          reportType,
+          positioning: parsed.positioning,
+        });
+        if (saved) {
+          positioningSaved = { reportType, date: parsed.date };
+        }
+      } catch (err) {
+        console.warn('[participants/parse-csv] saveParticipantPositioning failed (non-fatal):', err);
+      }
+    }
+
+    return NextResponse.json({ ok: true, parsed, positioningSaved });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error('[participants/parse-csv] error:', msg);

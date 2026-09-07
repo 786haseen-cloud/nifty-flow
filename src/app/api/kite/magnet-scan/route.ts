@@ -37,7 +37,8 @@ import {
   type StrikeOption,
 } from '@/lib/magnet-engine';
 import { persistSignal, patternMatch } from '@/lib/signal-history';
-import { getCachedParticipantBias } from '@/lib/participant-service';
+import { getCachedParticipantBias, saveOptionChainSnapshot } from '@/lib/participant-service';
+import { istDateStr } from '@/lib/ist';
 
 // ─── Helpers ───
 
@@ -305,6 +306,17 @@ export async function GET(req: NextRequest) {
     // Phase 4: Compute magnet result per symbol
     const results: MagnetResult[] = [];
 
+    // Phase 2e prep: capture raw strikes per symbol for EOD snapshot
+    // (populated inside the loop, flushed to Upstash after the loop if
+    // current IST time is in the EOD window ≥ 15:25)
+    const eodSnapshots = new Map<string, {
+      spot: number;
+      strikeStep: number;
+      expiry: string;
+      dte: number;
+      strikes: { strike: number; ceOI: number; ceLTP: number; peOI: number; peLTP: number }[];
+    }>();
+
     for (const sd of symbolDataList) {
       // Group option quotes by strike for this symbol
       const strikeMap = new Map<number, { ceLTP: number; peLTP: number; ceOI: number; peOI: number }>();
@@ -384,6 +396,25 @@ export async function GET(req: NextRequest) {
           timestamp: Date.now(),
         });
         results.push(result);
+
+        // ── Phase 2e prep: capture raw strikes for EOD snapshot ──
+        // We stash the raw strikes + metadata here (in scope) and flush
+        // to Upstash AFTER the loop. The actual save only happens if the
+        // current IST time is >= 15:25 (5 min before close). Idempotency
+        // is enforced inside saveOptionChainSnapshot.
+        eodSnapshots.set(sd.symbol, {
+          spot: sd.spot,
+          strikeStep: sd.strikeStep,
+          expiry: sd.expiry,
+          dte: computeDTE(sd.expiry),
+          strikes: strikes.map(s => ({
+            strike: s.strike,
+            ceOI: s.ceOI,
+            ceLTP: s.ceLTP,
+            peOI: s.peOI,
+            peLTP: s.peLTP,
+          })),
+        });
       }
     }
 
@@ -439,6 +470,50 @@ export async function GET(req: NextRequest) {
       if (a.type !== b.type) return a.type === 'index' ? -1 : 1;
       return a.symbol.localeCompare(b.symbol);
     });
+
+    // ── Phase 2e prep: End-of-day option chain snapshots ──
+    // At 15:25 IST (5 min before close), persist a snapshot of each
+    // symbol's option chain (top 11 strikes × CE/PE × OI/LTP) to Upstash
+    // (60-day TTL). Used for future Phase 2e strike-level OI buildup
+    // pattern analysis.
+    //
+    // Snapshot is captured inside the per-symbol loop above (where the
+    // raw `strikes` array is in scope) and stored on a Map; here we just
+    // flush them to Redis in parallel. saveOptionChainSnapshot has built-
+    // in idempotency (one snapshot per symbol per IST date) so it's safe
+    // to call on every poll after 15:25.
+    const istNow = new Date(Date.now() + (5.5 * 60 + new Date().getTimezoneOffset()) * 60_000);
+    const istMinutes = istNow.getHours() * 60 + istNow.getMinutes();
+    const istDate = istDateStr();
+    const isEodWindow = istMinutes >= 15 * 60 + 25; // 15:25 IST onwards
+
+    if (isEodWindow && eodSnapshots.size > 0) {
+      // Fire-and-forget — don't block the response on snapshots
+      Promise.all(Array.from(eodSnapshots.entries()).map(async ([symbol, snap]) => {
+        try {
+          await saveOptionChainSnapshot({
+            symbol,
+            date: istDate,
+            time: istNow.toLocaleTimeString('en-IN', { hour12: false, timeZone: 'Asia/Kolkata' }),
+            spot: snap.spot,
+            atmStrike: Math.round(snap.spot / snap.strikeStep) * snap.strikeStep,
+            strikeStep: snap.strikeStep,
+            expiry: snap.expiry,
+            daysToExpiry: snap.dte,
+            strikes: snap.strikes.map(s => ({
+              strike: s.strike,
+              ceOI: s.ceOI,
+              ceLTP: s.ceLTP,
+              peOI: s.peOI,
+              peLTP: s.peLTP,
+            })),
+          });
+        } catch (err) {
+          // Non-fatal
+          console.warn(`[magnet-scan] EOD snapshot for ${symbol} failed:`, err);
+        }
+      })).catch(() => { /* swallow — non-fatal */ });
+    }
 
     return NextResponse.json({
       mode: 'live',

@@ -377,3 +377,267 @@ export async function getCachedParticipantBias(): Promise<ParticipantBiasResult>
   biasCache.set('most-recent', { ts: Date.now(), bias });
   return bias;
 }
+
+// ═══════════════════════════════════════════════════════════════════
+// POSITIONING STORAGE (Phase 2b/2c preparation)
+// ═══════════════════════════════════════════════════════════════════
+//
+// Stores NSE F&O participant OI + Volume reports (Reports 2 + 3) so we
+// can build Phase 2b (futures positioning) and Phase 2c (aggregate
+// option footprint) factors after 2-3 weeks of accumulation.
+//
+// TTL: 35 days — covers 5 weekly cycles + buffer for monthly comparisons.
+//
+// Key schema:
+//   participant_positioning:YYYY-MM-DD:fao_oi   → Report 2 (OI snapshot)
+//   participant_positioning:YYYY-MM-DD:fao_vol  → Report 3 (volume snapshot)
+//
+// Cost: 2 writes/day when user uploads both files. Negligible read cost
+// (Phase 2b will cache reads like Factor 12 does).
+
+// ─── Types ───
+
+export type PositioningReportType = 'fao_oi' | 'fao_vol';
+
+export interface ParticipantPositioning {
+  /** IST trading-day date (YYYY-MM-DD). */
+  date: string;
+  /** Which NSE report — 'fao_oi' (snapshot) or 'fao_vol' (today's trades). */
+  reportType: PositioningReportType;
+  /** Per-participant long/short contract counts. */
+  positioning: {
+    client: { longContracts: number; shortContracts: number };
+    dii: { longContracts: number; shortContracts: number };
+    fii: { longContracts: number; shortContracts: number };
+    pro: { longContracts: number; shortContracts: number };
+  };
+  /** Unix ms when stored. */
+  ts: number;
+}
+
+const POSITIONING_TTL_SECONDS = 35 * 24 * 60 * 60; // 35 days
+const POSITIONING_KEY_PREFIX = 'participant_positioning';
+
+function positioningKey(date: string, reportType: PositioningReportType): string {
+  return `${POSITIONING_KEY_PREFIX}:${date}:${reportType}`;
+}
+
+// ─── Public API: saveParticipantPositioning ───
+
+/**
+ * Save a day's participant positioning entry (Report 2 or Report 3).
+ * Validates inputs and stores under `participant_positioning:DATE:TYPE`.
+ */
+export async function saveParticipantPositioning(
+  entry: Omit<ParticipantPositioning, 'ts'> & { ts?: number }
+): Promise<ParticipantPositioning | null> {
+  const redis = getRedis();
+  if (!redis) return null;
+
+  // Validate
+  if (!entry.date || !/^\d{4}-\d{2}-\d{2}$/.test(entry.date)) {
+    throw new Error(`Invalid date format: "${entry.date}" — expected YYYY-MM-DD`);
+  }
+  if (entry.reportType !== 'fao_oi' && entry.reportType !== 'fao_vol') {
+    throw new Error(`Invalid reportType: "${entry.reportType}" — expected 'fao_oi' or 'fao_vol'`);
+  }
+  if (!entry.positioning) {
+    throw new Error('Missing positioning object');
+  }
+
+  const now = entry.ts ?? Date.now();
+  const fullEntry: ParticipantPositioning = {
+    date: entry.date,
+    reportType: entry.reportType,
+    positioning: entry.positioning,
+    ts: now,
+  };
+
+  try {
+    const key = positioningKey(entry.date, entry.reportType);
+    await redis.set(key, JSON.stringify(fullEntry), { ex: POSITIONING_TTL_SECONDS });
+    return fullEntry;
+  } catch (err) {
+    console.warn(`[participant-service] saveParticipantPositioning(${entry.date}, ${entry.reportType}) failed:`, err);
+    return null;
+  }
+}
+
+// ─── Public API: getParticipantPositioningByDate ───
+
+export async function getParticipantPositioningByDate(
+  date: string,
+  reportType: PositioningReportType
+): Promise<ParticipantPositioning | null> {
+  const redis = getRedis();
+  if (!redis) return null;
+  try {
+    const raw = await redis.get<string>(positioningKey(date, reportType));
+    if (!raw) return null;
+    return JSON.parse(raw) as ParticipantPositioning;
+  } catch (err) {
+    console.warn(`[participant-service] getParticipantPositioningByDate(${date}, ${reportType}) failed:`, err);
+    return null;
+  }
+}
+
+// ─── Public API: getRecentPositioning ───
+
+/**
+ * Get the last N days of positioning entries for a given report type.
+ * Walks backwards day-by-day from today (IST) until N entries found or
+ * maxLookback reached. Returns most-recent-first.
+ */
+export async function getRecentPositioning(
+  reportType: PositioningReportType,
+  limit: number = 7,
+  maxLookback: number = 35
+): Promise<ParticipantPositioning[]> {
+  const redis = getRedis();
+  if (!redis) return [];
+
+  const todayIST = istDateStr();
+  const [yy, mm, dd] = todayIST.split('-').map(Number);
+  if (!yy || !mm || !dd) return [];
+
+  const results: ParticipantPositioning[] = [];
+
+  try {
+    for (let offset = 0; offset < maxLookback && results.length < limit; offset++) {
+      const d = new Date(Date.UTC(yy, mm - 1, dd - offset));
+      const dateStr = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
+      const raw = await redis.get<string>(positioningKey(dateStr, reportType));
+      if (raw) {
+        results.push(JSON.parse(raw) as ParticipantPositioning);
+      }
+    }
+    return results; // most-recent-first
+  } catch (err) {
+    console.warn(`[participant-service] getRecentPositioning(${reportType}) failed:`, err);
+    return [];
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// OPTION CHAIN SNAPSHOT STORAGE (Phase 2e preparation)
+// ═══════════════════════════════════════════════════════════════════
+//
+// Stores end-of-day option chain snapshots per symbol per day so we can
+// build Phase 2e (strike-level OI buildup patterns) after 4-6 weeks of
+// accumulation. Snapshot is taken at 3:25 PM IST (5 min before close)
+// by the magnet-scan route.
+//
+// TTL: 60 days — enough for 2 monthly cycles of strike-level analysis.
+//
+// Key schema:
+//   optionchain:SYMBOL:YYYY-MM-DD → top 11 strikes × 2 sides × key fields
+//
+// Cost: ~19 writes/day (one per symbol at close). Storage ~3 KB/symbol/day.
+
+export interface OptionChainSnapshotStrike {
+  strike: number;
+  ceOI: number;
+  ceLTP: number;
+  peOI: number;
+  peLTP: number;
+}
+
+export interface OptionChainSnapshot {
+  /** Symbol (e.g. "NIFTY 50", "RELIANCE"). */
+  symbol: string;
+  /** IST trading-day date (YYYY-MM-DD). */
+  date: string;
+  /** IST time of snapshot (HH:MM:SS). */
+  time: string;
+  /** Spot at snapshot. */
+  spot: number;
+  /** ATM strike. */
+  atmStrike: number;
+  /** Strike step (50 for NIFTY, 100 for stocks, etc.). */
+  strikeStep: number;
+  /** Expiry date string (from Kite instrument). */
+  expiry: string;
+  /** Days to expiry at snapshot. */
+  daysToExpiry: number;
+  /** Top 11 strikes × 2 sides. */
+  strikes: OptionChainSnapshotStrike[];
+  /** Unix ms when stored. */
+  ts: number;
+}
+
+const OPTIONCHAIN_TTL_SECONDS = 60 * 24 * 60 * 60; // 60 days
+const OPTIONCHAIN_KEY_PREFIX = 'optionchain';
+
+function optionChainKey(symbol: string, date: string): string {
+  // Sanitize symbol (some have spaces / special chars)
+  const safe = symbol.replace(/[^A-Za-z0-9_-]/g, '_');
+  return `${OPTIONCHAIN_KEY_PREFIX}:${safe}:${date}`;
+}
+
+// ─── In-memory "already snapshotted today" memo ───
+// Prevents re-snapshotting on every poll after 3:25 PM. Reset when the
+// IST date changes.
+const snapshotMemo = new Map<string, string>(); // symbol → IST date string
+
+function shouldSnapshotToday(symbol: string, istDate: string): boolean {
+  const last = snapshotMemo.get(symbol);
+  if (last === istDate) return false;
+  return true;
+}
+
+function markSnapshotted(symbol: string, istDate: string): void {
+  snapshotMemo.set(symbol, istDate);
+}
+
+// ─── Public API: saveOptionChainSnapshot ───
+
+/**
+ * Save an end-of-day option chain snapshot for a symbol.
+ * Idempotent within a day — if already snapshotted for this IST date,
+ * returns null without writing (avoids burning Redis writes on every poll).
+ */
+export async function saveOptionChainSnapshot(
+  entry: Omit<OptionChainSnapshot, 'ts'> & { ts?: number }
+): Promise<OptionChainSnapshot | null> {
+  const redis = getRedis();
+  if (!redis) return null;
+
+  // Idempotency check — skip if already snapshotted today
+  if (!shouldSnapshotToday(entry.symbol, entry.date)) {
+    return null;
+  }
+
+  const now = entry.ts ?? Date.now();
+  const fullEntry: OptionChainSnapshot = {
+    ...entry,
+    ts: now,
+  };
+
+  try {
+    const key = optionChainKey(entry.symbol, entry.date);
+    await redis.set(key, JSON.stringify(fullEntry), { ex: OPTIONCHAIN_TTL_SECONDS });
+    markSnapshotted(entry.symbol, entry.date);
+    return fullEntry;
+  } catch (err) {
+    console.warn(`[participant-service] saveOptionChainSnapshot(${entry.symbol}, ${entry.date}) failed:`, err);
+    return null;
+  }
+}
+
+// ─── Public API: getOptionChainSnapshot ───
+
+export async function getOptionChainSnapshot(
+  symbol: string,
+  date: string
+): Promise<OptionChainSnapshot | null> {
+  const redis = getRedis();
+  if (!redis) return null;
+  try {
+    const raw = await redis.get<string>(optionChainKey(symbol, date));
+    if (!raw) return null;
+    return JSON.parse(raw) as OptionChainSnapshot;
+  } catch (err) {
+    console.warn(`[participant-service] getOptionChainSnapshot(${symbol}, ${date}) failed:`, err);
+    return null;
+  }
+}

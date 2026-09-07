@@ -175,3 +175,58 @@ Stage Summary:
 - Type-check clean for all touched files
 - Files: src/lib/participant-csv-parser.ts (new, 285 lines), src/app/api/participants/parse-csv/route.ts (new), src/components/dashboard/participant-flow-card.tsx (edited), scripts/test-csv-parser.ts (new)
 - Next: User uploads FII/DII cash CSV → form auto-populates → clicks Save → Factor 12 takes effect next trading day. Phase 2b (positioning factor from F&O OI file) can be built later when we have 2-3 weeks of accumulated positioning data.
+
+---
+Task ID: 5
+Agent: Main
+Task: Phase 2b/2c/2e preparation — start accumulating positioning + option chain history
+
+Work Log:
+- Extended src/lib/participant-service.ts with two new storage layers:
+  1. POSITIONING STORAGE (Phase 2b/2c prep)
+     - New types: PositioningReportType, ParticipantPositioning
+     - Key: participant_positioning:YYYY-MM-DD:fao_oi | fao_vol
+     - TTL: 35 days (covers 5 weekly cycles + buffer for monthly comparisons)
+     - Functions: saveParticipantPositioning, getParticipantPositioningByDate, getRecentPositioning
+     - Cost: 2 writes/day when user uploads Reports 2 + 3
+  2. OPTION CHAIN SNAPSHOT STORAGE (Phase 2e prep)
+     - New types: OptionChainSnapshotStrike, OptionChainSnapshot
+     - Key: optionchain:SYMBOL:YYYY-MM-DD
+     - TTL: 60 days (2 monthly cycles for strike-level analysis)
+     - Functions: saveOptionChainSnapshot, getOptionChainSnapshot
+     - In-memory idempotency memo (Map<symbol, istDate>) prevents re-snapshotting on every poll
+     - Cost: ~19 writes/day at EOD only
+
+- Updated src/app/api/participants/parse-csv/route.ts:
+  - When parsed CSV is fao_participant_oi or fao_participant_volume, also
+    saves positioning data to Upstash (35-day TTL) — non-fatal if it fails
+  - Returns positioningSaved: { reportType, date } | null in response
+  - User receives feedback that positioning was auto-saved for Phase 2b/2c
+
+- Updated src/app/api/kite/magnet-scan/route.ts:
+  - Declares eodSnapshots Map before per-symbol loop
+  - Inside loop, after computeMagnet, captures raw strikes (ceOI, ceLTP,
+    peOI, peLTP per strike) + spot + strikeStep + expiry + dte per symbol
+  - After loop, when IST time >= 15:25 (5 min before market close),
+    flushes all snapshots to Upstash in parallel (fire-and-forget, non-blocking)
+  - saveOptionChainSnapshot's idempotency memo ensures one snapshot per
+    symbol per IST date — subsequent polls after 15:25 are no-ops
+
+- Updated src/components/dashboard/participant-flow-card.tsx:
+  - Added positioningSaved field to ParseCsvResponse type
+  - When upload returns positioningSaved, success message updates to
+    "OI snapshot auto-saved to Upstash for Phase 2b/2c history"
+  - User gets clear feedback that positioning data is being accumulated
+
+Stage Summary:
+- Storage layers in place — no factor changes, no UI changes (just feedback)
+- Positioning data (Reports 2+3) starts accumulating from today, 35-day TTL
+- EOD option chain snapshots start today (during 15:25-15:40 IST window),
+  60-day TTL, one per symbol per day, idempotent
+- Free-tier budget: ~21 writes/day added (negligible vs 10k limit)
+- Storage budget: ~3 KB/symbol/day × 19 symbols × 60 days = ~3.4 MB
+  (out of 256 MB free tier = 1.3%)
+- All 43 Phase 1+2 tests still pass; build succeeds
+- After 2-3 weeks of accumulation, Phase 2b (futures positioning factor)
+  can be built with proper historical comparisons
+- After 4-6 weeks, Phase 2e (strike-level OI buildup patterns) can be built

@@ -85,6 +85,7 @@ interface ParsedParticipantCsv {
 interface ParseCsvResponse {
   ok: boolean;
   parsed?: ParsedParticipantCsv;
+  positioningSaved?: { reportType: string; date: string } | null;
   error?: string;
 }
 
@@ -218,7 +219,14 @@ export function ParticipantFlowCard() {
       if (parsed.client !== 0) setClient(String(parsed.client));
       if (parsed.propdesk !== 0) setPropdesk(String(parsed.propdesk));
 
-      setSaveOk(`Parsed ${parsed.format.replace(/_/g, ' ')} — review fields below and click Save`);
+      // Build feedback message — mention if positioning data was auto-saved
+      const formatLabel = parsed.format.replace(/_/g, ' ');
+      let msg = `Parsed ${formatLabel} — review fields below and click Save`;
+      if (json.positioningSaved) {
+        const rt = json.positioningSaved.reportType === 'fao_oi' ? 'OI snapshot' : 'volume snapshot';
+        msg = `Parsed ${formatLabel}. ${rt} auto-saved to Upstash for Phase 2b/2c history.`;
+      }
+      setSaveOk(msg);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       setError(`CSV parse failed: ${msg}`);
