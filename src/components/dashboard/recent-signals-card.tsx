@@ -56,6 +56,21 @@ interface RecentSignalsResponse {
   error?: string;
 }
 
+interface RedisStatusResponse {
+  mode: 'live' | 'error';
+  configured: boolean;
+  urlPresent: boolean;
+  tokenPresent: boolean;
+  pingOk: boolean | null;
+  pingError?: string;
+  pingLatencyMs?: number;
+  symbolsWithHistory: number;
+  totalEntries: number;
+  newestTs: number | null;
+  timestamp: string;
+  error?: string;
+}
+
 const POLL_INTERVAL_MS = 60_000; // 60s — same as magnet-scan
 
 // ─── Helpers ───
@@ -169,6 +184,9 @@ export function RecentSignalsCard() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [lastFetch, setLastFetch] = useState<number>(0);
+  // Upstash connection status — fetched once on mount to tell the user
+  // *why* the card is empty (not-configured vs no-data-yet vs ping-failed).
+  const [redisStatus, setRedisStatus] = useState<RedisStatusResponse | null>(null);
 
   const fetchSignals = useCallback(async () => {
     try {
@@ -188,11 +206,24 @@ export function RecentSignalsCard() {
     }
   }, []);
 
+  // Fetch Upstash diagnostic status once on mount.
+  const fetchRedisStatus = useCallback(async () => {
+    try {
+      const res = await fetch(withCreds('/api/kite/redis-status'));
+      const json: RedisStatusResponse = await res.json();
+      setRedisStatus(json);
+    } catch {
+      // Silent — the empty-state below falls back to a generic message
+      // if redisStatus is still null.
+    }
+  }, []);
+
   useEffect(() => {
     fetchSignals();
+    fetchRedisStatus();
     const timer = setInterval(fetchSignals, POLL_INTERVAL_MS);
     return () => clearInterval(timer);
-  }, [fetchSignals]);
+  }, [fetchSignals, fetchRedisStatus]);
 
   return (
     <div className="rounded-xl border border-border bg-card/50 backdrop-blur p-3">
@@ -227,12 +258,43 @@ export function RecentSignalsCard() {
         </div>
       ) : signals.length === 0 ? (
         <div className="py-6 text-center text-[10px] text-muted-foreground">
-          <div className="mb-1">No signal history yet</div>
-          <div className="text-[9px] text-muted-foreground/70">
-            Card will populate once signals fire during market hours.
-            <br />
-            First few sessions will build the 7-day rolling database.
-          </div>
+          {/* Diagnose *why* the card is empty using the Upstash status fetch. */}
+          {redisStatus && !redisStatus.configured ? (
+            <>
+              <div className="mb-1 text-amber-300 font-semibold">Upstash Redis not configured</div>
+              <div className="text-[9px] text-muted-foreground/70">
+                Set <code className="text-amber-300/90">UPSTASH_REDIS_REST_URL</code> and
+                <code className="text-amber-300/90"> UPSTASH_REDIS_REST_TOKEN</code> env vars
+                (Vercel → Project → Settings → Environment Variables) and redeploy to enable
+                7-day signal history.
+              </div>
+            </>
+          ) : redisStatus && redisStatus.configured && redisStatus.pingOk === false ? (
+            <>
+              <div className="mb-1 text-red-300 font-semibold">Upstash ping failed</div>
+              <div className="text-[9px] text-muted-foreground/70 font-mono">
+                {redisStatus.pingError || 'Could not reach Upstash Redis — check URL/token are valid.'}
+              </div>
+            </>
+          ) : redisStatus && redisStatus.configured && redisStatus.pingOk ? (
+            <>
+              <div className="mb-1">No signal history yet</div>
+              <div className="text-[9px] text-muted-foreground/70">
+                Upstash connected (ping {redisStatus.pingLatencyMs ?? '?'}ms, {redisStatus.symbolsWithHistory}/19 symbols have data).
+                <br />
+                Card will populate once signals fire during market hours.
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="mb-1">No signal history yet</div>
+              <div className="text-[9px] text-muted-foreground/70">
+                Card will populate once signals fire during market hours.
+                <br />
+                First few sessions will build the 7-day rolling database.
+              </div>
+            </>
+          )}
         </div>
       ) : (
         <div className="space-y-1">

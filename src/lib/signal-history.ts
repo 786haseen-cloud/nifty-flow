@@ -520,8 +520,6 @@ export interface RedisStatusInfo {
   totalEntries: number;
   /** Newest entry timestamp (unix ms) across all symbols, or null. */
   newestTs: number | null;
-  /** Oldest entry timestamp (unix ms) across all symbols, or null. */
-  oldestTs: number | null;
 }
 
 /**
@@ -544,7 +542,6 @@ export async function getRedisStatus(symbols: string[]): Promise<RedisStatusInfo
     symbolsWithHistory: 0,
     totalEntries: 0,
     newestTs: null,
-    oldestTs: null,
   };
   if (!configured) return info;
 
