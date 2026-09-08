@@ -17,6 +17,7 @@ import {
   INDEX_SPECS,
   STOCK_SPECS,
   KITE_FNO_ALT_NAMES,
+  matchesUnderlying,
   type KiteQuote,
   type StrikeFlowData,
 } from '@/lib/kite-api';
@@ -125,18 +126,33 @@ async function fetchLiveData(): Promise<HighestBetResponse> {
       'SENSEX': ['SENSEX'],
     };
     const altNames = KITE_INDEX_NAMES[spec.symbol] || [spec.symbol];
-    const cashInst = allInstruments.find(i =>
-      i.exchange === cashExchange &&
-      i.instrumentType === cashType &&
-      (altNames.some(n => i.tradingSymbol.toUpperCase() === n.toUpperCase()) ||
-        altNames.some(n => i.name.toUpperCase().includes(n.toUpperCase())))
-    ) || allInstruments.find(i =>
-      // Fallback: match by segment 'INDICES' for indices (in case normalizer didn't run)
-      isIndex && i.exchange === cashExchange &&
-      i.segment === 'INDICES' &&
-      (altNames.some(n => i.tradingSymbol.toUpperCase().includes(n.toUpperCase())) ||
-        altNames.some(n => i.name.toUpperCase().includes(n.toUpperCase())))
-    );
+    // EXACT-FIRST matching: try tradingSymbol equality, then exact name
+    // equality, and only then a name-includes fallback. A single predicate
+    // mixing exact + includes() could grab the WRONG instrument that happens
+    // to sort earlier in the CSV (e.g. 'NIFTY NEXT 50' name-matches 'NIFTY',
+    // VOLTAS name-matches 'LT').
+    const cashInst =
+      allInstruments.find(i =>
+        i.exchange === cashExchange &&
+        i.instrumentType === cashType &&
+        altNames.some(n => i.tradingSymbol.toUpperCase() === n.toUpperCase())
+      ) ||
+      (isIndex ? allInstruments.find(i =>
+        // Fallback: match by segment 'INDICES' for indices (in case normalizer didn't run)
+        i.exchange === cashExchange &&
+        i.segment === 'INDICES' &&
+        altNames.some(n => i.tradingSymbol.toUpperCase() === n.toUpperCase())
+      ) : undefined) ||
+      allInstruments.find(i =>
+        i.exchange === cashExchange &&
+        i.instrumentType === cashType &&
+        altNames.some(n => i.name.toUpperCase() === n.toUpperCase())
+      ) ||
+      allInstruments.find(i =>
+        i.exchange === cashExchange &&
+        i.instrumentType === cashType &&
+        altNames.some(n => i.name.toUpperCase().includes(n.toUpperCase()))
+      );
 
     if (!cashInst) continue;
 
@@ -146,15 +162,15 @@ async function fetchLiveData(): Promise<HighestBetResponse> {
       'ETERNAL': ['ETERNAL', 'ZOMATO'],
       'TITAN': ['TITAN COMPANY', 'TITAN'],
     };
+    // EXACT underlying match (prefix-based) for futures. Substring matching
+    // ('LT' in altStockNames) matched LTF/LTTS/LTFOODS/LTIM/VOLTAS/DELTACORP/
+    // GUJGASLTD/BEMLTD futures too, and the first-match find() could return
+    // ANOTHER stock's contract for LT. See matchesUnderlying() in kite-api.
     const altStockNames = KITE_STOCK_NAMES[spec.symbol.toUpperCase()] || [spec.symbol.toUpperCase()];
-    // Find current-month future instrument
     const futures = allInstruments.filter(i =>
       i.exchange === optExchange &&
       i.instrumentType === futType &&
-      altStockNames.some(n =>
-        i.name.toUpperCase().includes(n.toUpperCase()) ||
-        i.tradingSymbol.toUpperCase().includes(n.toUpperCase())
-      )
+      matchesUnderlying(i.tradingSymbol, i.name, spec.symbol, altStockNames)
     );
     const todayStr = istTodayISO();
     const nearestExpiry = [...new Set(futures.map(f => f.expiry))].sort()
@@ -252,8 +268,7 @@ async function fetchLiveData(): Promise<HighestBetResponse> {
     // ('CE'/'PE') back to legacy ('OPTIDX'/'OPTSTK') when parsing the CSV.
     //
     // Stock name mapping: Kite uses underlying name for F&O (e.g. 'LARSEN & TOUBRO'
-    // for LT options, 'MAHINDRA & MAHINDRA' for M&M options). We map our short
-    // symbol to the possible Kite names/tradingSymbol prefixes.
+    // for LT options, 'MAHINDRA & MAHINDRA' for M&M options).
     // Stock alt-name mapping for F&O underlying name mismatches
     const KITE_STOCK_NAMES: Record<string, string[]> = {
       'LT': ['LARSEN', 'LT'],
@@ -267,13 +282,16 @@ async function fetchLiveData(): Promise<HighestBetResponse> {
     const altNames = prep.isIndex
       ? (KITE_FNO_ALT_NAMES[prep.symbol] || [prep.symbol])
       : (KITE_STOCK_NAMES[prep.symbol.toUpperCase()] || [prep.symbol.toUpperCase()]);
+    // EXACT underlying match (prefix-based). Substring .includes() merged
+    // every 'LT'-containing underlying (LTF/LTTS/LTFOODS/LTIM/VOLTAS/DELTACORP/
+    // GUJGASLTD/BEMLTD) into LT's option set — the merged strike list corrupted
+    // the strikeStep derivation and LT's 9-strike ATM window came back with
+    // <3 real strikes → Basis tab still showed LT (needs only spot+fut price)
+    // but the OI Walls tab had no wall data. See matchesUnderlying().
     const opts = allInstruments.filter(i =>
       i.exchange === prep.optExchange &&
       i.instrumentType === prep.instrumentType &&
-      altNames.some(n =>
-        i.name.toUpperCase().includes(n.toUpperCase()) ||
-        i.tradingSymbol.toUpperCase().includes(n.toUpperCase())
-      )
+      matchesUnderlying(i.tradingSymbol, i.name, prep.symbol, altNames)
     );
     if (opts.length === 0) {
       console.warn(`[HighestBet] No options found for ${prep.symbol} (exchange=${prep.optExchange}, type=${prep.instrumentType}, altNames=[${altNames.join(',')}])`);

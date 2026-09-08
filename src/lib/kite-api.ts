@@ -447,6 +447,44 @@ export async function getCandles(
 // ─── Option Chain ───
 
 /**
+ * Extract the UNDERLYING ticker from a Kite F&O trading symbol.
+ * Kite format: {UNDERLYING}{YY}{MMM}... e.g. 'LT26SEP3600CE' → 'LT',
+ * 'LT26SEPFUT' → 'LT', 'M&M26SEP3200CE' → 'M&M'.
+ *
+ * This is the ONLY safe way to attribute an option/future to its underlying.
+ * Substring matching (.includes('LT')) collides with every symbol containing
+ * 'LT': LTF, LTTS, LTFOODS, LTIM, VOLTAS (VO-LT-AS), DELTACORP (DE-LT-A),
+ * GUJGASLTD, BEMLTD. That collision merged ~9 stocks' options into LT's
+ * chain, corrupted the derived strikeStep/lotSize and silently dropped LT
+ * from magnet-scan (Trend tab), max-pain-scan and the OI Walls tab.
+ */
+export function underlyingPrefix(tradingSymbol: string): string {
+  const m = tradingSymbol.toUpperCase().match(/^([A-Z][A-Z&\-]*)\d/);
+  return m ? m[1] : '';
+}
+
+/**
+ * EXACT underlying match for F&O instruments (options + futures).
+ *
+ * Primary: trading-symbol prefix equality — 'LT26SEP3600CE' → prefix 'LT'
+ * matches symbol 'LT', while 'LTF26...' / 'LTTS26...' / 'VOLTAS26...' do NOT.
+ * Fallback: exact NAME equality against the symbol or its aliases (covers
+ * exotic ts formats without reintroducing substring collisions).
+ */
+export function matchesUnderlying(
+  tradingSymbol: string,
+  name: string,
+  symbol: string,
+  aliases: string[] = [],
+): boolean {
+  const prefix = underlyingPrefix(tradingSymbol);
+  const symUp = symbol.toUpperCase();
+  if (prefix && prefix === symUp) return true;
+  const nameUp = (name || '').toUpperCase();
+  return [symUp, ...aliases.map(a => a.toUpperCase())].some(t => nameUp === t);
+}
+
+/**
  * Get option chain for an index or stock
  * Uses InstrumentSpec for correct exchange, segment
  * Fetches lot size + strike step DYNAMICALLY from Kite CSV
@@ -472,25 +510,20 @@ export async function getOptionInstruments(
 
   // Filter options using spec.
   //
-  // Kite changed their CSV format in 2025:
-  //   OLD: segment='NFO'/'BFO', instrument_type='OPTIDX'/'OPTSTK'
-  //   NEW: segment='NFO-OPT'/'BFO-OPT', instrument_type='CE'/'PE' (we normalize to OPTIDX)
-  //
-  // So we use a "starts with" match on segment (so 'NFO' matches both 'NFO' and 'NFO-OPT'),
-  // and an equality match on instrumentType (we've already normalized new → legacy).
-  // Also check searchAliases for symbols whose Kite names don't contain the symbol
-  // (e.g. FINNIFTY → Kite uses "NIFTY FIN SERVICE" / "NIFTYFIN" in trading symbols).
+  // EXACT underlying match (prefix-based). The previous substring matching
+  // (.includes('LT') / .includes('NIFTY')) merged foreign underlyings into
+  // the chain: LTF/LTTS/LTFOODS/LTIM/VOLTAS/DELTACORP/GUJGASLTD/BEMLTD into
+  // LT's options, BANKNIFTY/FINNIFTY/MIDCPNIFTY into NIFTY's. The merged
+  // strike set corrupted the dynamic strikeStep + lotSize derivation and
+  // made LT silently vanish from magnet-scan, max-pain-scan and OI Walls.
   const symUpper = symbol.toUpperCase();
   const aliases = (spec.searchAliases || []).map(a => a.toUpperCase());
-  const searchTerms = [symUpper, ...aliases];
 
   const indexOptions = instruments.filter(i => {
     if (!(i.segment.startsWith(spec.segment) && i.instrumentType === spec.instrumentType)) {
       return false;
     }
-    const nameUp = i.name.toUpperCase();
-    const tsUp = i.tradingSymbol.toUpperCase();
-    return searchTerms.some(term => nameUp.includes(term) || tsUp.includes(term));
+    return matchesUnderlying(i.tradingSymbol, i.name, symUpper, aliases);
   });
 
   if (indexOptions.length === 0) return { instruments: [], meta: { lotSize: 1, strikeStep: 50 } };
@@ -564,15 +597,15 @@ export async function getFutureInstrument(
 
   const symUpper = symbol.toUpperCase();
   const aliases = (spec.searchAliases || []).map(a => a.toUpperCase());
-  const searchTerms = [symUpper, ...aliases];
 
-  // Filter: must be a future, name/tradingSymbol must match
+  // EXACT underlying match (prefix-based) — substring matching let the
+  // first-match `find()` below pick ANOTHER stock's futures contract
+  // (e.g. VOLTAS/DELTACORP futures for LT) whenever they sorted earlier
+  // in the CSV. See matchesUnderlying().
   const futures = instruments.filter(i => {
     if (i.instrumentType !== futType) return false;
     if (!i.segment.startsWith(spec.segment)) return false;
-    const nameUp = i.name.toUpperCase();
-    const tsUp = i.tradingSymbol.toUpperCase();
-    return searchTerms.some(term => nameUp.includes(term) || tsUp.includes(term));
+    return matchesUnderlying(i.tradingSymbol, i.name, symUpper, aliases);
   });
 
   if (futures.length === 0) return null;
@@ -769,12 +802,16 @@ export async function getInstrumentMeta(
   const allInstruments = await getInstruments(spec.segment);
 
   // Filter to this symbol's options for current/near expiry.
-  // Use startsWith on segment to match both legacy 'NFO' and new 'NFO-OPT' formats.
+  // EXACT underlying match (prefix-based) — same fix as getOptionInstruments;
+  // substring matching polluted LT's lot-size/strike-step with LTF/LTTS/
+  // VOLTAS/etc. options.
   const symbolOpts = allInstruments.filter(i =>
     i.segment.startsWith(spec.segment) &&
     i.instrumentType === spec.instrumentType &&
-    (i.name.toUpperCase().includes(symbol.toUpperCase()) ||
-     i.tradingSymbol.toUpperCase().includes(symbol.toUpperCase()))
+    matchesUnderlying(
+      i.tradingSymbol, i.name, symbol,
+      (spec.searchAliases || []).map(a => a.toUpperCase())
+    )
   );
 
   if (symbolOpts.length === 0) {

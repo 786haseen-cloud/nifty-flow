@@ -12,7 +12,19 @@
  *   - Cache state (size + age)
  */
 import { NextRequest, NextResponse } from 'next/server';
-import { getInstruments, invalidateInstrumentsCache, kiteHeaders, getQuotes } from '@/lib/kite-api';
+import {
+  getInstruments,
+  invalidateInstrumentsCache,
+  kiteHeaders,
+  getQuotes,
+  getOptionInstruments,
+  getFutureInstrument,
+  getInstrumentSpec,
+  INDEX_SPECS,
+  STOCK_SPECS,
+  underlyingPrefix,
+  matchesUnderlying,
+} from '@/lib/kite-api';
 import { applyKiteCredsFromRequest } from '@/lib/kite-route-helper';
 
 const KITE_BASE = 'https://api.kite.trade';
@@ -139,6 +151,63 @@ export async function GET(req: NextRequest) {
     spotTest = { status: 'exception', error: e instanceof Error ? e.message : String(e) };
   }
 
+  // Step 9: Per-symbol underlying diagnostic (?symbol=LT)
+  // Proves which instruments the EXACT (prefix) matcher now returns for a
+  // symbol vs which foreign underlyings the OLD substring matcher used to
+  // pull in. Add &refresh=1 to bust the 1-hour instruments cache.
+  const diagSymbol = req.nextUrl.searchParams.get('symbol');
+  let symbolDiagnostic: any = null;
+  if (diagSymbol) {
+    const spec = getInstrumentSpec(diagSymbol.toUpperCase());
+    if (!spec) {
+      symbolDiagnostic = { error: `Unknown symbol ${diagSymbol} — not in INDEX_SPECS/STOCK_SPECS` };
+    } else {
+      const aliases = (spec.searchAliases || []).map(a => a.toUpperCase());
+      const optType = spec.instrumentType;
+      const fnoInstruments = await getInstruments(spec.segment, refresh);
+
+      const exactOpts = fnoInstruments.filter(i =>
+        i.segment.startsWith(spec.segment) && i.instrumentType === optType &&
+        matchesUnderlying(i.tradingSymbol, i.name, spec.symbol, aliases));
+      // OLD (buggy) substring behaviour, kept ONLY for comparison:
+      const oldIncludes = [spec.symbol.toUpperCase(), ...aliases];
+      const oldOpts = fnoInstruments.filter(i =>
+        i.segment.startsWith(spec.segment) && i.instrumentType === optType &&
+        oldIncludes.some(t => i.name.toUpperCase().includes(t) || i.tradingSymbol.toUpperCase().includes(t)));
+      const byUnderlying: Record<string, number> = {};
+      for (const i of oldOpts) {
+        const p = underlyingPrefix(i.tradingSymbol) || `NAME:${i.name}`;
+        byUnderlying[p] = (byUnderlying[p] || 0) + 1;
+      }
+
+      const fut = await getFutureInstrument(spec.symbol);
+      const strikes = [...new Set(exactOpts.map(o => o.strike))].sort((a, b) => a - b);
+      const gaps: Record<string, number> = {};
+      for (let g = 1; g < strikes.length; g++) {
+        const gap = String(Math.round((strikes[g] - strikes[g - 1]) * 100) / 100);
+        gaps[gap] = (gaps[gap] || 0) + 1;
+      }
+      const topGap = Object.entries(gaps).sort((a, b) => b[1] - a[1])[0];
+
+      symbolDiagnostic = {
+        symbol: spec.symbol,
+        exact_option_count: exactOpts.length,
+        old_substring_option_count: oldOpts.length,
+        old_substring_matches_by_underlying: byUnderlying,
+        derived_strike_step: topGap ? Number(topGap[0]) : null,
+        derived_lot_size: exactOpts[0]?.lotSize ?? null,
+        sample_option_symbols: exactOpts.slice(0, 4).map(i => i.tradingSymbol),
+        nearest_future: fut ? fut.tradingSymbol : null,
+        diagnosis:
+          exactOpts.length === 0
+            ? 'STILL BROKEN — exact matcher found 0 options (check segment/type or CSV)'
+            : Object.keys(byUnderlying).length > 1
+              ? 'Old substring matcher WAS polluted (see old_substring_matches_by_underlying); exact matcher now isolates this underlying'
+              : 'Clean — exact matcher returns only this underlying\'s options',
+      };
+    }
+  }
+
   return NextResponse.json({
     mode: 'live',
     timestamp: new Date().toISOString(),
@@ -158,6 +227,7 @@ export async function GET(req: NextRequest) {
     nifty_option_samples: niftyOptions,
     quote_test_on_first_nifty_option: quoteTest,
     nifty50_spot: spotTest,
+    symbol_diagnostic: symbolDiagnostic,
     diagnosis: niftyOptions.length > 0
       ? 'OK — NIFTY options found. Strike Flow / Options Flow should work.'
       : rawCsvStatus !== 200
