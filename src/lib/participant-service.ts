@@ -383,13 +383,14 @@ export function computeParticipantBias(entry: ParticipantFlow | null): Participa
   else if (weight < -0.15) direction = 'bear';
   else direction = 'neutral';
 
-  // Build detail string
-  const smartLabel = smartDirection > 0 ? 'buying' : smartDirection < 0 ? 'selling' : 'flat';
-  const retailLabel = retail > 200 ? 'heavy buying' : retail < -200 ? 'heavy selling' : 'balanced';
+  // Build detail string — leads with the model: FII+Prop MOVE the market,
+  // retail (Client) is the crowd they trade against, DII is the shock absorber.
+  const smartLabel = smartDirection > 0 ? 'buying → market lifts' : smartDirection < 0 ? 'selling → market drops' : 'flat';
+  const retailLabel = retail > 200 ? 'buying (faded — crowd on wrong side)' : retail < -200 ? 'selling (faded — crowd on wrong side)' : 'balanced';
   const diiLabel = dii > 200 ? 'absorbing FII sells' : dii < -200 ? 'absorbing FII buys' : 'neutral';
   const detail =
-    `${entry.date}: Smart (FII+Prop) ${smart >= 0 ? '+' : ''}${smart.toFixed(0)} Cr (${smartLabel}); ` +
-    `Retail ${retail >= 0 ? '+' : ''}${retail.toFixed(0)} Cr (${retailLabel}); ` +
+    `${entry.date}: Smart money (FII+Prop) ${smart >= 0 ? '+' : ''}${smart.toFixed(0)} Cr ${smartLabel}; ` +
+    `Retail ${retail >= 0 ? '+' : ''}${retail.toFixed(0)} Cr ${retailLabel}; ` +
     `DII ${dii >= 0 ? '+' : ''}${dii.toFixed(0)} Cr (${diiLabel}). ` +
     `Factor 12 = ${weight >= 0 ? '+' : ''}${weight.toFixed(2)}`;
 

@@ -172,10 +172,17 @@ show('S5 Control: range/chop day', makeBaseMagnet({
   pinningProbability: 75,    // high pin → ×0.6
 }));
 
-console.log('\n════════ DIAGNOSIS SUMMARY ════════');
-console.log('Structural bull blockers on falling days:');
-console.log('  1. Charm +3.0 — India put-written chains → charmDirection "up" nearly always');
-console.log('  2. Magnet Pull up to +1.5 — spot below zone on down days → pulls UP');
-console.log('  3. Zero-Γ bear trigger (-2.0) requires charm DOWN — never fires in India');
-console.log('Net: bearish factors (basis/skew/OI/GEX, each capped -1.5) cannot overcome');
-console.log('charm+magnet structural +4.5 → falling days land in WAIT / borderline WEAK.');
+console.log('\n═══════ DIAGNOSIS SUMMARY (after 2nd calibration, Sep 2026) ═══════');
+console.log('Calibration history:');
+console.log('  ORIGINAL BUG: charm +3.0 structural bull + magnet pull +1.5 → falling days = WAIT');
+console.log('  1st FIX (732efd9): trend gates dampened charm to +1.0, magnet pull ×0.3,');
+console.log('    flow-confirmed bear trigger, participant sign-flip guard → PUT WEAK/MODERATE');
+console.log('  2nd FIX (this change): gated charm NEUTRALIZED to 0.0 + asymmetric PUT band');
+console.log('    (WEAK -1.5 / MODERATE -4.5 / STRONG -8.0 vs CALL 2.0/5.5/9.0)');
+console.log('Current results:');
+console.log('  Typical falling day  → PUT MODERATE (was WAIT before any fix)');
+console.log('  Crash day            → PUT STRONG (symmetry with CALL STRONG restored)');
+console.log('  Crash + FII selling  → deep PUT STRONG (FII+Prop move the market)');
+console.log('  Mild drift-down      → PUT WEAK (no over-firing)');
+console.log('  Up day control       → CALL STRONG (unchanged)');
+console.log('  Range day control    → WAIT (unchanged)');

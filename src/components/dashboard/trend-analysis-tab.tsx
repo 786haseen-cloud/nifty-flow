@@ -657,15 +657,6 @@ export default function TrendAnalysisTab() {
         </div>
       </div>
 
-      {/* Section 3.4: Participant Flow Card — FII/DII/Client/PropDesk daily input
-          ============================================================
-          User-paste input for Factor 12 of the magnet engine. User pastes
-          yesterday's NSE participant-wise numbers (₹ Cr) here once a day;
-          the magnet-scan route picks them up via /api/participants/daily
-          (Upstash Redis, 30-day TTL).
-      */}
-      <ParticipantFlowCard />
-
       {/* Section 3.5: Magnet & Gamma Dashboard — GEX / Zero-Γ / Charm / Pinning Probability
           ============================================================
           Replaces vanilla max-pain with a dealer-flow-aware composite:
@@ -790,24 +781,26 @@ export default function TrendAnalysisTab() {
               <div className="italic">
                 Magnet Score combines: distance-from-max-pain (45%) + gamma concentration (35%) + OI concentration (20%).
                 Pinning Probability factors: distance, DTE, gamma regime, GEX magnitude, charm alignment.
-                Trade Signal uses 11 factors: Charm Drift (±3.0), Zero-Γ (±2.0), Magnet Zone Pull (±1.5), GEX Walls (±1.5), PCR (±1.0), Gamma Regime (±0.5), Pinning (×0.6-1.2), plus 4 Phase-1 enhancements — Futures Basis (±1.5), IV Skew (±1.5), OI Buildup (±1.5), VIX Regime (±1.0). Max raw score ±15; STRONG at |score| ≥ 9.0.
+                Trade Signal uses 12 factors: Charm Drift (±3.0, neutralized when trend overwhelms it), Zero-Γ (±2.0), Magnet Zone Pull (±1.5), GEX Walls (±1.5), PCR (±1.0), Gamma Regime (±0.25), Pinning (×0.6-1.2), Futures Basis (±1.5), IV Skew (±1.5), OI Buildup (±1.5), VIX Regime (±1.0), Participant Bias (±2.0 — FII+Prop smart money leads, retail faded).
+                Max raw score ±17. Thresholds are ASYMMETRIC to offset India&apos;s structural put-written bull tilt: CALL at +2.0/+5.5/+9.0 (WEAK/MODERATE/STRONG), PUT at -1.5/-4.5/-8.0 — so genuine downtrends reach PUT STRONG exactly as often as uptrends reach CALL STRONG.
               </div>
             </div>
 
           </>
         )}
 
-        {/* Recent Signals Card — last 5 signal flips across all 19 symbols.
-            NOTE: This card pulls from Upstash Redis (7-day rolling history),
-            which is a SEPARATE data source from the Kite magnet scan above.
-            It must render regardless of magnet mode (live/demo/error/loading)
-            so the user can always see signal history even when Kite creds are
-            not yet configured or the market is closed. The card has its own
-            graceful states for loading / no-Upstash / no-data-yet. */}
-        <div className="mt-3">
-          <RecentSignalsCard />
-        </div>
       </div>
+
+      {/* Recent Signals Card — STANDALONE card directly below the Magnet &
+          Gamma Dashboard (user request, Sep 2026). Shows last 5 signal flips
+          across all 19 symbols. NOTE: This card pulls from Upstash Redis
+          (7-day rolling history), which is a SEPARATE data source from the
+          Kite magnet scan above. It must render regardless of magnet mode
+          (live/demo/error/loading) so the user can always see signal history
+          even when Kite creds are not yet configured or the market is closed.
+          The card has its own graceful states for loading / no-Upstash /
+          no-data-yet. */}
+      <RecentSignalsCard />
 
       {/* Section 4: Dual Exchange Cash Flow */}
       <div className="rounded-xl border border-border/50 bg-card/50 p-4">
@@ -915,6 +908,19 @@ export default function TrendAnalysisTab() {
           </div>
         )}
       </div>
+
+      {/* Section 5 (LAST): Participant Flow Card — FII/DII/Client/PropDesk daily input
+          ============================================================
+          Moved to the END of the Trends tab (user request, Sep 2026).
+          User-paste input for Factor 12 of the magnet engine. MODEL: FII +
+          PropDesk are the smart money who MOVE the market — their net flow
+          sets the direction; retail (Client) is the crowd they trade against
+          and is faded contrarian; DII absorbs opposing flow (dampener).
+          User pastes yesterday's NSE participant-wise numbers (₹ Cr) here
+          once a day; the magnet-scan route picks them up via
+          /api/participants/daily (Upstash Redis, 30-day TTL).
+      */}
+      <ParticipantFlowCard />
     </div>
   );
 }

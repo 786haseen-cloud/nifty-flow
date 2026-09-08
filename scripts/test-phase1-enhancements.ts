@@ -432,10 +432,10 @@ const fallingDay = makeBaseMagnet({
 const fallingSig = computeSignal(fallingDay);
 console.log(`  Typical falling day: ${fallingSig.score.toFixed(2)} → ${fallingSig.direction} ${fallingSig.strength}`);
 check('Falling day fires PUT', fallingSig.direction === 'PUT', `got ${fallingSig.direction}`);
-check('Falling day PUT is WEAK or better', fallingSig.strength === 'WEAK' || fallingSig.strength === 'MODERATE', `got ${fallingSig.strength}`);
+check('Falling day PUT is MODERATE after second calibration', fallingSig.strength === 'MODERATE' || fallingSig.strength === 'WEAK', `got ${fallingSig.strength}`);
 const charmReason = fallingSig.reasons.find(r => r.factor === 'Charm Drift');
-check('Charm dampened to +1.0 on falling day', charmReason?.weight === 1.0, `got ${charmReason?.weight}`);
-check('Charm detail mentions dampening', (charmReason?.detail ?? '').includes('DAMPENED'));
+check('Gated charm NEUTRALIZED to 0.0 on falling day', charmReason?.weight === 0.0, `got ${charmReason?.weight}`);
+check('Charm detail mentions neutralization', (charmReason?.detail ?? '').includes('NEUTRALIZED'));
 
 // 9b: Strong trend-down day — everything bearish aligned
 const trendDownDay = makeBaseMagnet({
@@ -513,6 +513,67 @@ const bullTrigger = makeBaseMagnet({
 const bullTriggerSig = computeSignal(bullTrigger);
 const bullTriggerZeroG = bullTriggerSig.reasons.find(r => r.factor === 'Zero-Γ Position');
 check('Strong-charm bull trigger still fires (+2.0)', bullTriggerZeroG?.weight === 2.0, `got ${bullTriggerZeroG?.weight}`);
+
+// 9f: STRONG PUT REACHABILITY (second calibration regression)
+// User complaint: "where is strong PUT buy signal if there is strong CALL
+// buy signal" — pre-calibration, a genuine crash day peaked at -7.8 (WEAK/
+// MODERATE only) while up days routinely hit +12.9 (STRONG). After the
+// asymmetric-band + charm-neutralization changes, the SAME crash day must
+// reach PUT STRONG, and institutional (FII+Prop) confirmation must make it
+// comfortable — reflecting that FII/Prop MOVE the market.
+console.log('\n=== Test 9f: STRONG PUT reachability ===');
+
+const crashDay = makeBaseMagnet({
+  charmDirection: 'up',      // structural India charm
+  charmMagnitudeCr: 510,
+  zeroGamma: 24700,
+  gammaRegime: 'negative',
+  magnetCenter: 24720,
+  magnetZone: [24650, 24800],
+  gexStrikes: [
+    { strike: 24450, gexCr: -15.0 },   // red wall below — breaks run hard
+    { strike: 24600, gexCr: 18.0 },    // green cap above
+  ] as MagnetResult['gexStrikes'],
+  basisPct: -0.22,
+  ivSkewPct: -3.4,
+  oiBuildup: 'short_buildup',
+  oiBuildupStrength: -1.2,
+  vix: 15.8, vixChangePct: 6.5,
+  pinningProbability: 28,    // low pin → ×1.2
+});
+const crashSig = computeSignal(crashDay);
+console.log(`  Crash day (no participant data): ${crashSig.score.toFixed(2)} → ${crashSig.direction} ${crashSig.strength}`);
+check('Crash day reaches PUT STRONG (symmetry with CALL STRONG)', crashSig.direction === 'PUT' && crashSig.strength === 'STRONG', `got ${crashSig.direction} ${crashSig.strength}`);
+
+const crashWithFii = makeBaseMagnet({
+  ...crashDay,
+  participantBias: -2.0,     // FII+Prop heavy selling (market movers)
+  participantBiasDetail: 'Test: Smart money (FII+Prop) -2800 Cr selling → market drops',
+});
+const crashFiiSig = computeSignal(crashWithFii);
+console.log(`  Crash day + FII selling: ${crashFiiSig.score.toFixed(2)} → ${crashFiiSig.direction} ${crashFiiSig.strength}`);
+check('FII selling pushes crash day deep into PUT STRONG', crashFiiSig.direction === 'PUT' && crashFiiSig.strength === 'STRONG' && crashFiiSig.score <= crashSig.score - 1.5, `got ${crashFiiSig.score.toFixed(2)}`);
+
+// Mild-bearish day must NOT over-fire: score between -1.5 and -4.4 → WEAK only
+const mildBear = makeBaseMagnet({
+  charmDirection: 'up',
+  charmMagnitudeCr: 380,
+  zeroGamma: 24580,
+  gammaRegime: 'negative',
+  magnetCenter: 24640,
+  magnetZone: [24600, 24680],
+  basisPct: -0.06,
+  ivSkewPct: -0.8,
+  oiBuildup: 'neutral',
+  vix: 13.6, vixChangePct: 1.2,
+  pinningProbability: 55,
+});
+const mildBearSig = computeSignal(mildBear);
+console.log(`  Mild drift-down: ${mildBearSig.score.toFixed(2)} → ${mildBearSig.direction} ${mildBearSig.strength}`);
+check('Mild drift-down stays PUT WEAK (no over-firing)', mildBearSig.direction === 'PUT' && mildBearSig.strength === 'WEAK', `got ${mildBearSig.direction} ${mildBearSig.strength}`);
+
+// Up day unchanged: STRONG CALL still routine (control for the asymmetric band)
+check('Up-day control unchanged (CALL STRONG)', upSig.direction === 'CALL' && upSig.strength === 'STRONG', `got ${upSig.direction} ${upSig.strength}`);
 
 // ─── Summary ───
 

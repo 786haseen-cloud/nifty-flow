@@ -1029,13 +1029,16 @@ export function computeMagnet(
 // Total max raw |score| ≈ 17.0 (was 15.0 in Phase 1)
 // After pin multiplier: max ≈ 20.4 (low pin) or 10.2 (high pin)
 //
-// THRESHOLDS (kept at Phase 1 calibration — ±2.0 from Factor 12 just
-// makes STRONG more reachable when institutions confirm; doesn't shift
-// the neutral band):
-//   |score| ≥ 9.0   → STRONG (high conviction — most factors aligned)
-//   |score| ≥ 5.5   → MODERATE
-//   |score| ≥ 2.0   → WEAK
-//   else            → WAIT
+// THRESHOLDS — ASYMMETRIC (Sep 2026 second calibration)
+// Indian chains structurally tilt the score UP (charm 'up' nearly every
+// session; gated charm can never go negative; PCR/VIX bands zero the
+// bearish side). Symmetric thresholds made STRONG CALL routine and
+// STRONG PUT unreachable (7-day live data). The PUT band is shifted by
+// the measured structural tilt so BOTH sides fire on genuine trends:
+//
+//   CALL:  |score| ≥ 9.0 → STRONG   ≥ 5.5 → MODERATE   ≥ 2.0 → WEAK
+//   PUT:   |score| ≤ 8.0 → STRONG   ≤ 4.5 → MODERATE   ≤ 1.5 → WEAK
+//   else  → WAIT
 //
 // Pinning modifier:
 //   - Pinning ≥ 70% reduces trend signal strength by 40% (pin will fight you)
@@ -1072,6 +1075,26 @@ export interface SignalResult {
  * timing, and a list of human-readable reasons showing which factors contributed.
  */
 export function computeSignal(m: MagnetResult): SignalResult {
+  // DEFENSIVE NORMALIZATION (Sep 2026): optional numeric fields MUST behave
+  // as null when absent. Callers (older scripts, JSON round-trips through
+  // history entries) may omit them → undefined. `undefined !== null` is true,
+  // which sent `undefined.toFixed()` into a TypeError (test-put-direct
+  // crash). Coerce once, here, so every factor guard below sees null.
+  m = {
+    ...m,
+    zeroGamma: m.zeroGamma ?? null,
+    basisPct: m.basisPct ?? null,
+    ivSkewPct: m.ivSkewPct ?? null,
+    vix: m.vix ?? null,
+    vixChangePct: m.vixChangePct ?? null,
+    gexStrikes: m.gexStrikes ?? [],
+    magnetZone: m.magnetZone ?? [],
+    oiBuildup: m.oiBuildup ?? 'neutral',
+    oiBuildupStrength: m.oiBuildupStrength ?? 0,
+    participantBias: m.participantBias ?? 0,
+    pinningProbability: m.pinningProbability ?? 50,
+  };
+
   const reasons: SignalReason[] = [];
   let score = 0;
 
@@ -1094,15 +1117,20 @@ export function computeSignal(m: MagnetResult): SignalResult {
     m.gammaRegime === 'negative' &&
     m.basisPct !== null && m.basisPct < -0.05
   ) {
-    charmWeight = 1.0;
-    charmGateNote = ' — DAMPENED (negative gamma + futures discount: drift overwhelmed by selling flow)';
+    // NEUTRALIZED (Sep 2026, second calibration): previously the gate reduced
+    // charm to +1.0 — but that +1.0 STILL counted against PUT signals on a
+    // falling day. Structural charm in a put-written chain is not directional
+    // information once the regime AND basis both confirm selling pressure —
+    // it is background drift that the market is actively ignoring. Give it 0.
+    charmWeight = 0.0;
+    charmGateNote = ' — NEUTRALIZED (negative gamma + futures discount: structural put-written drift overwhelmed by selling flow)';
   } else if (
     m.charmDirection === 'down' &&
     m.gammaRegime === 'positive' &&
     m.basisPct !== null && m.basisPct > 0.05
   ) {
-    charmWeight = 1.0;
-    charmGateNote = ' — DAMPENED (positive gamma + futures premium: drift overwhelmed by buying flow)';
+    charmWeight = 0.0;
+    charmGateNote = ' — NEUTRALIZED (positive gamma + futures premium: structural call-written drift overwhelmed by buying flow)';
   }
 
   if (m.charmDirection === 'up') {
@@ -1683,14 +1711,26 @@ export function computeSignal(m: MagnetResult): SignalResult {
   const adjustedScore = score * pinMultiplier;
 
   // ── Determine direction + strength ──
-  // Thresholds calibrated to new max raw score ≈ ±15 (Phase 1 enhancements
-  // added ±5.5 on top of original ±9.5). We want STRONG to mean "high
-  // conviction — most factors aligned", which empirically lands around
-  // 60% of max. So:
-  //   STRONG   |score| ≥ 9.0   (was 6.0  in 4-factor engine)
-  //   MODERATE |score| ≥ 5.5   (was 3.5)
-  //   WEAK     |score| ≥ 2.0   (was 1.5)
-  //   else     WAIT
+  // ASYMMETRIC THRESHOLDS (Sep 2026, second calibration)
+  // ─────────────────────────────────────────────────────────────
+  // The raw score distribution in Indian F&O is structurally shifted UP:
+  //   1. Charm ('up' nearly every session in put-written chains) gifts bulls
+  //      +3.0 on up days; on down days the trend gate neutralizes it (0), but
+  //      it can never contribute NEGATIVE points — a permanent ~+2 average tilt.
+  //   2. Residual mean-reversion tilt: on falling days spot usually sits BELOW
+  //      the magnet zone built from earlier OI, so even the gated pull still
+  //      contributes ~+0.3-0.5 bull points.
+  //   3. PCR/VIX India calibration bands (0.7-1.3 = 0; normal VIX = 0) zero
+  //      out factors that would otherwise lean bearish.
+  // NET EFFECT: an up day reaches +12 to +16 (STRONG CALL routine), while a
+  // genuine crash day capped out near -8 (7-day live data: CALL STRONG fired,
+  // STRONG PUT never did — user-visible asymmetry). Shifting the PUT band by
+  // the measured structural tilt (~1.0-1.5 pts) restores SYMMETRY IN
+  // PROBABILITY SPACE: "how often does a genuine trend reach each tier" is
+  // now the same for CALL and PUT.
+  //
+  //   CALL:  WEAK ≥ +2.0   MODERATE ≥ +5.5   STRONG ≥ +9.0   (unchanged)
+  //   PUT:   WEAK ≤ -1.5   MODERATE ≤ -4.5   STRONG ≤ -8.0
   const absScore = Math.abs(adjustedScore);
   let direction: SignalDirection;
   let strength: SignalResult['strength'];
@@ -1704,13 +1744,13 @@ export function computeSignal(m: MagnetResult): SignalResult {
   } else if (adjustedScore >= 2.0) {
     direction = 'CALL';
     strength = 'WEAK';
-  } else if (adjustedScore <= -9.0) {
+  } else if (adjustedScore <= -8.0) {
     direction = 'PUT';
     strength = 'STRONG';
-  } else if (adjustedScore <= -5.5) {
+  } else if (adjustedScore <= -4.5) {
     direction = 'PUT';
     strength = 'MODERATE';
-  } else if (adjustedScore <= -2.0) {
+  } else if (adjustedScore <= -1.5) {
     direction = 'PUT';
     strength = 'WEAK';
   } else {
