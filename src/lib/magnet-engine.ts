@@ -999,8 +999,18 @@ export function computeMagnet(
 // Factor                     Max ±  Bull condition                Bear condition
 // ─────────────────────────────────────────────────────────────────────────────
 // 1. Charm direction          ±3.0   ↑ up (dealers buy)            ↓ down (dealers sell)
+//                                     INDIA TREND GATE: weight drops to ±1.0 when gamma
+//                                     regime AND futures basis both confirm the opposite
+//                                     pressure (put-written chains keep charm 'up' even
+//                                     in downtrends — without the gate PUT never fires)
 // 2. Zero-Γ position          ±2.0   Spot pushing up to flip       Spot pushing down to flip
+//                                     (both triggers need charm ≥300 Cr/day; bear trigger
+//                                     also fires on deep futures discount < -0.10% —
+//                                     India fix: charm 'down' never occurs in practice)
 // 3. Magnet zone pull         ±1.5   Spot below zone (pulled up)   Spot above zone (pulled down)
+//                                     INDIA TREND GATE: pull scaled ×0.3 when regime+
+//                                     basis confirm a trend against the pull (mean-
+//                                     reversion targets are traps in trends)
 // 4. GEX walls around spot    ±1.5   Red above (calls explosive)   Red below (puts explosive)
 //                                     Green below (puts cushion)   Green above (calls capped)
 // 5. PCR sentiment            ±1.0   PCR > 1.5 (put writers)       PCR < 0.55 (call writers)
@@ -1067,23 +1077,49 @@ export function computeSignal(m: MagnetResult): SignalResult {
 
   // ── Factor 1: CHARM (±3.0 max) — strongest intraday drift predictor ──
   // Charm tells you which direction dealers are FORCED to trade by time decay.
+  //
+  // INDIA TREND GATE (Sep 2026): Indian chains are structurally put-written
+  // (FII/Prop sell puts), so charmDirection is 'up' nearly EVERY session —
+  // including strong downtrends. Charm is a slow DRIFT factor; when the
+  // gamma regime AND futures basis both confirm pressure in the OPPOSITE
+  // direction, forced dealer flow gets overwhelmed by directional flow
+  // (negative-gamma hedging is pro-cyclical: dealers sell into falls).
+  // Without this gate the engine hands +3.0 bull points to a falling market
+  // and PUT signals can never fire (7-day live data proved it: zero PUT
+  // signals during a week of daily declines).
+  let charmWeight = 3.0;
+  let charmGateNote = '';
+  if (
+    m.charmDirection === 'up' &&
+    m.gammaRegime === 'negative' &&
+    m.basisPct !== null && m.basisPct < -0.05
+  ) {
+    charmWeight = 1.0;
+    charmGateNote = ' — DAMPENED (negative gamma + futures discount: drift overwhelmed by selling flow)';
+  } else if (
+    m.charmDirection === 'down' &&
+    m.gammaRegime === 'positive' &&
+    m.basisPct !== null && m.basisPct > 0.05
+  ) {
+    charmWeight = 1.0;
+    charmGateNote = ' — DAMPENED (positive gamma + futures premium: drift overwhelmed by buying flow)';
+  }
+
   if (m.charmDirection === 'up') {
-    const w = 3.0;
-    score += w;
+    score += charmWeight;
     reasons.push({
       factor: 'Charm Drift',
       direction: 'bull',
-      weight: w,
-      detail: `Dealers must BUY over time (${m.charmMagnitudeCr.toFixed(1)} Cr/day forced flow)`,
+      weight: charmWeight,
+      detail: `Dealers must BUY over time (${m.charmMagnitudeCr.toFixed(1)} Cr/day forced flow)${charmGateNote}`,
     });
   } else if (m.charmDirection === 'down') {
-    const w = -3.0;
-    score += w;
+    score -= charmWeight;
     reasons.push({
       factor: 'Charm Drift',
       direction: 'bear',
-      weight: w,
-      detail: `Dealers must SELL over time (${m.charmMagnitudeCr.toFixed(1)} Cr/day forced flow)`,
+      weight: -charmWeight,
+      detail: `Dealers must SELL over time (${m.charmMagnitudeCr.toFixed(1)} Cr/day forced flow)${charmGateNote}`,
     });
   } else {
     reasons.push({
@@ -1096,15 +1132,28 @@ export function computeSignal(m: MagnetResult): SignalResult {
 
   // ── Factor 2: ZERO-Γ POSITION (±2.0 max) — regime + flip triggers ──
   // Spot close to zero-Γ = regime flip imminent (high-conviction trigger)
+  //
+  // INDIA ASYMMETRY FIX (Sep 2026): the ±2.0 triggers required charm
+  // alignment. Indian put-written chains keep charm 'up' almost always, so
+  // the BULL trigger (+2.0) fired on nearly every range day while the BEAR
+  // trigger (-2.0) NEVER fired. Fixes:
+  //   a) Both charm triggers now require real magnitude (≥300 Cr/day) — a
+  //      200 Cr drift must not earn a 2-point conviction trigger.
+  //   b) New FLOW-CONFIRMED bear trigger: spot just above the flip with a
+  //      deep futures discount (< -0.10%) — selling flow pressing spot into
+  //      the negative regime, even though structurally-bullish charm says
+  //      otherwise. This is the bearish mirror of what charm 'up' does for
+  //      bulls in India.
   if (m.zeroGamma !== null && m.zeroGamma > 0) {
     const distToFlipPct = ((m.spot - m.zeroGamma) / m.spot) * 100;
     const absDist = Math.abs(distToFlipPct);
+    const charmStrong = m.charmMagnitudeCr >= 300;
 
     if (absDist < 0.3) {
       // Spot very close to flip — directional trigger
       // If charm aligned with the direction that would push past the flip, amplify
-      if (distToFlipPct < 0 && m.charmDirection === 'up') {
-        // Spot just below 0Γ, charm up → pushing into positive regime = BULL trigger
+      if (distToFlipPct < 0 && m.charmDirection === 'up' && charmStrong) {
+        // Spot just below 0Γ, strong charm up → pushing into positive regime = BULL trigger
         const w = 2.0;
         score += w;
         reasons.push({
@@ -1113,8 +1162,8 @@ export function computeSignal(m: MagnetResult): SignalResult {
           weight: w,
           detail: `Spot ${absDist.toFixed(2)}% below 0Γ flip — charm pushing UP into positive regime (bull trigger)`,
         });
-      } else if (distToFlipPct > 0 && m.charmDirection === 'down') {
-        // Spot just above 0Γ, charm down → pushing into negative regime = BEAR trigger
+      } else if (distToFlipPct > 0 && m.charmDirection === 'down' && charmStrong) {
+        // Spot just above 0Γ, strong charm down → pushing into negative regime = BEAR trigger
         const w = -2.0;
         score += w;
         reasons.push({
@@ -1123,8 +1172,18 @@ export function computeSignal(m: MagnetResult): SignalResult {
           weight: w,
           detail: `Spot ${absDist.toFixed(2)}% above 0Γ flip — charm pushing DOWN into negative regime (bear trigger)`,
         });
+      } else if (distToFlipPct > 0 && m.basisPct !== null && m.basisPct < -0.10) {
+        // FLOW-CONFIRMED bear trigger: futures discount pressing spot below the flip
+        const w = -2.0;
+        score += w;
+        reasons.push({
+          factor: 'Zero-Γ Position',
+          direction: 'bear',
+          weight: w,
+          detail: `Spot ${absDist.toFixed(2)}% above 0Γ flip — futures discount (${m.basisPct.toFixed(2)}%) pressing INTO negative regime (bear trigger)`,
+        });
       } else {
-        // Spot near flip but charm not aligned — fragile, don't amplify
+        // Spot near flip but no aligned force — fragile, don't amplify
         reasons.push({
           factor: 'Zero-Γ Position',
           direction: 'neutral',
@@ -1191,13 +1250,31 @@ export function computeSignal(m: MagnetResult): SignalResult {
       const w = distToZonePct < 0 ? 1.5 : -1.5;
       // Scale by proximity: closer = stronger pull
       const proximityScale = Math.max(0.4, 1 - absDist / 2.5);
-      const weightedW = w * proximityScale;
+      let weightedW = w * proximityScale;
+
+      // INDIA TREND GATE (Sep 2026): the magnet zone is a MEAN-REVERSION
+      // target. In a confirmed trend — gamma regime AND futures basis both
+      // pointing against the pull — price gravitates AWAY from the zone and
+      // the "pull UP toward zone" becomes the trap. Scale the pull to 30%
+      // so trend factors dominate. Without this, every down day (spot below
+      // the zone built from earlier OI) gifted up to +1.5 bull points.
+      const trendDown = m.gammaRegime === 'negative' && m.basisPct !== null && m.basisPct < -0.05;
+      const trendUp = m.gammaRegime === 'positive' && m.basisPct !== null && m.basisPct > 0.05;
+      let trendGateNote = '';
+      if (weightedW > 0 && trendDown) {
+        weightedW *= 0.3;
+        trendGateNote = ' — DAMPENED (trend down: zone pull is a trap, not a target)';
+      } else if (weightedW < 0 && trendUp) {
+        weightedW *= 0.3;
+        trendGateNote = ' — DAMPENED (trend up: zone pull is a trap, not a target)';
+      }
+
       score += weightedW;
       reasons.push({
         factor: 'Magnet Zone Pull',
         direction: weightedW > 0 ? 'bull' : 'bear',
         weight: weightedW,
-        detail: `Spot ${absDist.toFixed(2)}% ${distToZonePct < 0 ? 'below' : 'above'} magnet center (${Math.round(m.magnetCenter)}) — pull ${distToZonePct < 0 ? 'UP' : 'DOWN'} toward zone`,
+        detail: `Spot ${absDist.toFixed(2)}% ${distToZonePct < 0 ? 'below' : 'above'} magnet center (${Math.round(m.magnetCenter)}) — pull ${distToZonePct < 0 ? 'UP' : 'DOWN'} toward zone${trendGateNote}`,
       });
     }
   }

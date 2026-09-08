@@ -396,6 +396,124 @@ console.log(`  Same CALL with +2.0 bias: ${strongCallSig.score.toFixed(2)} (${st
 check('Participant bias adds to score', strongCallSig.score > modCallSig.score, `without: ${modCallSig.score}, with: ${strongCallSig.score}`);
 check('Factor 12 appears in reasons', strongCallSig.reasons.some(r => r.factor === 'Participant Bias' && r.weight === 2.0));
 
+// 8g: Dampener must NEVER flip the smart-money direction (sign-flip guard)
+// Real data from Sep 2026: FII -273, DII +1231, Client +400, Prop -50
+const flipBias = computeParticipantBias({
+  date: '2026-09-08', fii: -273.22, dii: 1231.63, client: 400, propdesk: -50, ts: Date.now(),
+});
+console.log(`  Sign-flip guard: FII-273, DII+1231 (heavy absorption) → ${flipBias.weight >= 0 ? '+' : ''}${flipBias.weight.toFixed(2)} (${flipBias.direction})`);
+check('Dampener cannot flip bearish smart flow to bullish', flipBias.weight <= 0.15, `got ${flipBias.weight.toFixed(2)}`);
+check('Heavily dampened signal is neutral, not opposite', flipBias.weight === 0, `got ${flipBias.weight.toFixed(2)}`);
+
+// ─── Test 9: India Trend Gates — PUT signals on falling days ───
+// Regression for the "zero PUT signals in 7 days of falling market" bug.
+// Root cause: charm (+3.0 structural bull in put-written Indian chains) and
+// magnet zone pull (+1.5 bull when spot below zone) overwhelmed all bearish
+// factors. Fix: trend gates that dampen drift/mean-reversion factors when
+// gamma regime AND futures basis both confirm the opposite pressure.
+
+console.log('\n=== Test 9: India Trend Gates (PUT on falling days) ===');
+
+// 9a: Typical falling day — charm up (India norm), negative regime, discount
+const fallingDay = makeBaseMagnet({
+  charmDirection: 'up',
+  charmMagnitudeCr: 420,
+  zeroGamma: 24620,
+  gammaRegime: 'negative',
+  magnetCenter: 24650,
+  magnetZone: [24600, 24700],
+  basisPct: -0.08,           // mild discount
+  ivSkewPct: -1.2,           // puts bid
+  oiBuildup: 'short_buildup',
+  oiBuildupStrength: -1.0,
+  vix: 14.2, vixChangePct: 3.1,
+  pinningProbability: 45,
+});
+const fallingSig = computeSignal(fallingDay);
+console.log(`  Typical falling day: ${fallingSig.score.toFixed(2)} → ${fallingSig.direction} ${fallingSig.strength}`);
+check('Falling day fires PUT', fallingSig.direction === 'PUT', `got ${fallingSig.direction}`);
+check('Falling day PUT is WEAK or better', fallingSig.strength === 'WEAK' || fallingSig.strength === 'MODERATE', `got ${fallingSig.strength}`);
+const charmReason = fallingSig.reasons.find(r => r.factor === 'Charm Drift');
+check('Charm dampened to +1.0 on falling day', charmReason?.weight === 1.0, `got ${charmReason?.weight}`);
+check('Charm detail mentions dampening', (charmReason?.detail ?? '').includes('DAMPENED'));
+
+// 9b: Strong trend-down day — everything bearish aligned
+const trendDownDay = makeBaseMagnet({
+  charmDirection: 'up',
+  charmMagnitudeCr: 510,
+  zeroGamma: 24700,
+  gammaRegime: 'negative',
+  magnetCenter: 24720,
+  magnetZone: [24650, 24800],
+  basisPct: -0.22,
+  ivSkewPct: -3.4,
+  oiBuildup: 'short_buildup',
+  oiBuildupStrength: -1.2,
+  vix: 15.8, vixChangePct: 6.5,
+  pinningProbability: 28,    // low pin → ×1.2
+});
+const trendDownSig = computeSignal(trendDownDay);
+console.log(`  Strong trend-down day: ${trendDownSig.score.toFixed(2)} → ${trendDownSig.direction} ${trendDownSig.strength}`);
+check('Trend-down day fires PUT MODERATE+', trendDownSig.direction === 'PUT' && (trendDownSig.strength === 'MODERATE' || trendDownSig.strength === 'STRONG'), `got ${trendDownSig.direction} ${trendDownSig.strength}`);
+const magnetReason = trendDownSig.reasons.find(r => r.factor === 'Magnet Zone Pull');
+check('Magnet pull dampened (×0.3) against trend', magnetReason !== undefined && magnetReason.weight > -0.6 && magnetReason.weight < 0.6 && magnetReason.weight !== 0, `got ${magnetReason?.weight}`);
+
+// 9c: CONTROL — genuine up day keeps full charm strength
+const upDay = makeBaseMagnet({
+  charmDirection: 'up',
+  charmMagnitudeCr: 450,
+  zeroGamma: 24400,
+  gammaRegime: 'positive',
+  pcr: 1.35,
+  basisPct: 0.18,
+  ivSkewPct: 1.6,
+  oiBuildup: 'long_buildup',
+  oiBuildupStrength: 1.0,
+  vix: 12.8, vixChangePct: -3.0,
+  pinningProbability: 30,
+});
+const upSig = computeSignal(upDay);
+const upCharm = upSig.reasons.find(r => r.factor === 'Charm Drift');
+console.log(`  Up day control: ${upSig.score.toFixed(2)} → ${upSig.direction} ${upSig.strength}`);
+check('Up day still CALL STRONG', upSig.direction === 'CALL' && upSig.strength === 'STRONG', `got ${upSig.direction} ${upSig.strength}`);
+check('Up day charm stays full +3.0 (gate inactive)', upCharm?.weight === 3.0, `got ${upCharm?.weight}`);
+
+// 9d: Zero-Γ trigger fixes — magnitude floor + flow-confirmed bear trigger
+const weakCharmRange = makeBaseMagnet({
+  charmDirection: 'up',
+  charmMagnitudeCr: 200,     // weak drift
+  zeroGamma: 24510,          // spot 0.04% below flip
+  pinningProbability: 50,
+});
+const weakCharmSig = computeSignal(weakCharmRange);
+const weakCharmZeroG = weakCharmSig.reasons.find(r => r.factor === 'Zero-Γ Position');
+console.log(`  Weak-charm range day: Zero-Γ weight ${weakCharmZeroG?.weight.toFixed(2)} (was +2.0 before floor)`);
+check('Charm trigger needs >= 300 Cr magnitude', weakCharmZeroG?.weight === 0, `got ${weakCharmZeroG?.weight}`);
+
+const flowBearTrigger = makeBaseMagnet({
+  spot: 24510,
+  charmDirection: 'up',      // charm bullish (India norm)
+  charmMagnitudeCr: 400,
+  zeroGamma: 24500,          // spot 0.04% ABOVE flip
+  basisPct: -0.15,           // deep discount → flow-confirmed bear trigger
+});
+const flowBearSig = computeSignal(flowBearTrigger);
+const flowBearZeroG = flowBearSig.reasons.find(r => r.factor === 'Zero-Γ Position');
+console.log(`  Flow-confirmed bear trigger: Zero-Γ weight ${flowBearZeroG?.weight.toFixed(2)}`);
+check('Flow-confirmed bear trigger fires (-2.0)', flowBearZeroG?.weight === -2.0, `got ${flowBearZeroG?.weight}`);
+check('Bear trigger detail mentions discount', (flowBearZeroG?.detail ?? '').includes('discount'));
+
+// 9e: CONTROL — symmetric bull charm trigger still works with strong charm
+const bullTrigger = makeBaseMagnet({
+  charmDirection: 'up',
+  charmMagnitudeCr: 450,     // strong
+  zeroGamma: 24510,          // spot 0.04% below flip
+  pinningProbability: 50,
+});
+const bullTriggerSig = computeSignal(bullTrigger);
+const bullTriggerZeroG = bullTriggerSig.reasons.find(r => r.factor === 'Zero-Γ Position');
+check('Strong-charm bull trigger still fires (+2.0)', bullTriggerZeroG?.weight === 2.0, `got ${bullTriggerZeroG?.weight}`);
+
 // ─── Summary ───
 
 console.log('\n=== SUMMARY ===');

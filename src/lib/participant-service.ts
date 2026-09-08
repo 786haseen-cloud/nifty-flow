@@ -363,7 +363,18 @@ export function computeParticipantBias(entry: ParticipantFlow | null): Participa
     diiDampenAdj = -smartDirection * Math.min(0.5, Math.abs(dii) / 2000);
   }
 
-  const raw = baseScore + contrarianAdj + diiDampenAdj;
+  let raw = baseScore + contrarianAdj + diiDampenAdj;
+
+  // DAMPENER SIGN-FLIP GUARD (Sep 2026): a dampener reduces conviction —
+  // it must never REVERSE the smart-money direction. Example from live
+  // data: FII -273 Cr, DII +1231 Cr → base -0.26, dampener +0.50 (capped)
+  // → raw +0.16 = "mildly bullish" on a day FII sold and the market fell.
+  // A heavily-dampened signal is AMBIGUOUS, not opposite-directional.
+  // If the dampener pushes the score past zero, clamp to neutral.
+  if (baseScore !== 0 && diiDampenAdj !== 0 && Math.sign(raw) !== Math.sign(baseScore)) {
+    raw = 0;
+  }
+
   const weight = Math.max(-2.0, Math.min(2.0, Math.round(raw * 100) / 100));
 
   // Direction label
