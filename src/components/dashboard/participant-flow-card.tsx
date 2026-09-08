@@ -110,6 +110,8 @@ export function ParticipantFlowCard() {
   const [dii, setDii] = useState('');
   const [client, setClient] = useState('');
   const [propdesk, setPropdesk] = useState('');
+  // Zero-sum checksum warning (FII + DII + Client + Prop ≈ 0 in the cash market)
+  const [checksumWarn, setChecksumWarn] = useState<string | null>(null);
 
   // CSV upload state
   const [parsing, setParsing] = useState(false);
@@ -155,13 +157,30 @@ export function ParticipantFlowCard() {
     setSaving(true);
     setError(null);
     setSaveOk(null);
+    setChecksumWarn(null);
     try {
+      const f = parseFloat(fii) || 0;
+      const d = parseFloat(dii) || 0;
+      const c = parseFloat(client) || 0;
+      const p = parseFloat(propdesk) || 0;
+
+      // Zero-sum sanity check: in the cash market, FII + DII + Client + Pro
+      // must net to ~0 (every buy has a seller). A large imbalance usually
+      // means a guessed/missing Client or Prop value — warn, don't block.
+      const sum = f + d + c + p;
+      if (Math.abs(sum) > 1500) {
+        setChecksumWarn(
+          `Checksum: FII + DII + Client + Prop = ${sum >= 0 ? '+' : ''}${sum.toFixed(0)} Cr ` +
+          `(expected ≈ 0). Client/Prop values may be guesses — the NSE "Participant wise Trading Volume — Capital Market" CSV has the real numbers.`
+        );
+      }
+
       const body = {
         date: formDate,
-        fii: parseFloat(fii) || 0,
-        dii: parseFloat(dii) || 0,
-        client: parseFloat(client) || 0,
-        propdesk: parseFloat(propdesk) || 0,
+        fii: f,
+        dii: d,
+        client: c,
+        propdesk: p,
         source: 'manual',
       };
       const res = await fetch(withCreds('/api/participants/daily'), {
@@ -354,9 +373,9 @@ export function ParticipantFlowCard() {
           </span>
         </div>
         <div className="text-[10px] text-muted-foreground mt-1.5 leading-relaxed">
-          Accepted: NSE <strong>FII/DII Activity</strong> (cash market — feeds Factor 12),
-          NSE <strong>F&O Participant OI</strong> (positioning — saved for Phase 2b).
-          Max 1 MB. Parsing is server-side; nothing is uploaded to third parties.
+          Accepted: NSE <strong>FII/DII Activity</strong> (FII+DII ₹ Cr), NSE <strong>Participant Volume — Cash</strong>
+          (Client+Pro ₹ Cr), NSE <strong>F&O Participant OI / Volume</strong> (positioning — Phase 2b/2c).
+          Upload FII/DII + Cash volume files together, then Save once. Max 1 MB.
         </div>
       </div>
 
@@ -464,6 +483,12 @@ export function ParticipantFlowCard() {
         <div className="text-[11px] text-emerald-400 mb-2 flex items-center gap-1.5">
           <CheckCircle2 className="h-3 w-3" />
           {saveOk}
+        </div>
+      )}
+      {checksumWarn && (
+        <div className="rounded-lg border border-orange-500/30 bg-orange-500/10 p-2 text-[10px] text-orange-300 mb-2 flex items-start gap-1.5">
+          <AlertCircle className="h-3 w-3 mt-0.5 shrink-0" />
+          {checksumWarn}
         </div>
       )}
 

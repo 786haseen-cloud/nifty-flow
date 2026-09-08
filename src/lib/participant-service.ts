@@ -117,6 +117,37 @@ function getRedis(): Redis | null {
 const TTL_SECONDS = 30 * 24 * 60 * 60; // 30 days — longer than signal history (backtest data)
 const KEY_PREFIX = 'participants';
 
+/**
+ * Safely decode a value read from Upstash Redis.
+ *
+ * ⚠️ CRITICAL: @upstash/redis (v1.38+) auto-deserializes REST responses —
+ * the base Command class's default deserializer (parseResponse → parseRecursive)
+ * runs JSON.parse on every string response. Since all our saves store
+ * JSON.stringify(entry), a plain `redis.get()` returns the ALREADY-PARSED
+ * object, not a string. Calling JSON.parse() on that object throws
+ * "SyntaxError: [object Object] is not valid JSON" — which the surrounding
+ * try/catch silently swallows, making every read return null/[] while
+ * saves succeed. This exact bug shipped once (saved data never appeared
+ * in history / Factor 12 stayed neutral).
+ *
+ * decodeJson handles BOTH shapes safely:
+ *   - object  → already deserialized by the client, return as-is
+ *   - string  → JSON.parse it (upstash only skips auto-parse when the
+ *               stored value isn't valid JSON, or deserialization is off)
+ */
+function decodeJson<T>(raw: unknown): T | null {
+  if (raw == null) return null;
+  if (typeof raw === 'object') return raw as T;
+  if (typeof raw === 'string') {
+    try {
+      return JSON.parse(raw) as T;
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
 function participantKey(date: string): string {
   // date is YYYY-MM-DD — already URL-safe
   return `${KEY_PREFIX}:${date}`;
@@ -188,9 +219,9 @@ export async function getParticipantFlowByDate(date: string): Promise<Participan
   const redis = getRedis();
   if (!redis) return null;
   try {
-    const raw = await redis.get<string>(participantKey(date));
+    const raw = await redis.get(participantKey(date));
     if (!raw) return null;
-    return JSON.parse(raw) as ParticipantFlow;
+    return decodeJson<ParticipantFlow>(raw);
   } catch (err) {
     console.warn(`[participant-service] getParticipantFlowByDate(${date}) failed:`, err);
     return null;
@@ -220,9 +251,10 @@ export async function getMostRecentParticipantFlow(
     for (let offset = 1; offset <= maxLookback; offset++) {
       const d = new Date(Date.UTC(yy, mm - 1, dd - offset));
       const dateStr = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
-      const raw = await redis.get<string>(participantKey(dateStr));
+      const raw = await redis.get(participantKey(dateStr));
       if (raw) {
-        return JSON.parse(raw) as ParticipantFlow;
+        const entry = decodeJson<ParticipantFlow>(raw);
+        if (entry) return entry;
       }
     }
     return null;
@@ -258,9 +290,10 @@ export async function getRecentParticipantFlow(
     for (let offset = 0; offset < maxLookback && results.length < limit; offset++) {
       const d = new Date(Date.UTC(yy, mm - 1, dd - offset));
       const dateStr = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
-      const raw = await redis.get<string>(participantKey(dateStr));
+      const raw = await redis.get(participantKey(dateStr));
       if (raw) {
-        results.push(JSON.parse(raw) as ParticipantFlow);
+        const entry = decodeJson<ParticipantFlow>(raw);
+        if (entry) results.push(entry);
       }
     }
     return results; // most-recent-first
@@ -472,9 +505,9 @@ export async function getParticipantPositioningByDate(
   const redis = getRedis();
   if (!redis) return null;
   try {
-    const raw = await redis.get<string>(positioningKey(date, reportType));
+    const raw = await redis.get(positioningKey(date, reportType));
     if (!raw) return null;
-    return JSON.parse(raw) as ParticipantPositioning;
+    return decodeJson<ParticipantPositioning>(raw);
   } catch (err) {
     console.warn(`[participant-service] getParticipantPositioningByDate(${date}, ${reportType}) failed:`, err);
     return null;
@@ -506,9 +539,10 @@ export async function getRecentPositioning(
     for (let offset = 0; offset < maxLookback && results.length < limit; offset++) {
       const d = new Date(Date.UTC(yy, mm - 1, dd - offset));
       const dateStr = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
-      const raw = await redis.get<string>(positioningKey(dateStr, reportType));
+      const raw = await redis.get(positioningKey(dateStr, reportType));
       if (raw) {
-        results.push(JSON.parse(raw) as ParticipantPositioning);
+        const entry = decodeJson<ParticipantPositioning>(raw);
+        if (entry) results.push(entry);
       }
     }
     return results; // most-recent-first
@@ -633,9 +667,9 @@ export async function getOptionChainSnapshot(
   const redis = getRedis();
   if (!redis) return null;
   try {
-    const raw = await redis.get<string>(optionChainKey(symbol, date));
+    const raw = await redis.get(optionChainKey(symbol, date));
     if (!raw) return null;
-    return JSON.parse(raw) as OptionChainSnapshot;
+    return decodeJson<OptionChainSnapshot>(raw);
   } catch (err) {
     console.warn(`[participant-service] getOptionChainSnapshot(${symbol}, ${date}) failed:`, err);
     return null;

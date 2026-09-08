@@ -35,7 +35,8 @@
 export type CsvFormat =
   | 'fii_dii_cash'      // NSE FII/DII Activity report
   | 'fao_participant_oi' // NSE F&O participant OI snapshot
-  | 'fao_participant_volume' // (future) NSE F&O participant volume
+  | 'fao_participant_volume' // NSE F&O participant trading volume
+  | 'cm_participant_volume' // NSE Cash Market participant volume (Client/Pro ₹ Cr)
   | 'unknown';
 
 export interface ParsedParticipantCsv {
@@ -209,6 +210,11 @@ function detectFormat(filename: string, rows: string[][]): CsvFormat {
   const fn = filename.toLowerCase();
   // Hint from filename
   if (fn.includes('fii') && fn.includes('dii')) return 'fii_dii_cash';
+  // CM (capital market / cash segment) participant volume — check BEFORE the
+  // generic participant hints. NSE archive filename: cm_participant_08092026.csv
+  if (fn.includes('cm_participant') || (fn.includes('cash') && fn.includes('participant'))) {
+    return 'cm_participant_volume';
+  }
   // Distinguish OI vs Volume from filename first
   if (fn.includes('fao') && (fn.includes('participant_oi') || fn.includes('oi_'))) return 'fao_participant_oi';
   if (fn.includes('fao') && (fn.includes('participant_vol') || fn.includes('vol_') || fn.includes('volume'))) {
@@ -224,6 +230,10 @@ function detectFormat(filename: string, rows: string[][]): CsvFormat {
   if (titleRow.includes('open interest') && titleRow.includes('equity derivatives')) {
     return 'fao_participant_oi';
   }
+  // Cash market participant volume: "Participant wise Trading Volume - Capital Market Segment as on ..."
+  if (titleRow.includes('trading volume') && titleRow.includes('capital market')) {
+    return 'cm_participant_volume';
+  }
 
   // Fall back to header inspection
   const header = rows.find(r => r.length > 0) ?? [];
@@ -235,6 +245,10 @@ function detectFormat(filename: string, rows: string[][]): CsvFormat {
   if (headerStr.includes('client type') && headerStr.includes('future index long') && headerStr.includes('total long contracts')) {
     // Ambiguous — default to OI (the more commonly downloaded report)
     return 'fao_participant_oi';
+  }
+  if (headerStr.includes('client type') && headerStr.includes('net value') && !headerStr.includes('future index long')) {
+    // Cash segment volume: "Client Type, Buy Value, Sell Value, Net Value"
+    return 'cm_participant_volume';
   }
   if (headerStr.includes('client type') && (headerStr.includes('buy value') || headerStr.includes('buyqty'))) {
     return 'fao_participant_volume';
@@ -385,6 +399,129 @@ function parseFaoParticipantOi(rows: string[][]): Omit<ParsedParticipantCsv, 'fo
   };
 }
 
+/**
+ * Parse the NSE "Participant wise Trading Volume — Capital Market Segment"
+ * report (cash market trades in ₹). This is the 4th report that completes
+ * Factor 12 inputs: it provides real Client and Pro (PropDesk) net values
+ * in ₹ — no more manual guessing.
+ *
+ * Expected layout (typical NSE archive):
+ *   Row 0: "Participant wise Trading Volume - Capital Market Segment as on Sep 08, 2026"
+ *   Row 1: "Values in Rs. Lakhs"          ← unit hint (may be absent)
+ *   Row 2: Client Type, Buy Value, Sell Value, Net Value
+ *   Rows:  Client, NRI, DII, Pro, TOTAL
+ *
+ * Unit handling: NSE historically publishes this report in ₹ LAKHS.
+ * 1 Crore = 100 Lakhs → if the unit row says Lakhs, divide by 100.
+ * If it says Crore, use as-is. If no unit row found, assume ₹ Cr and warn.
+ */
+function parseCmParticipantVolume(rows: string[][]): Omit<ParsedParticipantCsv, 'format'> {
+  const warnings: string[] = [];
+
+  // Find header row ("Client Type" + "Net Value", no derivatives columns)
+  let headerIdx = -1;
+  for (let i = 0; i < rows.length; i++) {
+    const rowStr = rows[i].join(' ').toLowerCase();
+    if (rowStr.includes('client type') && rowStr.includes('net value')) {
+      headerIdx = i;
+      break;
+    }
+  }
+  if (headerIdx === -1) {
+    return {
+      date: null,
+      fii: 0, dii: 0, client: 0, propdesk: 0,
+      summary: 'Could not find header row in Cash Market participant volume file',
+      warnings: ['Header row with "Client Type ... Net Value" not found'],
+    };
+  }
+
+  // Unit detection — scan rows ABOVE the header for a unit hint
+  // (NSE puts "Values in Rs. Lakhs" between title and header)
+  let divisor = 1;
+  let unitLabel = '₹ Cr (assumed)';
+  for (let i = 0; i < headerIdx; i++) {
+    const rowStr = rows[i].join(' ').toLowerCase();
+    if (rowStr.includes('lakhs') || rowStr.includes('lakh')) {
+      divisor = 100;
+      unitLabel = '₹ Lakhs (converted to Cr)';
+      break;
+    }
+    if (rowStr.includes('crore') || rowStr.includes('₹ cr') || rowStr.includes('rs. cr')) {
+      divisor = 1;
+      unitLabel = '₹ Cr';
+      break;
+    }
+  }
+  if (divisor === 1 && unitLabel.includes('assumed')) {
+    warnings.push('No unit row found ("Values in Rs. Lakhs/Crore") — assuming ₹ Crore. Verify Client/Pro magnitudes look sane.');
+  }
+
+  // Extract date from title row — "as on Sep 08, 2026"
+  let date: string | null = null;
+  const titleRow = rows.slice(0, headerIdx).map(r => r.join(' ')).join(' ');
+  const dateMatch = titleRow.match(/as on\s+([A-Za-z]{3})\s+(\d{1,2}),?\s+(\d{4})/i);
+  if (dateMatch) {
+    const monthMap: Record<string, string> = {
+      jan: '01', feb: '02', mar: '03', apr: '04', may: '05', jun: '06',
+      jul: '07', aug: '08', sep: '09', oct: '10', nov: '11', dec: '12',
+    };
+    const mon = monthMap[dateMatch[1].toLowerCase()];
+    if (mon) {
+      date = `${dateMatch[3]}-${mon}-${dateMatch[2].padStart(2, '0')}`;
+    }
+  }
+
+  // Net value column — find by name, else last column
+  const header = rows[headerIdx];
+  let netIdx = header.length - 1;
+  for (let i = 0; i < header.length; i++) {
+    const h = header[i].toLowerCase().replace(/\s+/g, ' ').trim();
+    if (h.includes('net value') || h === 'net') netIdx = i;
+  }
+
+  let client = 0;
+  let propdesk = 0;
+  let diiCheck: number | null = null;
+
+  for (let i = headerIdx + 1; i < rows.length; i++) {
+    const row = rows[i];
+    if (row.length < 2) continue;
+    const cat = row[0].toLowerCase().trim();
+    const net = parseNumber(row[netIdx]) / divisor;
+    if (cat === 'client') client = net;
+    else if (cat === 'pro') propdesk = net;
+    else if (cat === 'dii') diiCheck = net;
+    // NRI / TOTAL rows ignored — NRI flow is tiny and not tracked by Factor 12
+  }
+
+  if (client === 0 && propdesk === 0) {
+    warnings.push('No Client or Pro rows found — check CSV format');
+  }
+
+  const fmt = (v: number) => `${v >= 0 ? '+' : ''}${v.toFixed(2)}`;
+  const summary =
+    `Cash market participant volume parsed (units: ${unitLabel}). ` +
+    `Client ${fmt(client)} Cr, Pro/PropDesk ${fmt(propdesk)} Cr. ` +
+    (diiCheck !== null ? `Cross-check: DII ${fmt(diiCheck)} Cr in this file (form uses the FII/DII activity report value). ` : '') +
+    `Now upload the FII/DII Activity report for FII/DII net values, then Save.`;
+
+  warnings.push(
+    'This file has no FII row — FII net must come from the FII/DII Activity report. ' +
+    'Upload both files, then Save once.'
+  );
+
+  return {
+    date,
+    fii: 0,
+    dii: 0,
+    client: Math.round(client * 100) / 100,
+    propdesk: Math.round(propdesk * 100) / 100,
+    summary,
+    warnings,
+  };
+}
+
 // ─── Main entry point ───
 
 export function parseParticipantCsv(filename: string, content: string): ParsedParticipantCsv {
@@ -437,6 +574,16 @@ export function parseParticipantCsv(filename: string, content: string): ParsedPa
       }
       return { format, ...parsed };
     }
+    case 'cm_participant_volume': {
+      // Cash market participant volume — real Client + Pro (PropDesk) net
+      // values in ₹ Cr. Completes Factor 12 inputs (FII/DII come from the
+      // FII/DII Activity report).
+      const parsed = parseCmParticipantVolume(rows);
+      if (!parsed.date) {
+        parsed.date = dateFromFilename(filename);
+      }
+      return { format, ...parsed };
+    }
     case 'unknown':
     default:
       return {
@@ -444,7 +591,7 @@ export function parseParticipantCsv(filename: string, content: string): ParsedPa
         date: null,
         fii: 0, dii: 0, client: 0, propdesk: 0,
         summary: `Could not detect CSV format. Filename: ${filename}. First row: ${rows[0]?.join(', ') ?? '(empty)'}`,
-        warnings: ['Unknown CSV format. Supported: NSE FII/DII Activity, NSE F&O Participant OI, NSE F&O Participant Volume'],
+        warnings: ['Unknown CSV format. Supported: NSE FII/DII Activity, NSE F&O Participant OI, NSE F&O Participant Volume, NSE Cash Market Participant Volume'],
       };
   }
 }
