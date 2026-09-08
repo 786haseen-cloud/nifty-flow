@@ -253,3 +253,31 @@ Stage Summary:
 - Factor 12 activates automatically after deploy (data already in Upstash)
 - New 4th-report support: user can upload NSE CM participant volume CSV for real Client/Pro ₹ Cr values
 - Phase 2b calibration note: DII dampener sign-flip when smart flow weak
+
+---
+Task ID: 7
+Agent: Main
+Task: PUT signal diagnosis + fix — "no PUT buy signal in last 7 days of falling market"
+
+Work Log:
+- Built scripts/test-put-diagnosis.ts — simulates 5 realistic Indian-market scenarios through the real computeSignal() and prints per-factor breakdowns
+- Diagnosis proven with numbers (BEFORE fix):
+  * S1 Typical falling day: -1.10 → WAIT. Charm +3.00 BULL + magnet pull +1.13 BULL vs five bearish factors -5.25
+  * S2 Strong -1.1% crash (4 factors maxed bearish): -4.50 → only PUT WEAK
+  * S3 Mild drift-down: +0.40 → POSITIVE score on a falling day → WAIT
+  * S5 Range day: +3.20 → bogus CALL WEAK (zero-Γ bull trigger +2.0 fires because charm 'up' is structural in India)
+  * Root asymmetry: bull zero-Γ trigger needs charm 'up' (always true — India chains are put-written); bear trigger needs charm 'down' (never true)
+- Implemented 4 calibrated fixes (thresholds unchanged, symmetric):
+  1. Charm trend gate (Factor 1): charm weight 3.0 → 1.0 when gammaRegime='negative' AND basisPct < -0.05 (and symmetric mirror for bearish charm in positive regime + premium). Rationale: charm is a slow drift factor; when regime AND basis both confirm opposite directional pressure, dealer forced flow is overwhelmed (negative-gamma hedging is pro-cyclical)
+  2. Magnet pull trend gate (Factor 3): pull scaled ×0.3 when regime+basis confirm trend against the pull (mean-reversion zone becomes a trap in trends). Symmetric
+  3. Zero-Γ trigger fixes (Factor 2): (a) both charm triggers require charmMagnitudeCr ≥ 300; (b) new flow-confirmed bear trigger: spot within 0.3% above flip + basisPct < -0.10 → -2.0
+  4. Participant dampener sign-flip guard (computeParticipantBias): if DII dampener pushes raw score past zero against the smart-money direction, clamp to 0 (dampened ≠ reversed; live case FII -273/DII +1231 was +0.16 bull on a falling day)
+- AFTER fix: S1 -3.90 PUT WEAK; S2 -7.80 PUT MODERATE; S3 -2.40 PUT WEAK; S4 up-day control unchanged CALL STRONG +12.90 (charm gate inactive); S5 range day +2.00 WAIT (correct)
+- Tests: added 8g (sign-flip guard, 2 checks) + Test 9 (trend gates, 12 checks incl. controls) → 57/57 pass. tsc 35 pre-existing errors (zero in touched files). Build clean.
+- Updated scoring-model comment header in magnet-engine.ts documenting all three gates
+
+Stage Summary:
+- Commit 732efd9 pushed origin/main (Vercel auto-deploy)
+- PUT signals now fire on falling days: typical down day → PUT WEAK, crash day → PUT MODERATE, mild drift → PUT WEAK
+- CALL logic on genuine up days completely unchanged (gates only activate when regime+basis BOTH confirm contrary pressure)
+- Observation period: watch next 2-3 trading days — if PUT signals appear on genuine down days and no bogus PUTs on up days, calibration is good; revisit dampener cap and charm gate magnitude after 2-3 weeks of Factor 12 history
