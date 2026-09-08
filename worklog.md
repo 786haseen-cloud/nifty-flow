@@ -281,3 +281,26 @@ Stage Summary:
 - PUT signals now fire on falling days: typical down day → PUT WEAK, crash day → PUT MODERATE, mild drift → PUT WEAK
 - CALL logic on genuine up days completely unchanged (gates only activate when regime+basis BOTH confirm contrary pressure)
 - Observation period: watch next 2-3 trading days — if PUT signals appear on genuine down days and no bogus PUTs on up days, calibration is good; revisit dampener cap and charm gate magnitude after 2-3 weeks of Factor 12 history
+
+---
+Task ID: 8
+Agent: Main
+Task: STRONG PUT symmetry calibration + Trends tab card order (Recent Signals below Magnet card, Participant Flow last)
+
+Work Log:
+- User: "where is strong PUT buy signal if there is strong CALL buy signal ... do one more adjustment fix Recent Signals card below Magnet & Gamma Dashboard card ... and Participant Flow card in the last on trend tab ... FII and prop desk move the market and always bet against the retail client"
+- Verified 1st calibration (732efd9) state: typical down day -3.90 PUT WEAK, crash day -7.80 PUT MODERATE, up day +12.90 CALL STRONG. Asymmetry remained: STRONG PUT (-9.0 symmetric band) unreachable while STRONG CALL routine.
+- Engine fix 1 — gated charm NEUTRALIZED to 0.0 (was +1.0): structural put-written drift overwhelmed by selling flow is background, not directional signal. Applies symmetrically (charm down + positive regime + premium).
+- Engine fix 2 — ASYMMETRIC PUT band: WEAK <= -1.5, MODERATE <= -4.5, STRONG <= -8.0 (CALL unchanged 2.0/5.5/9.0). Justification: residual structural tilt ~1.0-1.5 pts (gated magnet pull residual on down days, PCR/VIX band placement, charm one-sidedness). Restores symmetry in PROBABILITY space.
+- Engine fix 3 — defensive normalization at top of computeSignal: undefined optional fields (basisPct, vix, zeroGamma, gexStrikes, magnetZone, oiBuildup, participantBias, pinningProbability) coerce to null/neutral defaults. Found via pre-existing test-put-direct.ts crash (undefined.toFixed TypeError) — undefined !== null passed guards then blew up.
+- Factor 12 detail strings now spell out the model: "Smart money (FII+Prop) -X Cr selling → market drops; Retail +X Cr buying (faded — crowd on wrong side); DII (absorbing FII sells)".
+- Verification matrix (scripts/test-put-diagnosis.ts): crash day -9.00 PUT STRONG (complete bearish alignment incl. red GEX below spot); crash + participantBias -2.0 (FII+Prop selling) -11.40 deep PUT STRONG; typical falling day -4.90 PUT MODERATE; mild drift -1.90 PUT WEAK; up-day control +11.10 CALL STRONG unchanged; range day +2.00 WAIT unchanged.
+- Tests: test-phase1-enhancements.ts updated 9a (charm weight 1.0 → 0.0 assertion), added Test 9f STRONG PUT reachability (4 checks: crash→STRONG, FII confirmation deepens, mild stays WEAK, up-day unchanged) → 61/61 pass. test-csv-parser all pass. tsc 35 pre-existing errors (zero in touched files; baseline verified via stash). Production build clean.
+- UI (trend-analysis-tab.tsx): Recent Signals card removed from inside Magnet & Gamma Dashboard container, now rendered as standalone card immediately AFTER it (own rounded-xl border via component root). ParticipantFlowCard moved from before the magnet card to the very END of the Trends tab (after Dual Exchange Cash Flow). Magnet legend updated: 12 factors, ±17 max, asymmetric thresholds documented.
+- Commit 1b95d2e pushed origin/main (Vercel auto-deploy).
+
+Stage Summary:
+- STRONG PUT now reachable and symmetric with STRONG CALL: crash day + FII selling = deep PUT STRONG — matching user's model that FII/Prop selling drives markets down
+- Note: Recent Signals history shows OLD engine entries for a few days (recorded pre-fix); new PUT signals accumulate as market scans run post-deploy
+- Observation period continues: 2-3 trading days to confirm PUT tiers appear on genuine down days with no bogus PUTs on up days
+- Layout per request: trend cards → Magnet & Gamma Dashboard → Recent Signals → Dual Exchange Cash Flow → Participant Flow (last)
