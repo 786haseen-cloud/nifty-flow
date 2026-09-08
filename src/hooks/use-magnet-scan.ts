@@ -22,10 +22,13 @@ import { useEffect, useState, useRef, useCallback } from 'react';
 import { withCreds } from '../lib/kite-creds';
 import { getMarketPhase } from '../lib/market-hours';
 import type { MagnetResult } from '../lib/magnet-engine';
+import type { SymbolFootprint } from '../lib/footprint';
 
 interface MagnetScanResponse {
   mode: 'live' | 'demo' | 'error';
   symbols: MagnetResult[];
+  /** Phase 2d: live smart-money footprint per symbol (same poll, no extra Kite calls). */
+  footprint?: SymbolFootprint[];
   timestamp: string;
   error?: string;
   message?: string;
@@ -35,6 +38,7 @@ const POLL_INTERVAL_MS = 60_000;  // 60 seconds
 
 export function useMagnetScan(enabled: boolean = true) {
   const [data, setData] = useState<MagnetResult[]>([]);
+  const [footprint, setFootprint] = useState<SymbolFootprint[]>([]);
   const [mode, setMode] = useState<'live' | 'demo' | 'error' | 'loading'>('loading');
   const [error, setError] = useState<string | null>(null);
   const [lastPollAt, setLastPollAt] = useState<number>(0);
@@ -60,11 +64,13 @@ export function useMagnetScan(enabled: boolean = true) {
       const json: MagnetScanResponse = await res.json();
       if (json.mode === 'live' && json.symbols?.length > 0) {
         setData(json.symbols);
+        setFootprint(json.footprint ?? []);
         setMode('live');
         setError(null);
         hasDataRef.current = true;
       } else if (json.mode === 'demo') {
         setData([]);
+        setFootprint([]);
         setMode('demo');
         setError(json.message || 'Kite API not configured');
       } else if (json.mode === 'error') {
@@ -96,5 +102,5 @@ export function useMagnetScan(enabled: boolean = true) {
     };
   }, [enabled, fetchOnce]);
 
-  return { data, mode, error, lastPollAt, refetch: fetchOnce };
+  return { data, footprint, mode, error, lastPollAt, refetch: fetchOnce };
 }

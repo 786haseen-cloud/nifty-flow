@@ -39,6 +39,14 @@ import {
 import { persistSignal, patternMatch } from '@/lib/signal-history';
 import { getCachedParticipantBias, saveOptionChainSnapshot } from '@/lib/participant-service';
 import { istDateStr } from '@/lib/ist';
+import {
+  computeSymbolFootprint,
+  makeBaseline,
+  type SymbolFootprint,
+  type StrikeFoot,
+  type FootprintBaseline,
+} from '@/lib/footprint';
+import { getFootprintBaselines, mergeFootprintBaselines } from '@/lib/footprint-service';
 
 // ─── Helpers ───
 
@@ -292,14 +300,24 @@ export async function GET(req: NextRequest) {
     }
     const optQuotes = allQuotes;
 
-    // Extract future prices per symbol
+    // Extract future prices per symbol + full quote for the footprint
+    // panel (futures OI/volume/prevClose). Retail barely trades futures
+    // (lot sizes) — futures OI ≈ FII/Prop positioning, the cleanest live
+    // smart-money tell: OI↑+price↓ = short buildup (desks betting down).
     const futurePriceMap = new Map<string, number>();  // symbol → future LTP
+    const futureQuoteMap = new Map<string, { ltp: number; oi: number; volume: number; prevClose: number }>();
     for (const tok of futureTokenList) {
       const symbol = futureTokenToSymbol.get(tok);
       if (!symbol) continue;
       const q = allQuotes[tok] as KiteQuote | undefined;
       if (q?.lastPrice && q.lastPrice > 0) {
         futurePriceMap.set(symbol, q.lastPrice);
+        futureQuoteMap.set(symbol, {
+          ltp: q.lastPrice,
+          oi: q.oi || 0,
+          volume: q.volume || 0,
+          prevClose: q.close || 0,
+        });
       }
     }
 
@@ -317,9 +335,13 @@ export async function GET(req: NextRequest) {
       strikes: { strike: number; ceOI: number; ceLTP: number; peOI: number; peLTP: number }[];
     }>();
 
+    // Footprint strike snapshots per symbol (symbol → strikes with OI +
+    // day-cumulative option volume — volume drives the writer-vs-buyer ratio)
+    const footprintStrikes = new Map<string, StrikeFoot[]>();
+
     for (const sd of symbolDataList) {
-      // Group option quotes by strike for this symbol
-      const strikeMap = new Map<number, { ceLTP: number; peLTP: number; ceOI: number; peOI: number }>();
+      // Group option quotes by strike for this symbol (OI + volume)
+      const strikeMap = new Map<number, { ceLTP: number; peLTP: number; ceOI: number; peOI: number; ceVol: number; peVol: number }>();
 
       for (const inst of sd.instruments) {
         const tok = String(inst.instrumentToken);
@@ -328,20 +350,33 @@ export async function GET(req: NextRequest) {
 
         const oi = quote.oi || 0;
         const ltp = quote.lastPrice || 0;
+        const vol = quote.volume || 0;
 
         if (!strikeMap.has(inst.strike)) {
-          strikeMap.set(inst.strike, { ceLTP: 0, peLTP: 0, ceOI: 0, peOI: 0 });
+          strikeMap.set(inst.strike, { ceLTP: 0, peLTP: 0, ceOI: 0, peOI: 0, ceVol: 0, peVol: 0 });
         }
         const entry = strikeMap.get(inst.strike)!;
         const meta = tokenMeta.get(tok);
         if (meta?.optionType === 'CE') {
           entry.ceLTP = ltp;
           entry.ceOI = oi;
+          entry.ceVol = vol;
         } else if (meta?.optionType === 'PE') {
           entry.peLTP = ltp;
           entry.peOI = oi;
+          entry.peVol = vol;
         }
       }
+
+      // Snapshot for the footprint delta math (all strikes — the pure
+      // functions filter/skip internally)
+      footprintStrikes.set(sd.symbol, [...strikeMap.entries()].map(([strike, d]) => ({
+        strike,
+        ceOI: d.ceOI,
+        peOI: d.peOI,
+        ceVol: d.ceVol,
+        peVol: d.peVol,
+      })));
 
       // Build StrikeOption array (filter out strikes with zero OI on both sides)
       const strikes: StrikeOption[] = [...strikeMap.entries()]
@@ -487,6 +522,46 @@ export async function GET(req: NextRequest) {
     const istDate = istDateStr();
     const isEodWindow = istMinutes >= 15 * 60 + 25; // 15:25 IST onwards
 
+    // ── Phase 4.5 (NEW): Live Smart-Money Footprint ──
+    // Deltas are computed vs the FIRST capture of this IST day (baseline
+    // persisted in Upstash via footprint-service — survives cold starts).
+    // Symbols seen for the first time today get their baseline captured
+    // now (fire-and-forget write); their footprint shows "baseline set"
+    // until the next poll produces a real delta.
+    const footprintResults: SymbolFootprint[] = [];
+    try {
+      const baselines = await getFootprintBaselines(istDate);
+      const newBaselines: Record<string, FootprintBaseline> = {};
+      const nowMs = Date.now();
+      for (const r of results) {
+        const strikes = footprintStrikes.get(r.symbol) ?? [];
+        const fut = futureQuoteMap.get(r.symbol) ?? null;
+        let baseline = baselines[r.symbol] ?? null;
+        let fresh = false;
+        if (!baseline && strikes.length >= 3) {
+          baseline = makeBaseline(fut, strikes, nowMs);
+          newBaselines[r.symbol] = baseline;
+          fresh = true;
+        }
+        footprintResults.push(computeSymbolFootprint({
+          symbol: r.symbol,
+          type: r.type,
+          spot: r.spot,
+          baseline,
+          baselineFresh: fresh,
+          futures: fut,
+          strikes,
+          nowMs,
+        }));
+      }
+      if (Object.keys(newBaselines).length > 0) {
+        // Fire-and-forget persist — non-blocking, non-fatal
+        mergeFootprintBaselines(istDate, newBaselines).catch(() => { /* swallow */ });
+      }
+    } catch (err) {
+      console.warn('[magnet-scan] footprint computation failed:', err);
+    }
+
     if (isEodWindow && eodSnapshots.size > 0) {
       // Fire-and-forget — don't block the response on snapshots
       Promise.all(Array.from(eodSnapshots.entries()).map(async ([symbol, snap]) => {
@@ -523,6 +598,9 @@ export async function GET(req: NextRequest) {
         weight: participantBias,
         detail: participantBiasDetail,
       },
+      // Phase 2d: live smart-money footprint per symbol (futures buildup,
+      // fresh OI walls, PCR velocity, writer-vs-buyer churn ratio)
+      footprint: footprintResults,
       timestamp: new Date().toISOString(),
     });
   } catch (err) {

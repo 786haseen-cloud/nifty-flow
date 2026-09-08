@@ -41,6 +41,7 @@ import MagnetCard, { MagnetSummaryRow } from '@/components/dashboard/magnet-card
 import { SignalBanner } from '@/components/dashboard/signal-banner';
 import { RecentSignalsCard } from '@/components/dashboard/recent-signals-card';
 import { ParticipantFlowCard } from '@/components/dashboard/participant-flow-card';
+import { SmartMoneyFootprintCard } from '@/components/dashboard/smart-money-footprint-card';
 
 // ─── Trading Session X-Axis Helpers ───
 // Charts display a fixed trading-session window 09:15 → 15:40 IST.
@@ -656,6 +657,19 @@ export default function TrendAnalysisTab() {
           </div>
         </div>
       </div>
+
+      {/* Section 3.45: Live Smart-Money Footprint (Phase 2d) — who is moving
+          the market RIGHT NOW: futures buildup (price × OI), fresh OI walls
+          being written today, PCR velocity, writer-vs-buyer churn ratio.
+          Rides the SAME 60s magnet-scan poll (zero extra Kite API calls).
+          Placed ABOVE the Magnet & Gamma Dashboard as live "who" context;
+          the user's card order below is preserved: Magnet Dashboard →
+          Recent Signals → Dual Exchange Cash Flow → Participant Flow (last). */}
+      <SmartMoneyFootprintCard
+        footprint={magnetScan.footprint}
+        mode={magnetScan.mode}
+        lastPollAt={magnetScan.lastPollAt}
+      />
 
       {/* Section 3.5: Magnet & Gamma Dashboard — GEX / Zero-Γ / Charm / Pinning Probability
           ============================================================

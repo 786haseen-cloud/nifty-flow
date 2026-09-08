@@ -304,3 +304,26 @@ Stage Summary:
 - Note: Recent Signals history shows OLD engine entries for a few days (recorded pre-fix); new PUT signals accumulate as market scans run post-deploy
 - Observation period continues: 2-3 trading days to confirm PUT tiers appear on genuine down days with no bogus PUTs on up days
 - Layout per request: trend cards → Magnet & Gamma Dashboard → Recent Signals → Dual Exchange Cash Flow → Participant Flow (last)
+
+---
+Task ID: 9
+Agent: Main
+Task: Phase 2d — Live Smart-Money Footprint panel (user approved "yes build it")
+
+Work Log:
+- User asked "how can we know smart money active or retail is active in live market?" — answered with the 4 live footprint signatures (futures OI×price, option writing vs buying, writer-vs-buyer ratio, PCR velocity), then user approved building the panel.
+- New src/lib/footprint.ts (pure logic, no I/O): classifyFuturesBuildup (LONG_BUILDUP/SHORT_BUILDUP/SHORT_COVERING/LONG_UNWINDING/NEUTRAL from price ±0.15% + OI ±0.3% vs day baseline), classifyChurn (Σ|ΔOI|÷Σvolume: ≥0.35 POSITIONING / ≤0.15 CHURN), pcrDirection (±0.02 band), computeFreshWalls (top-3 CE/PE OI adds vs baseline, window-shift strikes excluded, distPct from spot), composeVerdict (buildup ±2/±1 + PCR ±1 + near-spot wall dominance ±1; RETAIL CHURN override when churn && |score|≤1; plain-English sentence), computeSymbolFootprint orchestrator, makeBaseline factory. Thresholds are exported constants for calibration.
+- New src/lib/footprint-service.ts: Upstash baseline store — key footprint:baselines:YYYY-MM-DD (ONE key, all symbols), TTL 2 days, first-capture-wins merge (never overwrites), in-memory memo serves same-day reads (1 read/cold-start), decodeJson double-parse guard (same as participant-service). Cost ~1-3 writes + a few reads per day.
+- magnet-scan route (Phase 4.5): extracts futures quote oi/volume/prevClose into futureQuoteMap (was lastPrice-only — Kite quote already carried them); strikeMap gains ceVol/peVol from quote.volume; per-scan getFootprintBaselines → computeSymbolFootprint for all 19 results; first-seen symbols get baseline captured (fire-and-forget merge); response gains footprint: SymbolFootprint[].
+- useMagnetScan hook: response type + footprint state, returned alongside data (single consumer = trend tab; backward-compatible).
+- New UI smart-money-footprint-card.tsx: indices section (4 detailed cards: verdict badge, futures buildup chip + price/OI Δ, PCR arrow + word, flow ratio, top-2 CE/PE fresh walls, verdict sentence), stocks compact table (15 rows, max-h-320 scroll, sticky header, responsive column hiding), 3-row legend + "why it works" explainer (EOD confirmation loop → Factor 12).
+- trend-analysis-tab: card inserted as Section 3.45 ABOVE Magnet & Gamma Dashboard; user's ordered layout below preserved (Magnet → Recent Signals → Dual Exchange → Participant Flow last) — verified via DOM h3 order in browser.
+- Tests: scripts/test-footprint.ts 57/57 pass (6 sections). 3 initial failures were wrong test expectations (tied-delta sort order, churn override boundary |score|≤1, actual ratio 0.212→MIXED), logic confirmed correct by hand-math; fixed expectations. Phase-1 suite 61/61, CSV suite pass, tsc 35 pre-existing (zero in touched files), production build clean.
+- Browser verification (agent-browser): card renders on Trends tab with Demo badge + graceful no-Kite state, legend intact, correct position above Magnet card, no console/hydration errors.
+
+Stage Summary:
+- Commit <pending> pushed origin/main (Vercel auto-deploy)
+- Live panel answers "smart money vs retail RIGHT NOW": desks = option writers + futures traders; retail = option buyers/churn. Composite verdicts: SMART MONEY BULLISH/BEARISH, BULLISH/BEARISH LEAN, RETAIL CHURN, MIXED, BASELINE SET.
+- Zero extra Kite API calls (rides existing 60s magnet-scan poll); Upstash +~3 commands/day.
+- Honest limitation documented in-card: deltas measured from dashboard's first capture of the day; strike window shift mid-day excluded from delta math.
+- Future option (not built): feed futures buildup into the engine as Factor 13 after 2-3 weeks observation.
