@@ -230,3 +230,26 @@ Stage Summary:
 - After 2-3 weeks of accumulation, Phase 2b (futures positioning factor)
   can be built with proper historical comparisons
 - After 4-6 weeks, Phase 2e (strike-level OI buildup patterns) can be built
+
+---
+Task ID: 6
+Agent: Main
+Task: Fix "Saved but no history" bug + add Cash Market participant volume report support
+
+Work Log:
+- User screenshot showed: save succeeded ("Saved 2026-09-08") but history "Last 0/7 days" and Factor 12 stuck at +0.00 neutral
+- Root cause found: @upstash/redis v1.38.4 base Command class default deserializer (parseResponse → parseRecursive) runs JSON.parse on every string response. participant-service saved via redis.set(key, JSON.stringify(entry)), so redis.get() returned an ALREADY-PARSED object. Code then called JSON.parse(raw) on that object → SyntaxError "[object Object]" → swallowed by try/catch → all reads returned null/[] while saves succeeded. Verified by reading node_modules chunk source (Command constructor line: deserialize = opts?.deserialize ?? parseResponse).
+- Contrast: signal-history.ts works because it uses redis.zrange<SignalHistoryEntry[]>(...) typed generic, never manual JSON.parse.
+- Fix: added decodeJson<T>() helper in participant-service.ts (handles object AND string shapes) and replaced all 6 read sites: getParticipantFlowByDate, getMostRecentParticipantFlow, getRecentParticipantFlow, getParticipantPositioningByDate, getRecentPositioning, getOptionChainSnapshot. Removed <string> generics from redis.get calls.
+- Enhancement: new CSV format 'cm_participant_volume' — NSE "Participant wise Trading Volume - Capital Market Segment" report (4th NSE report) provides REAL Client + Pro (PropDesk) net values in cash market Rs. Auto-detects unit row ("Values in Rs. Lakhs" → divide by 100; Crore → as-is; none → assume Cr + warn). Extracts Client/Pro from Net Value column; DII shown as cross-check only; no FII row in this file (comes from FII/DII Activity report).
+- Card: added zero-sum checksum warning on Save (FII+DII+Client+Prop must net ~0 in cash market; |sum| > 1500 Cr flags guessed Client/Prop values — user had typed placeholder 400/-50). Updated accepted-formats help text (upload FII/DII + Cash volume files together, then Save once).
+- Tests: test-csv-parser.ts extended with synthetic CM volume tests (₹ Lakhs conversion -6000 L → -60 Cr ✓, ₹ Cr no-unit-row ✓, content-based detection ✓) + regression checks for all 3 existing formats — ALL PASS. Phase 1+2 suite 43/43 pass. tsc 35 pre-existing errors (zero in touched files). Production build clean.
+- Note: user's saved entry 2026-09-08 (FII -273.22, DII +1231.63, Client 400, Prop -50) is intact in Upstash — no re-save needed. After deploy, getMostRecentParticipantFlow finds it and Factor 12 computes: smart = -323.22 → base -0.26; contrarian -0.08; DII dampener +0.50 (DII 1231 Cr opposes smart selling) → net +0.16 mild CALL bias. OBSERVATION: DII dampener (cap 0.5) can flip the sign when smart flow is weak (<625 Cr) — flag for Phase 2 calibration, don't change now.
+- Expiry-day caveat documented: 2026-09-08 was NIFTY weekly expiry (Tuesday). Report 2/3 F&O contract counts shrink on expiry day (positions expired) — normal; positioning data for that day is a "dead series" snapshot, Phase 2b design will skip expiry-day rows or use previous-day carry-forward. Report 1 cash flows unaffected.
+
+Stage Summary:
+- Commit 218f72b pushed origin/main (Vercel auto-deploy)
+- Bug fixed: reads now decode correctly regardless of client auto-deserialization behavior
+- Factor 12 activates automatically after deploy (data already in Upstash)
+- New 4th-report support: user can upload NSE CM participant volume CSV for real Client/Pro ₹ Cr values
+- Phase 2b calibration note: DII dampener sign-flip when smart flow weak
