@@ -327,3 +327,38 @@ Stage Summary:
 - Zero extra Kite API calls (rides existing 60s magnet-scan poll); Upstash +~3 commands/day.
 - Honest limitation documented in-card: deltas measured from dashboard's first capture of the day; strike window shift mid-day excluded from delta math.
 - Future option (not built): feed futures buildup into the engine as Factor 13 after 2-3 weeks observation.
+
+---
+Task ID: 10
+Agent: Main
+Task: Fix money flow cards showing data only from token-paste time (not 9:15) — backfill on demo→live transition
+
+Work Log:
+- User reported: at office, opened app, pasted access token mid-session. Nifty 50 Price Trend tab shows 9:15→now (works), but Net Cash Flow — 15 Stocks, Index Options Money Flow, and Stock Options Money Flow cards only show data from the moment of token paste (the 9:15→now morning history is missing).
+- Diagnosis: traced three independent data paths in trend-store.ts:
+  1. niftyCandles (Price Trend) — re-fetched every 15s poll from /api/kite/trends which calls Kite historical 5-min candle API. Always full-day. Works regardless of when token was pasted.
+  2. flowTrend (Index/Stock Options Money Flow) — appended point-by-point per 15s poll. HAD a backfill (/api/kite/historical-flow) but it was only triggered from startPolling()'s one-shot setTimeout(3s) on app boot. If user opened app WITHOUT a token, that setTimeout fired while trendMode === 'demo' and skipped. The subsequent demo→live transition (when user pasted token) cleared stale data but NEVER re-triggered the skipped backfill.
+  3. cashFlowTrend (Net Cash Flow — 15 Stocks) — appended point-by-point per 15s poll. Had NO backfill mechanism at all — no equivalent of historical-flow for cash data.
+- Built new endpoint /api/kite/historical-cash-flow/route.ts (322 lines):
+  * For each of 15 STOCK_SPECS, find NSE EQ + BSE EQ instrument tokens
+  * Fetch today's 5-min cash candles for each (30 API calls, ~3.5s with 3-per-350ms rate limit)
+  * For each timestamp: cash_flow = (close - today_open) * cumulative_volume — mirrors live /api/kite/trends formula (lastPrice - open) * volume where volume is cumulative-since-open
+  * Forward-fill across stocks that haven't traded in a given 5-min bar (carry forward last known cumulative flow)
+  * Aggregate NSE/BSE/Net/Weighted per timestamp; return CashFlowTrendPoint[] + lastStockTotals (raw, NOT /CR) so client's next live poll computes correct interval delta
+  * 60s in-memory cache, same pattern as historical-flow
+- Added backfillHistoricalCashFlow action to trend-store.ts:
+  * Fetches /api/kite/historical-cash-flow
+  * Merges with any live points that arrived during backfill (simple: cash flow is cumulative, no offset adjustment needed unlike options flow)
+  * Sets prevStockTotals to backfill's lastStockTotals so next live poll's intervalDelta = current_total - last_hist_total (correct absolute delta)
+  * 5min retry on empty/error — same pattern as options flow backfill
+- CRITICAL FIX: In pollOnce's demo→live transition, added re-trigger of BOTH backfills (backfillHistoricalFlow + backfillHistoricalCashFlow) with 3s delay. This is the ONLY place that catches the "opened app without token, pasted token later" scenario — startPolling's setTimeout already fired and skipped during the initial demo window. Without this re-trigger, the bug persists.
+- Added _cashBackfillDone runtime flag (not persisted, mirrors _historicalBackfillDone); added cash backfill scheduling to startPolling (mirrors options backfill pattern) for the "user opened app WITH token already set" case.
+- Pre-existing bug fix: prevStockTotals.bse was set to weightedTotal instead of bseTotal — caused next poll's intervalDelta = netTotal - (nseTotal_prev + weightedTotal_prev) to mix net with weighted, producing nonsensical 15s flow values. Now correctly stores bseTotal.
+- Verified: tsc 35 pre-existing errors unchanged (zero in touched files); next build clean; /api/kite/historical-cash-flow route registered. Cherry-picked onto latest origin/main (which has Tasks 4-9: Factor 12, CSV upload, read-side fix, PUT symmetry, card reorders, Live Smart-Money Footprint panel, LT underlying matching fix).
+
+Stage Summary:
+- Commit af54254 pushed origin/main (Vercel auto-deploy)
+- All three money flow cards now backfill 9:15→now on token re-paste: Index Options Money Flow, Stock Options Money Flow, AND Net Cash Flow — 15 Stocks
+- User's home scenario (token pasted within ~3s of app boot) was already working by luck (startPolling's setTimeout caught it); office scenario (token pasted 30s-2min after boot) now works via demo→live transition re-trigger
+- New endpoint: ~30 Kite API calls, ~3.5s, cached 60s — runs concurrently with options backfill, total backfill window ~2min (options dominates)
+- Cash backfill is approximate (5-min candle close vs sub-second live lastPrice; sum-of-candle-volumes vs live cumulative volume) — typical discrepancy <0.1%, not visually noticeable on chart
