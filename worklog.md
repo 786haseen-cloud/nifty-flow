@@ -362,3 +362,30 @@ Stage Summary:
 - User's home scenario (token pasted within ~3s of app boot) was already working by luck (startPolling's setTimeout caught it); office scenario (token pasted 30s-2min after boot) now works via demo→live transition re-trigger
 - New endpoint: ~30 Kite API calls, ~3.5s, cached 60s — runs concurrently with options backfill, total backfill window ~2min (options dominates)
 - Cash backfill is approximate (5-min candle close vs sub-second live lastPrice; sum-of-candle-volumes vs live cumulative volume) — typical discrepancy <0.1%, not visually noticeable on chart
+
+---
+Task ID: 11
+Agent: Main
+Task: Verify NSE report uploads saved properly (user: "all 3 report from nse is uploaded ... check it's properly save data")
+
+Work Log:
+- User uploaded 3 NSE reports via the deployed app and asked to verify persistence.
+- Constraint found: Upstash credentials exist only as Vercel env vars (not in repo .env), and no deployed URL is recorded anywhere in the repo/artifacts — direct Redis query impossible from sandbox. Verified the full pipeline instead.
+- Layer 1 — Parse layer: ran scripts/test-csv-parser.ts (ALL CHECKS PASSED) + wrote scripts/verify-participant-uploads.ts which runs the EXACT production parser (parseParticipantCsv) on the 3 actual uploaded files:
+  * fii-dii-nse-latest.csv → fii_dii_cash, date 2026-09-07, FII +268.94 Cr, DII +597.67 Cr (Client/Prop not in this file format → 0)
+  * fao_participant_oi_07092026.csv → fao_participant_oi, date 2026-09-07, positioning parsed (Client 14.4M L/10.8M S, DII 0.45M L/5.0M S, FII 5.8M L/5.2M S, Pro 5.3M L/5.0M S)
+  * fao_participant_vol_07092026.csv → fao_participant_volume, date 2026-09-07, positioning parsed (Client 52.2M L/52.1M S, FII 8.1M L/8.1M S, Pro 70.1M L/70.2M S)
+- Layer 2 — Save paths verified in code:
+  * FAO OI + FAO VOL → AUTO-SAVED to Upstash during upload (parse-csv route lines 64-89, saveParticipantPositioning, 35-day TTL, non-fatal on failure)
+  * FII/DII flow → NOT auto-saved; parse only populates the form; user must click Save → POST /api/participants/daily (validation verified correct)
+  * Save → biasCache.delete('most-recent') invalidation present (line 207) — re-saved data reflects immediately in Factor 12
+- Layer 3 — Read path: decodeJson fix (218f72b) handles Upstash auto-deserialization; GET /api/participants/daily returns history + bias.
+- Expected Upstash state after upload (if user re-uploaded the Sep-7 files): participants:2026-09-07 (only if Save clicked), participant_positioning:2026-09-07:fao_oi, participant_positioning:2026-09-07:fao_vol.
+- Note: user's "3 reports" likely excludes the 4th NSE report (CM participant volume) that carries REAL Client/Pro ₹ Cr values — with only the FII/DII file, Client/PropDesk save as 0 and Factor 12 ≈ +0.2 (FII-driven only).
+- Gave user 3 self-verification options: (1) Participant Flow card history bars + Factor 12 value, (2) direct GET /api/participants/daily URL in browser, (3) Vercel function logs for [participant-service] warnings.
+
+Stage Summary:
+- Parse layer 100% healthy for all uploaded formats; save/read code paths verified correct
+- scripts/verify-participant-uploads.ts committed for repeatable checks
+- Direct Upstash confirmation requires user-side check (card / GET URL / Vercel logs) — no credentials in sandbox
+- Observation: if fresh reports downloaded today contain 2026-09-08 data, the Save click overwrites the manual 2026-09-08 entry (FII -273.22, DII +1231.63, Client 400→parsed value, Prop -50→parsed value) with official parsed numbers
