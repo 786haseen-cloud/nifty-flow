@@ -93,7 +93,8 @@ interface TrendState {
   // ─── Polling control (NOT persisted — runtime only) ───
   _pollingStarted: boolean;
   _pollTimer: ReturnType<typeof setInterval> | null;
-  _historicalBackfillDone: boolean;  // true after first successful backfill today
+  _historicalBackfillDone: boolean;  // true after first successful options-flow backfill today
+  _cashBackfillDone: boolean;        // true after first successful cash-flow backfill today
 
   // ─── Actions ───
   startPolling: () => void;
@@ -101,6 +102,7 @@ interface TrendState {
   pollOnce: () => Promise<void>;
   clearTrendData: () => void;
   backfillHistoricalFlow: () => Promise<void>;
+  backfillHistoricalCashFlow: () => Promise<void>;
 }
 
 // ─── Constants ───
@@ -141,6 +143,7 @@ export const useTrendStore = create<TrendState>()(
       _pollingStarted: false,
       _pollTimer: null,
       _historicalBackfillDone: false,
+      _cashBackfillDone: false,
 
       // ─── Actions ───
 
@@ -191,6 +194,31 @@ export const useTrendStore = create<TrendState>()(
               console.log('[TrendStore] Triggering historical flow backfill...');
               get().backfillHistoricalFlow().catch((e) =>
                 console.error('[TrendStore] backfill error:', e)
+              );
+            }
+          }, 3000);
+        }
+
+        // Cash-flow backfill — mirrors the options-flow backfill above.
+        // Reconstructs the morning-to-now Net Cash Flow trend (NSE + BSE for
+        // 15 F&O stocks) from Kite's historical 5-min cash candles. Without
+        // this, the "Net Cash Flow — 15 Stocks" card only shows data from the
+        // moment the user pasted their access token (the morning history is
+        // missing — same fundamental problem the options-flow backfill solves
+        // for the Index/Stock Options Money Flow cards).
+        // Same trigger logic: market open/post, not already done, cashFlowTrend empty.
+        // 3s delay lets the first live poll set trendMode before we trigger.
+        // NOTE: If this setTimeout fires while trendMode === 'demo' (user opened
+        // the app without a token), it skips. The demo→live transition in
+        // pollOnce re-triggers it when the user later pastes a token.
+        if ((backfillPhase === 'open' || backfillPhase === 'post') &&
+            !get()._cashBackfillDone && get().cashFlowTrend.length === 0) {
+          setTimeout(() => {
+            const state = get();
+            if (state.trendMode === 'live' && !state._cashBackfillDone) {
+              console.log('[TrendStore] Triggering historical cash backfill...');
+              get().backfillHistoricalCashFlow().catch((e) =>
+                console.error('[TrendStore] cash backfill error:', e)
               );
             }
           }, 3000);
@@ -271,6 +299,7 @@ export const useTrendStore = create<TrendState>()(
           currentStockFlow: 0,
           currentIntervalCashFlow: 0,
           _historicalBackfillDone: false,
+          _cashBackfillDone: false,
         });
       },
 
@@ -418,6 +447,96 @@ export const useTrendStore = create<TrendState>()(
       },
 
       /**
+       * Historical Cash Flow Backfill
+       * -----------------------------
+       * Called once per day (on first live poll when cashFlowTrend is empty).
+       * Fetches /api/kite/historical-cash-flow which reconstructs the
+       * morning-to-now NET CASH FLOW trend (NSE + BSE for 15 F&O stocks)
+       * from Kite's historical 5-min cash candles.
+       *
+       * Cash flow points are CUMULATIVE-since-market-open values (Cr),
+       * NOT deltas — so merging with live data is simpler than the options
+       * backfill (no offset adjustment needed). We just keep historical
+       * points + any live points that arrived during the ~10s backfill
+       * (those with time > last historical timestamp).
+       *
+       * Also sets `prevStockTotals` to the backfill's `lastStockTotals` so
+       * the next live poll's `intervalDelta` = current_total - last_hist_total
+       * (a ~5min delta attributed to one 15s tick — slightly inflated but
+       * correct in absolute terms; subsequent polls resume 15s deltas).
+       *
+       * If the backfill returns no data (e.g., user had no creds at boot,
+       * then pastes a token later), schedules a 5min retry — same pattern
+       * as the options-flow backfill.
+       */
+      backfillHistoricalCashFlow: async () => {
+        try {
+          const res = await fetch(withCreds('/api/kite/historical-cash-flow'));
+          const data = await res.json();
+
+          if (data.mode !== 'live' || !data.cashFlowTrend || data.cashFlowTrend.length === 0) {
+            console.log('[TrendStore] Cash backfill returned no data, will retry later if creds are refreshed');
+            // Do NOT set _cashBackfillDone = true — allows retry when creds are refreshed.
+            setTimeout(() => {
+              const s = get();
+              if (!s._cashBackfillDone && s.trendMode === 'live') {
+                console.log('[TrendStore] Retrying historical cash backfill...');
+                get().backfillHistoricalCashFlow().catch((e) =>
+                  console.error('[TrendStore] cash backfill retry error:', e)
+                );
+              }
+            }, 5 * 60 * 1000);
+            return;
+          }
+
+          const state = get();
+          const histCash = data.cashFlowTrend as CashFlowTrendPoint[];
+          const histLastTotals = data.lastStockTotals as { nse: number; bse: number; weighted: number };
+
+          // Merge: historical data + any live points that arrived during backfill.
+          // Both are absolute cumulative values — no offset adjustment needed
+          // (unlike the options-flow backfill which accumulates deltas client-side).
+          const liveCash = state.cashFlowTrend;
+          const lastHistTime = histCash[histCash.length - 1]?.time || '';
+
+          const mergedCash = [...histCash];
+          for (const pt of liveCash) {
+            if (pt.time > lastHistTime) {
+              mergedCash.push(pt);
+            }
+          }
+
+          const trimmed = mergedCash.length > MAX_TREND_POINTS
+            ? mergedCash.slice(mergedCash.length - MAX_TREND_POINTS)
+            : mergedCash;
+
+          set({
+            cashFlowTrend: trimmed,
+            // prevStockTotals = backfill's final cumulative totals (raw, NOT /CR).
+            // Next live poll's intervalDelta = current_live_total - histLastTotals.
+            prevStockTotals: histLastTotals,
+            _cashBackfillDone: true,
+          });
+
+          console.log(
+            `[TrendStore] Cash backfill complete: ${histCash.length} historical + ` +
+            `${liveCash.length} live points`
+          );
+        } catch (err) {
+          console.error('[TrendStore] backfillHistoricalCashFlow error:', err);
+          setTimeout(() => {
+            const s = get();
+            if (!s._cashBackfillDone && s.trendMode === 'live') {
+              console.log('[TrendStore] Retrying historical cash backfill after error...');
+              get().backfillHistoricalCashFlow().catch((e) =>
+                console.error('[TrendStore] cash backfill retry error:', e)
+              );
+            }
+          }, 5 * 60 * 1000);
+        }
+      },
+
+      /**
        * Single polling iteration. Fetches both the trends API (Nifty candles
        * + stock cash flow) and the highest-bet API (options OI snapshots),
        * computes deltas, and appends to the trend arrays.
@@ -491,10 +610,19 @@ export const useTrendStore = create<TrendState>()(
           // refreshed their token in Settings), clear all accumulated demo
           // data so the charts start fresh from real data. Otherwise the user
           // would see a confusing mix of fake + real data points.
+          //
+          // CRITICAL FIX: We ALSO re-trigger both backfills here. The original
+          // backfill trigger in startPolling() fires once via setTimeout(3s) on
+          // app boot. If the user opened the app WITHOUT a token (e.g. at the
+          // office), that setTimeout fires while trendMode === 'demo' and skips.
+          // When the user later pastes a token, this demo→live transition is
+          // the ONLY place we can re-trigger the skipped backfills. Without
+          // this fix, the money flow cards only show data from the moment of
+          // token paste — the morning's 9:15→now history is never reconstructed.
           const prevMode = get().trendMode;
           if (mode === 'live' && prevMode === 'demo' &&
               (get().cashFlowTrend.length > 0 || get().niftyCandles.length > 0)) {
-            console.log('[TrendStore] Demo → Live transition detected, clearing stale demo data');
+            console.log('[TrendStore] Demo → Live transition detected, clearing stale demo data + re-triggering backfills');
             // Clear everything except istDate + _historicalBackfillDone
             set({
               lastPollAt: 0,
@@ -507,7 +635,30 @@ export const useTrendStore = create<TrendState>()(
               currentStockFlow: 0,
               currentIntervalCashFlow: 0,
               _historicalBackfillDone: false,
+              _cashBackfillDone: false,
             });
+
+            // Re-trigger both backfills — same gating + 3s delay as startPolling.
+            // 3s lets this live poll complete and update trendMode before backfill fires.
+            const backfillPhase = getMarketPhase();
+            if (backfillPhase === 'open' || backfillPhase === 'post') {
+              setTimeout(() => {
+                const s = get();
+                if (s.trendMode !== 'live') return;
+                if (!s._historicalBackfillDone && s.flowTrend.length === 0) {
+                  console.log('[TrendStore] Triggering options-flow backfill (post demo→live)...');
+                  get().backfillHistoricalFlow().catch((e) =>
+                    console.error('[TrendStore] backfill error:', e)
+                  );
+                }
+                if (!s._cashBackfillDone && s.cashFlowTrend.length === 0) {
+                  console.log('[TrendStore] Triggering cash-flow backfill (post demo→live)...');
+                  get().backfillHistoricalCashFlow().catch((e) =>
+                    console.error('[TrendStore] cash backfill error:', e)
+                  );
+                }
+              }, 3000);
+            }
           }
 
           // Compute cumulative-since-market-open totals (these come directly
@@ -544,7 +695,12 @@ export const useTrendStore = create<TrendState>()(
               stockCashFlow,
               trendMode: mode,
               cashFlowTrend: trimmed,
-              prevStockTotals: { nse: nseTotal, bse: weightedTotal, weighted: weightedTotal },
+              // BUG FIX: was `bse: weightedTotal` — mixed net with weighted,
+              // causing the next poll's `intervalDelta = netTotal - (nseTotal_prev + weightedTotal_prev)`
+              // to produce nonsensical values. Now correctly stores bseTotal so
+              // `intervalDelta = netTotal - (nseTotal_prev + bseTotal_prev)` is the
+              // true 15s net delta.
+              prevStockTotals: { nse: nseTotal, bse: bseTotal, weighted: weightedTotal },
               currentIntervalCashFlow: intervalDelta,
               lastPollAt: now,
               istDate: getISTDate(),
