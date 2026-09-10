@@ -331,37 +331,21 @@ Stage Summary:
 ---
 Task ID: 10
 Agent: Main
-Task: Fix money flow cards showing data only from token-paste time (not 9:15) — backfill on demo→live transition
+Task: Diagnose + fix "LT share data not fetching in Trend tab, visible in Basis tab, no data in OI Wall tab"
 
 Work Log:
-- User reported: at office, opened app, pasted access token mid-session. Nifty 50 Price Trend tab shows 9:15→now (works), but Net Cash Flow — 15 Stocks, Index Options Money Flow, and Stock Options Money Flow cards only show data from the moment of token paste (the 9:15→now morning history is missing).
-- Diagnosis: traced three independent data paths in trend-store.ts:
-  1. niftyCandles (Price Trend) — re-fetched every 15s poll from /api/kite/trends which calls Kite historical 5-min candle API. Always full-day. Works regardless of when token was pasted.
-  2. flowTrend (Index/Stock Options Money Flow) — appended point-by-point per 15s poll. HAD a backfill (/api/kite/historical-flow) but it was only triggered from startPolling()'s one-shot setTimeout(3s) on app boot. If user opened app WITHOUT a token, that setTimeout fired while trendMode === 'demo' and skipped. The subsequent demo→live transition (when user pasted token) cleared stale data but NEVER re-triggered the skipped backfill.
-  3. cashFlowTrend (Net Cash Flow — 15 Stocks) — appended point-by-point per 15s poll. Had NO backfill mechanism at all — no equivalent of historical-flow for cash data.
-- Built new endpoint /api/kite/historical-cash-flow/route.ts (322 lines):
-  * For each of 15 STOCK_SPECS, find NSE EQ + BSE EQ instrument tokens
-  * Fetch today's 5-min cash candles for each (30 API calls, ~3.5s with 3-per-350ms rate limit)
-  * For each timestamp: cash_flow = (close - today_open) * cumulative_volume — mirrors live /api/kite/trends formula (lastPrice - open) * volume where volume is cumulative-since-open
-  * Forward-fill across stocks that haven't traded in a given 5-min bar (carry forward last known cumulative flow)
-  * Aggregate NSE/BSE/Net/Weighted per timestamp; return CashFlowTrendPoint[] + lastStockTotals (raw, NOT /CR) so client's next live poll computes correct interval delta
-  * 60s in-memory cache, same pattern as historical-flow
-- Added backfillHistoricalCashFlow action to trend-store.ts:
-  * Fetches /api/kite/historical-cash-flow
-  * Merges with any live points that arrived during backfill (simple: cash flow is cumulative, no offset adjustment needed unlike options flow)
-  * Sets prevStockTotals to backfill's lastStockTotals so next live poll's intervalDelta = current_total - last_hist_total (correct absolute delta)
-  * 5min retry on empty/error — same pattern as options flow backfill
-- CRITICAL FIX: In pollOnce's demo→live transition, added re-trigger of BOTH backfills (backfillHistoricalFlow + backfillHistoricalCashFlow) with 3s delay. This is the ONLY place that catches the "opened app without token, pasted token later" scenario — startPolling's setTimeout already fired and skipped during the initial demo window. Without this re-trigger, the bug persists.
-- Added _cashBackfillDone runtime flag (not persisted, mirrors _historicalBackfillDone); added cash backfill scheduling to startPolling (mirrors options backfill pattern) for the "user opened app WITH token already set" case.
-- Pre-existing bug fix: prevStockTotals.bse was set to weightedTotal instead of bseTotal — caused next poll's intervalDelta = netTotal - (nseTotal_prev + weightedTotal_prev) to mix net with weighted, producing nonsensical 15s flow values. Now correctly stores bseTotal.
-- Verified: tsc 35 pre-existing errors unchanged (zero in touched files); next build clean; /api/kite/historical-cash-flow route registered. Cherry-picked onto latest origin/main (which has Tasks 4-9: Factor 12, CSV upload, read-side fix, PUT symmetry, card reorders, Live Smart-Money Footprint panel, LT underlying matching fix).
+- Traced all three tabs' data paths: Basis tab = /api/kite/highest-bet (needs only spot+futures price per row); Trend tab LT appears via magnet-scan + footprint (getOptionInstruments) and max-pain-scan; OI Walls tab = highest-bet strikes + max-pain-scan gravity meter.
+- Root cause: instrument lookups used substring .includes() matching. For LT, searchTerms ['LT','L&T','LARSEN'] matched EVERY NFO F&O underlying containing "LT": LTF, LTTS, LTFOODS, LTIM, VOLTAS (VO-LT-AS), DELTACORP (DE-LT-A), GUJGASLTD, BEMLTD (~9 stocks merged into LT's option chain).
+- Failure mechanics proven by synthetic-CSV test: (a) merged multi-stock strike set corrupts the dynamic strikeStep gap-histogram (dense 2.5/5/10-step ladders can flip it away from LT's 20 → 9-strike ATM window collapses to <3 real LT strikes → magnet-scan line 265/396 + max-pain-scan strikes<3 silently skip LT); (b) foreign 20-step names (BEMLTD ~3810, TITAN) list options at LT's EXACT window strikes → strikeMap last-wins overwrite shows another stock's OI/LTP; (c) opts[0] lotSize can be foreign; (d) highest-bet futures first-match could pick DELTACORP's ₹112 future for LT; (e) cash lookup single predicate (exact OR name-includes) could grab VOLTAS cash (name contains 'LT') sorting before LT token 647. Basis tab survived because its row needs only futPrice+spotPrice — exactly the user-reported asymmetry.
+- Fix (commit a622712): new exported helpers in kite-api.ts — underlyingPrefix(ts) extracts the underlying ticker from Kite ts format ('LT26SEP3600CE'→'LT', 'LTF26...'→'LTF'); matchesUnderlying(ts, name, symbol, aliases) = prefix equality + exact-name fallback. Applied in getOptionInstruments, getFutureInstrument, getInstrumentMeta, and highest-bet futures+options filters; highest-bet cash lookup restructured exact-ts → exact-name → name-includes. Also fixes the same latent NIFTY collision (.includes('NIFTY') matched BANKNIFTY/FINNIFTY/MIDCPNIFTY options).
+- Diagnostic: /api/kite/instruments-debug?symbol=LT (optionally &refresh=1) returns exact vs old substring match counts, per-underlying breakdown of the old pollution, derived strikeStep/lotSize, nearest future — user-verifiable on Vercel with their creds.
+- Tests: new scripts/test-lt-lookup.ts 35/35 pass (prefix extraction, old-pollution proofs, new isolation, futures first-match, cash exact-first, index/stock regressions). Existing suites unaffected: footprint 57/57, phase1 61/61, csv-parser all pass, magnet-engine pass. tsc 35 pre-existing errors (zero in touched files), production build clean.
 
 Stage Summary:
-- Commit af54254 pushed origin/main (Vercel auto-deploy)
-- All three money flow cards now backfill 9:15→now on token re-paste: Index Options Money Flow, Stock Options Money Flow, AND Net Cash Flow — 15 Stocks
-- User's home scenario (token pasted within ~3s of app boot) was already working by luck (startPolling's setTimeout caught it); office scenario (token pasted 30s-2min after boot) now works via demo→live transition re-trigger
-- New endpoint: ~30 Kite API calls, ~3.5s, cached 60s — runs concurrently with options backfill, total backfill window ~2min (options dominates)
-- Cash backfill is approximate (5-min candle close vs sub-second live lastPrice; sum-of-candle-volumes vs live cumulative volume) — typical discrepancy <0.1%, not visually noticeable on chart
+- Commit a622712 pushed origin/main (Vercel auto-deploy)
+- LT now resolves to exactly its own 9-strike option chain + future + cash on ALL tabs (Trend magnet/footprint, OI Walls gravity + per-symbol walls, Basis, Strike Flow, Options routes)
+- User verification: open dashboard → LT should appear in Trend tab tables and OI Walls within one scan cycle; or hit instruments-debug?symbol=LT&api_key=...&access_token=... — expect exact_option_count ≈ 2×9+, old_substring_matches_by_underlying showing the 9-stock club
+- Note: basis% for LT may look different (more correct) now — futures/cash no longer at risk of foreign-contract matching
 
 ---
 Task ID: 11
@@ -389,3 +373,65 @@ Stage Summary:
 - scripts/verify-participant-uploads.ts committed for repeatable checks
 - Direct Upstash confirmation requires user-side check (card / GET URL / Vercel logs) — no credentials in sandbox
 - Observation: if fresh reports downloaded today contain 2026-09-08 data, the Save click overwrites the manual 2026-09-08 entry (FII -273.22, DII +1231.63, Client 400→parsed value, Prop -50→parsed value) with official parsed numbers
+
+---
+Task ID: 12
+Agent: Main
+Task: Fix "market falling but no PUT signal" — DII dampener cap + Factor 13 (live footprint) + alignment gate
+
+Work Log:
+- User reported: engine shows BAJFINANCE +9.9 CALL STRONG while footprint shows SMART MONEY BEARISH (SHORT BUILDUP + call writing). Diagnosed as two independent lenses (engine reads dealer Greeks, footprint reads live flow) that can legitimately diverge.
+- User requirement: "i want call buy or put buy signal when all aligned by engine and footprint"
+- User insight: "DII don't do or rarely make position in options, they play in cash only" — DII absorbing FII cash sells doesn't offset FII options positioning.
+- Verified live data via /api/participants/daily on Vercel: 2026-09-09 entry FII -627.31 / DII +1314.49 / Client 0 / PropDesk 0 → Factor 12 = 0.00 (NEUTRALIZED by dampener). Root cause confirmed: dampener exactly cancelled base score.
+
+THREE FIXES:
+
+Fix 2 — DII dampener cap at 50% of |baseScore| (participant-service.ts):
+- OLD: dampener = -smartDirection × min(0.5, |DII|/2000) — could fully erase base
+- NEW: dampener capped at 0.5 × |baseScore| — DII reduces conviction, never direction
+- Today's data: base -0.50, old dampener +0.50 → Factor 12 = 0.00 (bug); new dampener +0.25 → Factor 12 = -0.25 (bearish, correct)
+- Strong-FII case unaffected (cap doesn't bind when |base| > 1.0)
+- Updated test 8g expectation: was "neutral (0)", now "bearish -0.11 to -0.22"
+
+Fix 1 — Factor 13: Live Footprint (±1.5) added to computeSignal (magnet-engine.ts):
+- New MagnetResult fields: footprintTone ('bullish'|'bearish'|'neutral'|'churn'), footprintScore (±3), footprintDetail
+- New enhancements param fields: footprintTone, footprintScore, footprintDetail
+- Factor 13 scoring: footprintScore ±2/±3 → ±1.5, ±1 → ±0.75, 0/neutral/churn → 0
+- PER-SYMBOL (unlike Factor 12 basket-level) — reads today's futures OI + PCR velocity + fresh OI walls + churn ratio
+- USER MODEL: "FII and prop desk move the market" — live footprint is the most honest real-time proxy for desk positioning (SEBI labels come after close)
+
+Alignment Gate (magnet-engine.ts, post-score):
+- IF engine direction = CALL AND footprint tone = bearish → WAIT (divergence)
+- IF engine direction = PUT  AND footprint tone = bullish → WAIT (divergence)
+- footprint neutral/churn → gate does NOT fire (engine keeps direction)
+- Notes show "STRUCTURE vs FLOW DIVERGENCE, stand aside" when gated, "Engine + footprint ALIGNED — high-conviction setup" when aligned
+
+magnet-scan route restructured to TWO-PASS:
+- PASS 1: build footprintStrikes Map from option quotes (extracted from old magnet loop)
+- PASS 2: compute footprint per symbol (needs baselines + futureQuoteMap + footprintStrikes) — stored in footprintMap
+- PASS 3 (magnet loop): each computeMagnet call now receives footprint verdict from footprintMap
+- Removed duplicate footprint computation block that was after the magnet loop
+- IST date computation moved earlier (needed for PASS 2)
+
+Signal banner UI (signal-banner.tsx):
+- Added alignment stats: counts aligned vs diverging vs neutral symbols
+- Shows amber chip "X aligned · Y diverging" when any divergence exists
+- Shows emerald chip "X aligned" when all directional signals agree with footprint
+- Uses Zap icon for divergence, Activity icon for aligned
+
+Tests:
+- test-phase1-enhancements.ts: 61/61 pass (updated test 8g for new dampener behavior)
+- test-footprint.ts: 57/57 pass (unchanged — footprint logic untouched)
+- test-alignment-gate.ts: NEW, 7/7 pass (verifies aligned stays, diverging gates to WAIT, neutral doesn't fire, Factor 13 adds ±1.5)
+- test-csv-parser.ts: all pass
+- tsc: 35 pre-existing errors (zero in touched files: magnet-engine.ts, participant-service.ts, magnet-scan/route.ts, signal-banner.tsx)
+- Production build: clean
+
+Stage Summary:
+- Commit <pending> pushed origin/main (Vercel auto-deploy)
+- Factor 12 no longer neutralized by DII dampener — FII's directional vote survives (reduced but not erased)
+- Factor 13 adds per-symbol live desk flow to the engine score — BAJFINANCE with footprint BEARISH now gets -1.5 extra bearish points
+- Alignment gate ensures CALL/PUT signal fires ONLY when engine + footprint agree — divergence = WAIT
+- Next: user uploads 4th NSE report (CM Participant Volume) for real Client + PropDesk ₹ Cr values
+- Observation period: 2-3 trading days to verify PUT signals fire on falling days when footprint confirms bearish

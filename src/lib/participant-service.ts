@@ -327,6 +327,9 @@ export async function getRecentParticipantFlow(
  *
  *   diiDampenAdj  = if sign(DII) ≠ smartDirection:
  *                     -smartDirection × min(0.5, |DII| / 2000)
+ *                     CAPPED at 0.5 × |baseScore| (DII reduces conviction,
+ *                     never erases direction — user insight: DII play cash
+ *                     only, do not offset FII options positioning)
  *                   else: 0
  *                   → ±0.5 max dampener when DII opposes smart
  *
@@ -357,20 +360,34 @@ export function computeParticipantBias(entry: ParticipantFlow | null): Participa
   // Contrarian: fade retail at extremes
   const contrarianAdj = -retail / 5000;
 
-  // DII dampener: when DII opposes smart money, the net market impact is reduced
+  // Dampener (Sep 2026 third calibration — user insight: "DII don't do or
+  // rarely make position in options, they play in cash only").
+  //
+  // DII absorbing FII cash sells in Report 1 is REAL cash absorption, but
+  // DII does NOT offset FII's options positioning. A dampener that exactly
+  // cancels the smart-money directional vote (base -0.50, dampener +0.50
+  // → Factor 12 = 0) erases FII's voice entirely — which is wrong because
+  // FII's options flow still drives the market even when DII absorbs cash.
+  //
+  // CAP: |dampener| ≤ 0.5 × |baseScore|. DII reduces CONVICTION, never
+  // DIRECTION. FII -627 / DII +1314 → base -0.50, dampener capped at +0.25
+  // → Factor 12 = -0.25 (bearish, reduced). The market still gets a bearish
+  // vote from smart money, just with less conviction because DII cushioned
+  // the cash side.
   let diiDampenAdj = 0;
   if (smartDirection !== 0 && Math.sign(dii) !== smartDirection && dii !== 0) {
-    diiDampenAdj = -smartDirection * Math.min(0.5, Math.abs(dii) / 2000);
+    const rawDampen = -smartDirection * Math.min(0.5, Math.abs(dii) / 2000);
+    const cap = 0.5 * Math.abs(baseScore);
+    diiDampenAdj = Math.sign(rawDampen) * Math.min(Math.abs(rawDampen), cap);
   }
 
   let raw = baseScore + contrarianAdj + diiDampenAdj;
 
-  // DAMPENER SIGN-FLIP GUARD (Sep 2026): a dampener reduces conviction —
-  // it must never REVERSE the smart-money direction. Example from live
-  // data: FII -273 Cr, DII +1231 Cr → base -0.26, dampener +0.50 (capped)
-  // → raw +0.16 = "mildly bullish" on a day FII sold and the market fell.
-  // A heavily-dampened signal is AMBIGUOUS, not opposite-directional.
-  // If the dampener pushes the score past zero, clamp to neutral.
+  // DAMPENER SIGN-FLIP GUARD (Sep 2026): with the 50% cap above, a sign
+  // flip is now mathematically impossible from the dampener alone. Keep
+  // the guard as defense-in-depth in case future calibration changes the
+  // cap. If the dampener somehow pushes the score past zero, clamp to 0
+  // (neutral) — a dampener must never REVERSE direction.
   if (baseScore !== 0 && diiDampenAdj !== 0 && Math.sign(raw) !== Math.sign(baseScore)) {
     raw = 0;
   }

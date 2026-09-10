@@ -398,12 +398,15 @@ check('Factor 12 appears in reasons', strongCallSig.reasons.some(r => r.factor =
 
 // 8g: Dampener must NEVER flip the smart-money direction (sign-flip guard)
 // Real data from Sep 2026: FII -273, DII +1231, Client +400, Prop -50
+// Sep 2026 third calibration: dampener capped at 50% of |baseScore|, so
+// FII -273 → base -0.22, dampener capped at +0.11 → result -0.11 (bearish,
+// reduced conviction). Previously the dampener zeroed it to exactly 0.
 const flipBias = computeParticipantBias({
   date: '2026-09-08', fii: -273.22, dii: 1231.63, client: 400, propdesk: -50, ts: Date.now(),
 });
 console.log(`  Sign-flip guard: FII-273, DII+1231 (heavy absorption) → ${flipBias.weight >= 0 ? '+' : ''}${flipBias.weight.toFixed(2)} (${flipBias.direction})`);
 check('Dampener cannot flip bearish smart flow to bullish', flipBias.weight <= 0.15, `got ${flipBias.weight.toFixed(2)}`);
-check('Heavily dampened signal is neutral, not opposite', flipBias.weight === 0, `got ${flipBias.weight.toFixed(2)}`);
+check('Heavily dampened signal stays bearish (50% cap)', flipBias.weight < 0 && flipBias.weight >= -0.30, `got ${flipBias.weight.toFixed(2)}`);
 
 // ─── Test 9: India Trend Gates — PUT signals on falling days ───
 // Regression for the "zero PUT signals in 7 days of falling market" bug.

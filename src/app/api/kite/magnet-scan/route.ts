@@ -325,7 +325,7 @@ export async function GET(req: NextRequest) {
     const results: MagnetResult[] = [];
 
     // Phase 2e prep: capture raw strikes per symbol for EOD snapshot
-    // (populated inside the loop, flushed to Upstash after the loop if
+    // (populated inside the magnet loop, flushed to Upstash after the loop if
     // current IST time is in the EOD window ≥ 15:25)
     const eodSnapshots = new Map<string, {
       spot: number;
@@ -339,8 +339,91 @@ export async function GET(req: NextRequest) {
     // day-cumulative option volume — volume drives the writer-vs-buyer ratio)
     const footprintStrikes = new Map<string, StrikeFoot[]>();
 
+    // ── Compute IST date early (needed for footprint + EOD snapshot) ──
+    const istNow = new Date(Date.now() + (5.5 * 60 + new Date().getTimezoneOffset()) * 60_000);
+    const istMinutes = istNow.getHours() * 60 + istNow.getMinutes();
+    const istDate = istDateStr();
+    const isEodWindow = istMinutes >= 15 * 60 + 25; // 15:25 IST onwards
+
+    // ── PASS 1: Build per-symbol strike footprints from option quotes ──
+    // (extracted from the magnet loop so footprint can be computed BEFORE
+    //  computeMagnet — Factor 13 + alignment gate need the verdict)
     for (const sd of symbolDataList) {
-      // Group option quotes by strike for this symbol (OI + volume)
+      const strikeMap = new Map<number, { ceLTP: number; peLTP: number; ceOI: number; peOI: number; ceVol: number; peVol: number }>();
+      for (const inst of sd.instruments) {
+        const tok = String(inst.instrumentToken);
+        const quote = optQuotes[tok] as KiteQuote | undefined;
+        if (!quote) continue;
+        const oi = quote.oi || 0;
+        const ltp = quote.lastPrice || 0;
+        const vol = quote.volume || 0;
+        if (!strikeMap.has(inst.strike)) {
+          strikeMap.set(inst.strike, { ceLTP: 0, peLTP: 0, ceOI: 0, peOI: 0, ceVol: 0, peVol: 0 });
+        }
+        const entry = strikeMap.get(inst.strike)!;
+        const meta = tokenMeta.get(tok);
+        if (meta?.optionType === 'CE') {
+          entry.ceLTP = ltp; entry.ceOI = oi; entry.ceVol = vol;
+        } else if (meta?.optionType === 'PE') {
+          entry.peLTP = ltp; entry.peOI = oi; entry.peVol = vol;
+        }
+      }
+      footprintStrikes.set(sd.symbol, [...strikeMap.entries()].map(([strike, d]) => ({
+        strike, ceOI: d.ceOI, peOI: d.peOI, ceVol: d.ceVol, peVol: d.peVol,
+      })));
+    }
+
+    // ── PASS 2: Compute Live Smart-Money Footprint per symbol ──
+    // (Phase 2d: footprint verdict feeds Factor 13 + alignment gate inside
+    //  computeMagnet/computeSignal. Must be available BEFORE the magnet loop.)
+    //
+    // Deltas are computed vs the FIRST capture of this IST day (baseline
+    // persisted in Upstash via footprint-service — survives cold starts).
+    // Symbols seen for the first time today get their baseline captured
+    // now (fire-and-forget write); their footprint shows "baseline set"
+    // until the next poll produces a real delta.
+    const footprintMap = new Map<string, SymbolFootprint>();
+    const footprintResults: SymbolFootprint[] = [];
+    try {
+      const baselines = await getFootprintBaselines(istDate);
+      const newBaselines: Record<string, FootprintBaseline> = {};
+      const nowMs = Date.now();
+      for (const sd of symbolDataList) {
+        const strikes = footprintStrikes.get(sd.symbol) ?? [];
+        const fut = futureQuoteMap.get(sd.symbol) ?? null;
+        let baseline = baselines[sd.symbol] ?? null;
+        let fresh = false;
+        if (!baseline && strikes.length >= 3) {
+          baseline = makeBaseline(fut, strikes, nowMs);
+          newBaselines[sd.symbol] = baseline;
+          fresh = true;
+        }
+        const fp = computeSymbolFootprint({
+          symbol: sd.symbol,
+          type: sd.type,
+          spot: sd.spot,
+          baseline,
+          baselineFresh: fresh,
+          futures: fut,
+          strikes,
+          nowMs,
+        });
+        footprintMap.set(sd.symbol, fp);
+        footprintResults.push(fp);
+      }
+      if (Object.keys(newBaselines).length > 0) {
+        // Fire-and-forget persist — non-blocking, non-fatal
+        mergeFootprintBaselines(istDate, newBaselines).catch(() => { /* swallow */ });
+      }
+    } catch (err) {
+      console.warn('[magnet-scan] footprint computation failed:', err);
+    }
+
+    for (const sd of symbolDataList) {
+      // Group option quotes by strike for this symbol (OI + volume + LTP)
+      // NOTE: footprintStrikes (OI+volume only) was already built in PASS 1
+      // above. This strikeMap includes LTP too, which computeMagnet needs
+      // for Black-Scholes IV / charm math. We reuse the same quote data.
       const strikeMap = new Map<number, { ceLTP: number; peLTP: number; ceOI: number; peOI: number; ceVol: number; peVol: number }>();
 
       for (const inst of sd.instruments) {
@@ -368,16 +451,6 @@ export async function GET(req: NextRequest) {
         }
       }
 
-      // Snapshot for the footprint delta math (all strikes — the pure
-      // functions filter/skip internally)
-      footprintStrikes.set(sd.symbol, [...strikeMap.entries()].map(([strike, d]) => ({
-        strike,
-        ceOI: d.ceOI,
-        peOI: d.peOI,
-        ceVol: d.ceVol,
-        peVol: d.peVol,
-      })));
-
       // Build StrikeOption array (filter out strikes with zero OI on both sides)
       const strikes: StrikeOption[] = [...strikeMap.entries()]
         .map(([strike, data]) => ({
@@ -404,6 +477,15 @@ export async function GET(req: NextRequest) {
       // Look up future price for this symbol (for basis factor)
       const futurePrice = futurePriceMap.get(sd.symbol) ?? null;
 
+      // Look up this symbol's live footprint verdict (computed in PASS 2)
+      // — feeds Factor 13 + alignment gate inside computeSignal
+      const fp = footprintMap.get(sd.symbol);
+      const footprintTone = fp?.verdict.tone ?? 'neutral';
+      const footprintScore = fp?.verdict.score ?? 0;
+      const footprintDetail = fp
+        ? `${fp.verdict.label}: ${fp.verdict.sentence}`
+        : '';
+
       const result = computeMagnet(
         sd.symbol,
         strikes,
@@ -420,6 +502,10 @@ export async function GET(req: NextRequest) {
           // Phase 2: basket-level participant bias (same for all symbols)
           participantBias,
           participantBiasDetail,
+          // Phase 2d: per-symbol live footprint (Factor 13 + alignment gate)
+          footprintTone,
+          footprintScore,
+          footprintDetail,
         },
       );
 
@@ -517,50 +603,8 @@ export async function GET(req: NextRequest) {
     // flush them to Redis in parallel. saveOptionChainSnapshot has built-
     // in idempotency (one snapshot per symbol per IST date) so it's safe
     // to call on every poll after 15:25.
-    const istNow = new Date(Date.now() + (5.5 * 60 + new Date().getTimezoneOffset()) * 60_000);
-    const istMinutes = istNow.getHours() * 60 + istNow.getMinutes();
-    const istDate = istDateStr();
-    const isEodWindow = istMinutes >= 15 * 60 + 25; // 15:25 IST onwards
-
-    // ── Phase 4.5 (NEW): Live Smart-Money Footprint ──
-    // Deltas are computed vs the FIRST capture of this IST day (baseline
-    // persisted in Upstash via footprint-service — survives cold starts).
-    // Symbols seen for the first time today get their baseline captured
-    // now (fire-and-forget write); their footprint shows "baseline set"
-    // until the next poll produces a real delta.
-    const footprintResults: SymbolFootprint[] = [];
-    try {
-      const baselines = await getFootprintBaselines(istDate);
-      const newBaselines: Record<string, FootprintBaseline> = {};
-      const nowMs = Date.now();
-      for (const r of results) {
-        const strikes = footprintStrikes.get(r.symbol) ?? [];
-        const fut = futureQuoteMap.get(r.symbol) ?? null;
-        let baseline = baselines[r.symbol] ?? null;
-        let fresh = false;
-        if (!baseline && strikes.length >= 3) {
-          baseline = makeBaseline(fut, strikes, nowMs);
-          newBaselines[r.symbol] = baseline;
-          fresh = true;
-        }
-        footprintResults.push(computeSymbolFootprint({
-          symbol: r.symbol,
-          type: r.type,
-          spot: r.spot,
-          baseline,
-          baselineFresh: fresh,
-          futures: fut,
-          strikes,
-          nowMs,
-        }));
-      }
-      if (Object.keys(newBaselines).length > 0) {
-        // Fire-and-forget persist — non-blocking, non-fatal
-        mergeFootprintBaselines(istDate, newBaselines).catch(() => { /* swallow */ });
-      }
-    } catch (err) {
-      console.warn('[magnet-scan] footprint computation failed:', err);
-    }
+    // NOTE: istNow / istDate / isEodWindow computed earlier (before PASS 1)
+    // so the footprint pre-pass could use istDate. EOD snapshot flush below.
 
     if (isEodWindow && eodSnapshots.size > 0) {
       // Fire-and-forget — don't block the response on snapshots

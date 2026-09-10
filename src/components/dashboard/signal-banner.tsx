@@ -137,6 +137,27 @@ export function SignalBanner({ symbols }: { symbols: MagnetResult[] }) {
     .filter(s => s.signal.direction === 'PUT')
     .sort((a, b) => a.signal.score - b.signal.score)[0];
 
+  // ── Engine vs Footprint alignment count ──
+  // For each symbol with a directional signal (CALL/PUT), check if the
+  // live footprint tone agrees. Aligned = both lenses confirm; Diverging
+  // = structure vs flow conflict (gated to WAIT by the engine, but we
+  // also surface the raw alignment count for visibility).
+  const alignmentStats = useMemo(() => {
+    let aligned = 0, diverging = 0, neutral = 0;
+    for (const s of symbols) {
+      const tone = s.footprintTone ?? 'neutral';
+      if (tone === 'neutral' || tone === 'churn') { neutral++; continue; }
+      const dir = s.signal.direction;
+      if (dir === 'CALL' && tone === 'bullish') aligned++;
+      else if (dir === 'PUT' && tone === 'bearish') aligned++;
+      else if (dir === 'CALL' && tone === 'bearish') diverging++;
+      else if (dir === 'PUT' && tone === 'bullish') diverging++;
+      else neutral++;
+    }
+    return { aligned, diverging, neutral };
+  }, [symbols]);
+  const hasAlignmentData = alignmentStats.aligned + alignmentStats.diverging > 0;
+
   return (
     <div className={`rounded-xl border-2 ${cfg.border} ${cfg.bg} ${cfg.glow} p-4 transition-all`}>
       <div className="flex items-start gap-4 flex-wrap">
@@ -178,6 +199,21 @@ export function SignalBanner({ symbols }: { symbols: MagnetResult[] }) {
           <div className="text-[10px] text-muted-foreground">
             {agg.bullCount} bull · {agg.bearCount} bear · {agg.waitCount} wait
           </div>
+          {hasAlignmentData && (
+            <div className="flex items-center gap-1.5 mt-0.5">
+              {alignmentStats.diverging > 0 ? (
+                <span className="inline-flex items-center gap-1 rounded border border-amber-500/40 bg-amber-500/10 text-amber-400 text-[9px] px-1.5 py-0.5 font-semibold">
+                  <Zap className="h-2.5 w-2.5" />
+                  {alignmentStats.aligned} aligned · {alignmentStats.diverging} diverging
+                </span>
+              ) : (
+                <span className="inline-flex items-center gap-1 rounded border border-emerald-500/40 bg-emerald-500/10 text-emerald-400 text-[9px] px-1.5 py-0.5 font-semibold">
+                  <Activity className="h-2.5 w-2.5" />
+                  {alignmentStats.aligned} aligned
+                </span>
+              )}
+            </div>
+          )}
         </div>
 
         {/* Top movers */}

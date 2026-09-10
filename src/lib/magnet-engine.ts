@@ -158,6 +158,22 @@ export interface MagnetResult {
    *  no participant data is available. */
   participantBiasDetail: string;
 
+  // ─── Phase 2d enhancement: Factor 13 (per-symbol live footprint) ───
+  /** Live smart-money footprint verdict tone from the footprint engine.
+   *  'bullish' = desks positioning long (futures long buildup + put writing)
+   *  'bearish' = desks positioning short (futures short buildup + call writing)
+   *  'neutral' = mixed / no baseline / baseline fresh
+   *  'churn'   = retail-dominant tape (heavy churn, no institutional conviction)
+   *  This is PER-SYMBOL (unlike Factor 12 which is basket-level) — reads
+   *  today's actual futures OI changes, PCR velocity, fresh OI walls. */
+  footprintTone: 'bullish' | 'bearish' | 'neutral' | 'churn';
+  /** Live footprint verdict score from composeVerdict (±3 range).
+   *  +2/+3 = SMART MONEY BULLISH, -2/-3 = SMART MONEY BEARISH, ±1 = LEAN,
+   *  0 = MIXED/BASELINE. Used by Factor 13 to weight the contribution. */
+  footprintScore: number;
+  /** Human-readable footprint verdict label + sentence. */
+  footprintDetail: string;
+
   // Trade signal (computed by computeSignal, attached at end of computeMagnet)
   signal: SignalResult;
 
@@ -871,6 +887,12 @@ export function computeMagnet(
     participantBias?: number | null;
     /** Factor 12 — detail string for the reasons[] array. Default empty. */
     participantBiasDetail?: string | null;
+    /** Factor 13 — per-symbol live footprint tone. Default 'neutral'. */
+    footprintTone?: 'bullish' | 'bearish' | 'neutral' | 'churn' | null;
+    /** Factor 13 — live footprint verdict score (±3 range). Default 0. */
+    footprintScore?: number | null;
+    /** Factor 13 — human-readable footprint verdict. Default empty. */
+    footprintDetail?: string | null;
   },
 ): MagnetResult | null {
   if (strikes.length < 3 || spot <= 0) return null;
@@ -964,6 +986,10 @@ export function computeMagnet(
     // Phase 2 enhancement: Factor 12 (participant bias — basket-level)
     participantBias: enhancements?.participantBias ?? 0,
     participantBiasDetail: enhancements?.participantBiasDetail ?? '',
+    // Phase 2d enhancement: Factor 13 (per-symbol live footprint)
+    footprintTone: enhancements?.footprintTone ?? 'neutral',
+    footprintScore: enhancements?.footprintScore ?? 0,
+    footprintDetail: enhancements?.footprintDetail ?? '',
     // signal is assigned below (must exist on the type, so we initialize with null-like)
     signal: null as unknown as SignalResult,
   };
@@ -974,27 +1000,30 @@ export function computeMagnet(
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// TRADE SIGNAL ENGINE (Phase 2 Enhanced — 12 factors)
+// TRADE SIGNAL ENGINE (Phase 2d Enhanced — 13 factors + alignment gate)
 // ═══════════════════════════════════════════════════════════════════
 //
-// Combines 12 factors into a single actionable signal:
+// Combines 13 factors into a single actionable signal:
 //   BUY CALL | BUY PUT | WAIT
 //
 // The first 7 factors derive from the options OI snapshot (magnet/gamma
 // family). The next 4 are PHASE 1 ENHANCEMENTS — independent intraday
 // data sources. Factor 12 is a PHASE 2 ENHANCEMENT — basket-level
 // institutional positioning from daily NSE participant-wise reports.
+// Factor 13 is a PHASE 2d ENHANCEMENT — per-symbol live smart-money
+// footprint (futures OI + PCR velocity + fresh OI walls + churn ratio).
 //
 //   - Futures basis (institutional positioning in futures market)
 //   - IV skew (what market is paying for direction)
 //   - OI buildup (ΔOI pattern over last poll interval)
 //   - VIX regime (fear/greed outside the options chain)
 //   - Participant bias (FII/Prop smart money vs Client contrarian)
+//   - Live footprint (today's per-symbol desk flow vs baseline)
 //
 // When 6+ factors align in the same direction, conviction is high because
 // the signal comes from independent data sources.
 //
-// SCORING MODEL (range: -17 to +17, + = bull, − = bear)
+// SCORING MODEL (range: -18.5 to +18.5, + = bull, − = bear)
 // ─────────────────────────────────────────────────────────────────
 // Factor                     Max ±  Bull condition                Bear condition
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1024,7 +1053,20 @@ export function computeMagnet(
 // ── Phase 2 enhancement (basket-level daily institutional flow) ─
 // 12. Participant bias        ±2.0   FII+Prop net buying           FII+Prop net selling
 //                                     (Client contrarian fade)     (Client contrarian fade)
-//                                     (DII dampener if opposed)    (DII dampener if opposed)
+//                                     (DII dampener if opposed,    (DII dampener if opposed,
+//                                      capped at 50% of base)       capped at 50% of base)
+// ── Phase 2d enhancement (per-symbol live desk flow) ────────────
+// 13. Live footprint          ±1.5   SMART MONEY BULLISH           SMART MONEY BEARISH
+//                                     (futures long buildup +       (futures short buildup +
+//                                      put writing + put walls)     call writing + call walls)
+//                                     PER-SYMBOL (unlike F12)       PER-SYMBOL (unlike F12)
+//
+// ALIGNMENT GATE (post-score, pre-return):
+//   IF engine direction = CALL AND footprint tone = bearish → WAIT
+//   IF engine direction = PUT  AND footprint tone = bullish → WAIT
+//   (footprint neutral/churn → gate does not fire, engine keeps direction)
+//   USER MODEL: "call buy or put buy signal when all aligned by engine
+//   and footprint" — divergence = stand aside, not a trade.
 //
 // Total max raw |score| ≈ 17.0 (was 15.0 in Phase 1)
 // After pin multiplier: max ≈ 20.4 (low pin) or 10.2 (high pin)
@@ -1093,6 +1135,9 @@ export function computeSignal(m: MagnetResult): SignalResult {
     oiBuildupStrength: m.oiBuildupStrength ?? 0,
     participantBias: m.participantBias ?? 0,
     pinningProbability: m.pinningProbability ?? 50,
+    footprintTone: m.footprintTone ?? 'neutral',
+    footprintScore: m.footprintScore ?? 0,
+    footprintDetail: m.footprintDetail ?? '',
   };
 
   const reasons: SignalReason[] = [];
@@ -1707,6 +1752,57 @@ export function computeSignal(m: MagnetResult): SignalResult {
     });
   }
 
+  // ── Factor 13: LIVE SMART-MONEY FOOTPRINT (±1.5 max) — Phase 2d per-symbol ──
+  // Today's actual desk flow, read from 4 independent signatures:
+  //   1. Futures OI × price (LONG/SHORT BUILDUP / COVERING / UNWINDING)
+  //   2. PCR velocity (rising = put writing = bull; falling = call writing = bear)
+  //   3. Fresh OI walls near spot (call walls = bear; put walls = bull)
+  //   4. Writer-vs-buyer churn ratio (POSITIONING = desks; CHURN = retail)
+  //
+  // This is the PER-SYMBOL complement to Factor 12 (basket-level). Factor
+  // 12 tells you what FII/Prop did YESTERDAY across the whole market;
+  // Factor 13 tells you what desks are doing RIGHT NOW on THIS symbol.
+  //
+  // Scoring (mirrors footprint's composeVerdict scale, scaled to ±1.5):
+  //   footprintScore +2/+3 (SMART MONEY BULLISH) → +1.5
+  //   footprintScore +1  (BULLISH LEAN)          → +0.75
+  //   footprintScore  0  (MIXED/BASELINE)        → 0
+  //   footprintScore -1  (BEARISH LEAN)          → -0.75
+  //   footprintScore -2/-3 (SMART MONEY BEARISH) → -1.5
+  //   footprintTone 'churn' (RETAIL CHURN)       → 0 (no desk conviction either way)
+  //   footprintTone 'neutral' (no baseline yet)  → 0
+  //
+  // USER'S MODEL (Sep 2026): "FII and prop desk move the market and always
+  // bet against the retail client." The live footprint is the most honest
+  // real-time proxy for desk positioning available during the session
+  // (SEBI labels come out only after close). When footprint says BEARISH
+  // on a stock whose structural Greeks still look bullish (charm up, etc.),
+  // today's flow is positioning against the structure — this factor pulls
+  // the score toward PUT, which is exactly what was missing in the
+  // "market falling but no PUT signal" diagnosis.
+  if (m.footprintTone === 'bullish' || m.footprintTone === 'bearish') {
+    const absFp = Math.abs(m.footprintScore);
+    // Scale: score 1 → 0.75, score 2 → 1.5, score 3 → 1.5 (capped)
+    const mag = absFp >= 2 ? 1.5 : absFp * 0.75;
+    const w = m.footprintTone === 'bullish' ? mag : -mag;
+    score += w;
+    reasons.push({
+      factor: 'Live Footprint',
+      direction: m.footprintTone === 'bullish' ? 'bull' : 'bear',
+      weight: w,
+      detail: m.footprintDetail || `Factor 13 = ${m.footprintTone} (score ${m.footprintScore})`,
+    });
+  } else {
+    reasons.push({
+      factor: 'Live Footprint',
+      direction: 'neutral',
+      weight: 0,
+      detail: m.footprintTone === 'churn'
+        ? 'Retail churn — no desk conviction (Factor 13 = 0)'
+        : 'Footprint baseline not set or mixed (Factor 13 = 0)',
+    });
+  }
+
   // Apply pin multiplier to final score
   const adjustedScore = score * pinMultiplier;
 
@@ -1754,6 +1850,38 @@ export function computeSignal(m: MagnetResult): SignalResult {
     direction = 'PUT';
     strength = 'WEAK';
   } else {
+    direction = 'WAIT';
+    strength = 'NONE';
+  }
+
+  // ── ALIGNMENT GATE (Sep 2026) — user requirement ──────────────────
+  // "i want call buy or put buy signal when all aligned by engine and
+  //  footprint"
+  //
+  // The CALL/PUT signal fires ONLY when the engine's direction AGREES with
+  // the live footprint tone. Divergence (engine CALL + footprint bearish,
+  // or engine PUT + footprint bullish) → downgrade to WAIT with a
+  // "stand aside" note. The raw score is preserved (shown for analysis),
+  // but the tradeable signal is gated off.
+  //
+  // Rationale: the engine reads dealer-Greek STRUCTURE (charm, GEX, magnet
+  // zone — slow-moving, often lags regime shifts); the footprint reads
+  // today's actual FLOW (futures OI, PCR velocity — real-time). When they
+  // disagree, the structural setup is being tested by live flow — that's
+  // a stand-aside moment, not a trade. Two independent lenses agreeing is
+  // the highest-conviction signal in the system.
+  //
+  // Special case: footprint tone 'neutral' or 'churn' → no strong desk
+  // evidence either way, so the gate does NOT fire (engine keeps its
+  // direction). The gate only blocks when footprint has a CLEAR opposite
+  // directional tone.
+  let alignmentNote = '';
+  if (direction === 'CALL' && m.footprintTone === 'bearish') {
+    alignmentNote = `Engine CALL but live footprint BEARISH (${m.footprintDetail || 'desks selling'}) — STRUCTURE vs FLOW DIVERGENCE, stand aside`;
+    direction = 'WAIT';
+    strength = 'NONE';
+  } else if (direction === 'PUT' && m.footprintTone === 'bullish') {
+    alignmentNote = `Engine PUT but live footprint BULLISH (${m.footprintDetail || 'desks buying'}) — STRUCTURE vs FLOW DIVERGENCE, stand aside`;
     direction = 'WAIT';
     strength = 'NONE';
   }
@@ -1826,9 +1954,21 @@ export function computeSignal(m: MagnetResult): SignalResult {
   // ── Notes ──
   let notes = '';
   if (direction === 'WAIT') {
-    notes = 'Signals mixed or too weak. Wait for a clearer setup — either charm direction to align with magnet zone pull, or spot to push past zero-Γ flip.';
+    if (alignmentNote) {
+      // Alignment gate fired — show the divergence reason first
+      notes = alignmentNote + '. ' + 'Wait for engine and footprint to align before taking the trade.';
+    } else {
+      notes = 'Signals mixed or too weak. Wait for a clearer setup — either charm direction to align with magnet zone pull, or spot to push past zero-Γ flip.';
+    }
   } else {
     const parts: string[] = [];
+    // Alignment confirmation when both lenses agree
+    if (
+      (direction === 'CALL' && m.footprintTone === 'bullish') ||
+      (direction === 'PUT' && m.footprintTone === 'bearish')
+    ) {
+      parts.push('Engine + footprint ALIGNED — high-conviction setup (two independent lenses agree).');
+    }
     if (m.pinningProbability >= 70) {
       parts.push('WARNING: high pinning — pin may fight this trend, use tight stops.');
     }
