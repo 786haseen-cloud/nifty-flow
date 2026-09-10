@@ -101,6 +101,25 @@ function PcrCell({ fp }: { fp: SymbolFootprint }) {
   );
 }
 
+// ─── Expiry chip (amber) ───
+
+/** Amber EXPIRY/ROLL chip — option flow (and on roll days futures too) is
+ *  settlement noise, so the verdict only reads futures OI (or stands down). */
+function ExpiryChip({ fp }: { fp: SymbolFootprint }) {
+  if (!fp.optionExpiryDay && !fp.futureExpiryDay) return null;
+  const roll = fp.optionExpiryDay && fp.futureExpiryDay;
+  return (
+    <span
+      className="text-[8px] font-bold px-1 py-0.5 rounded border border-amber-500/40 bg-amber-500/10 text-amber-300"
+      title={roll
+        ? 'Monthly roll day — option + futures OI deltas are settlement/roll noise. Footprint stands down.'
+        : 'Option expiry day — option flow muted (settlement noise); verdict reads futures OI only (futures continue across weekly expiries).'}
+    >
+      {roll ? 'ROLL' : 'EXPIRY'}
+    </span>
+  );
+}
+
 // ─── Index card (detailed) ───
 
 function FootprintIndexCard({ fp }: { fp: SymbolFootprint }) {
@@ -108,7 +127,10 @@ function FootprintIndexCard({ fp }: { fp: SymbolFootprint }) {
     <div className="rounded-lg border border-border/50 bg-card/60 p-2.5 flex flex-col gap-1.5">
       {/* Header: symbol + verdict */}
       <div className="flex items-center justify-between gap-1.5 flex-wrap">
-        <span className="text-xs font-bold">{fp.symbol}</span>
+        <span className="flex items-center gap-1">
+          <span className="text-xs font-bold">{fp.symbol}</span>
+          <ExpiryChip fp={fp} />
+        </span>
         <span className={`text-[9px] font-semibold px-1.5 py-0.5 rounded border ${verdictBadgeClass(fp.verdict.tone)}`}>
           {fp.verdict.label}
         </span>
@@ -302,7 +324,12 @@ export function SmartMoneyFootprintCard({
               <tbody>
                 {stocks.map(fp => (
                   <tr key={fp.symbol} className="border-b border-border/20 last:border-0 hover:bg-muted/10">
-                    <td className="py-1 px-2 font-semibold">{fp.symbol}</td>
+                    <td className="py-1 px-2 font-semibold">
+                      <span className="inline-flex items-center gap-1">
+                        {fp.symbol}
+                        <ExpiryChip fp={fp} />
+                      </span>
+                    </td>
                     <td className="py-1 px-2">
                       <span className={`font-semibold ${fp.verdict.tone === 'bullish' ? 'text-emerald-300' : fp.verdict.tone === 'bearish' ? 'text-red-300' : fp.verdict.tone === 'churn' ? 'text-amber-300' : 'text-muted-foreground'}`}>
                         {fp.verdict.label}

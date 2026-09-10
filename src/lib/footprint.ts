@@ -37,6 +37,20 @@
  * enters the window mid-day has no baseline → excluded from delta math
  * (treated as unknown, not as a fresh add), so ΔOI slightly undercounts
  * on fast-moving days. Acceptable for a live panel.
+ *
+ * EXPIRY-DAY GUARD (Sep 2026 — user insight: "future and cash data
+ * continue, option data not relevant [on expiry day]"):
+ *   - On a symbol's OPTION expiry day, near-strike OI deltas are dominated
+ *     by settlement mechanics (writers closing, ITM strikes assigning,
+ *     volume exploding on square-offs) — NOT positioning. PCR velocity,
+ *     fresh walls and churn are therefore MUTED in the verdict; only the
+ *     futures buildup keeps its read (monthly futures continue across
+ *     weekly expiries — "future data continues").
+ *   - On MONTHLY roll day (near future also expires), futures OI decays
+ *     mechanically as desks roll to next month → the futures buildup is
+ *     muted too and the footprint stands down (neutral verdict).
+ *   - The engine's STRUCTURE side (GEX/charm/max-pain/pin) stays fully
+ *     active on expiry day — gamma mechanics are its home turf.
  */
 
 // ─── Types ───
@@ -88,6 +102,10 @@ export interface SymbolFootprint {
   symbol: string;
   type: 'index' | 'stock';
   spot: number;
+  /** Near OPTION series expires today (IST) — option flow muted in verdict. */
+  optionExpiryDay: boolean;
+  /** Near FUTURE expires today (monthly roll) — futures buildup muted too. */
+  futureExpiryDay: boolean;
   /** False until the day's baseline exists (first scan of the day). */
   hasBaseline: boolean;
   /** Minutes since baseline capture (null when no baseline). */
@@ -138,6 +156,10 @@ export interface FootprintInput {
   /** Current strike OI + volume snapshot. */
   strikes: StrikeFoot[];
   nowMs: number;
+  /** Near OPTION series expires today (IST) — see module header note. */
+  optionExpiryDay?: boolean;
+  /** Near FUTURE contract expires today (monthly roll day). */
+  futureExpiryDay?: boolean;
 }
 
 // ─── Tunable thresholds (calibration constants — change here only) ───
@@ -347,11 +369,15 @@ export function composeVerdict(
  */
 export function computeSymbolFootprint(input: FootprintInput): SymbolFootprint {
   const { symbol, type, spot, baseline, baselineFresh, futures, strikes, nowMs } = input;
+  const optionExpiryDay = !!input.optionExpiryDay;
+  const futureExpiryDay = !!input.futureExpiryDay;
 
   const shell: SymbolFootprint = {
     symbol,
     type,
     spot,
+    optionExpiryDay,
+    futureExpiryDay,
     hasBaseline: false,
     baselineAgeMin: null,
     futures: null,
@@ -382,9 +408,14 @@ export function computeSymbolFootprint(input: FootprintInput): SymbolFootprint {
   shell.baselineAgeMin = Math.max(0, Math.round((nowMs - baseline.ts) / 60_000));
 
   // ── Futures buildup ──
+  // Monthly roll day: near-future OI decays mechanically (desks roll to
+  // next month) — the buildup classification would read roll noise as
+  // SHORT_COVERING / LONG_UNWINDING. Mute it (user: monthly roll = no
+  // clean futures signal either).
   if (
     futures && futures.ltp > 0 && futures.prevClose > 0 &&
-    baseline.futOi != null && baseline.futOi > 0 && futures.oi > 0
+    baseline.futOi != null && baseline.futOi > 0 && futures.oi > 0 &&
+    !futureExpiryDay
   ) {
     const priceChgPct = ((futures.ltp - futures.prevClose) / futures.prevClose) * 100;
     const oiChgAbs = futures.oi - baseline.futOi;
@@ -419,7 +450,37 @@ export function computeSymbolFootprint(input: FootprintInput): SymbolFootprint {
   shell.freshWalls = computeFreshWalls(baseline.strikes, strikes, spot);
 
   // ── Verdict ──
-  shell.verdict = composeVerdict(shell.futures, shell.pcr, shell.freshWalls, shell.churn.label);
+  // Raw pcr/walls/churn stay computed above for display, but on option
+  // expiry day they are settlement noise, so the VERDICT only sees the
+  // futures buildup (monthly futures continue across weekly expiries).
+  const verdictBuildup = futureExpiryDay ? null : shell.futures;
+  const verdictPcr = optionExpiryDay
+    ? { direction: 'flat' as PcrDirection, delta: null }
+    : shell.pcr;
+  const verdictWalls = optionExpiryDay
+    ? { ceAdds: [] as FreshWall[], peAdds: [] as FreshWall[] }
+    : shell.freshWalls;
+  const verdictChurn = optionExpiryDay
+    ? 'UNKNOWN' as ChurnLabel
+    : shell.churn.label;
+
+  const verdict = composeVerdict(verdictBuildup, verdictPcr, verdictWalls, verdictChurn);
+
+  if (optionExpiryDay || futureExpiryDay) {
+    if (verdict.score === 0) {
+      verdict.label = 'EXPIRY DAY';
+      verdict.tone = 'neutral';
+      verdict.score = 0;
+      verdict.sentence =
+        'Expiry-day settlement flow — OI deltas are mechanical (closing/roll), not positioning. Footprint stands down.';
+    } else {
+      verdict.label = `${verdict.label} · FUT ONLY`;
+      verdict.sentence =
+        `Expiry day — option flow muted (settlement noise); futures-only read: ${verdict.sentence}`;
+    }
+  }
+
+  shell.verdict = verdict;
 
   return shell;
 }

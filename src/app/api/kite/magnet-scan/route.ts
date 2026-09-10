@@ -220,6 +220,7 @@ export async function GET(req: NextRequest) {
     // This adds the "Futures Basis" factor to the signal engine.
     const futureTokenMap = new Map<string, string>();  // symbol → future token (string)
     const futureTokenToSymbol = new Map<string, string>();  // reverse lookup
+    const futureExpiryMap = new Map<string, string>();  // symbol → future expiry (YYYY-MM-DD)
     const futureTokenList: string[] = [];
     for (const spec of allSpecs) {
       if (!spotMap.has(spec.symbol)) continue;
@@ -229,6 +230,7 @@ export async function GET(req: NextRequest) {
           const tok = String(fut.instrumentToken);
           futureTokenMap.set(spec.symbol, tok);
           futureTokenToSymbol.set(tok, spec.symbol);
+          futureExpiryMap.set(spec.symbol, fut.expiry);
           futureTokenList.push(tok);
         }
       } catch (err) {
@@ -398,6 +400,17 @@ export async function GET(req: NextRequest) {
           newBaselines[sd.symbol] = baseline;
           fresh = true;
         }
+        // EXPIRY-DAY GUARD — user insight: "future and cash data continue,
+        // option data not relevant on expiry day". When the near option
+        // series expires today, option OI deltas are settlement mechanics
+        // (writers closing, strikes assigning, square-off volume), not
+        // positioning → PCR velocity / fresh walls / churn are muted in the
+        // verdict and only the futures buildup keeps its read. When the
+        // near FUTURE also expires (monthly roll), futures OI is roll noise
+        // too → the footprint stands down entirely.
+        // Kite expiry strings are YYYY-MM-DD — direct compare with istDate.
+        const optionExpiryDay = sd.expiry === istDate;
+        const futureExpiryDay = futureExpiryMap.get(sd.symbol) === istDate;
         const fp = computeSymbolFootprint({
           symbol: sd.symbol,
           type: sd.type,
@@ -407,6 +420,8 @@ export async function GET(req: NextRequest) {
           futures: fut,
           strikes,
           nowMs,
+          optionExpiryDay,
+          futureExpiryDay,
         });
         footprintMap.set(sd.symbol, fp);
         footprintResults.push(fp);
