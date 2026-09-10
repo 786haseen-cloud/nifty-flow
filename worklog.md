@@ -435,3 +435,24 @@ Stage Summary:
 - Alignment gate ensures CALL/PUT signal fires ONLY when engine + footprint agree — divergence = WAIT
 - Next: user uploads 4th NSE report (CM Participant Volume) for real Client + PropDesk ₹ Cr values
 - Observation period: 2-3 trading days to verify PUT signals fire on falling days when footprint confirms bearish
+
+---
+Task ID: 13
+Agent: Main
+Task: Verify user's 3 newly uploaded Sep 10 NSE reports (cash FII/DII + FAO OI + FAO Vol); fix bias still reading Sep 09 after same-day upload
+
+Work Log:
+- Read the 3 uploaded files from /home/z/my-project/upload/: fii-dii-nse-latest (3).csv (Sep 10 cash: FII -357.38 / DII +937.22), fao_participant_oi_10092026.csv, fao_participant_vol_10092026.csv
+- Confirmed production /api/participants/daily shows Sep 10 entry landed (source manual, ts ~20:30 IST) but bias.source.date was still 2026-09-09
+- Root cause: getMostRecentParticipantFlow() walked back starting at offset=1 (yesterday). User uploads EOD reports the SAME evening, so the same-day key was invisible until IST midnight. getRecentParticipantFlow (history table) already started at offset=0 — inconsistency explained why the table showed Sep 10 while bias didn't
+- Fix: offset loop starts at 0 in getMostRecentParticipantFlow (src/lib/participant-service.ts). No downside during live session (today's key absent → falls through to yesterday)
+- Created scripts/verify-sep10-reports.ts — runs real parser on the 3 files (11 assertions, all PASS), extracts three-segment breakdown, replicates Factor 12 formula (Sep 09 = -0.25 bear matches production; Sep 10 = -0.14 neutral)
+- Commit 8c88cb4 pushed → Vercel auto-deploy
+- Verified production bias switched to Sep 10 after deploy
+
+Stage Summary:
+- Key data (Sep 10, 2026): Cash FII -357.38 / DII +937.22 / Client+Prop inferred -579.84 (zero-sum balance, CM report not uploaded). DII absorbed 2.6x the FII sell
+- User market model CONFIRMED with hard numbers: DII = 0.15% of F&O volume + ~1.6% of option OI (plays cash only, options absent); DII's 4.64M stock futures SHORT = portfolio hedge vs their cash buy (not directional); FII index futures 8.1:1 SHORT (321,538 S vs 39,694 L) vs Client 5.1:1 LONG (286,829 L vs 55,858 S) → smart money directly against retail in futures; Pro = 52.4% of all F&O trades (counterparty machine); Client net-long options (+425k OI)
+- "Only big players bet in futures" insight validates Factor 13 design (futures OI change = clean institutional signal)
+- Factor 12 after fix: Sep 10 data → -0.14 (neutral, reduced conviction — correct: FII sold less, DII absorbed 2.6x; Factor 13 + engine structure carry direction when Factor 12 is soft)
+- Client=0/Prop=0 in cash segment is expected until user uploads 4th report (CM participant volume — parser already supports cm_participant_volume format with Lakhs→Cr conversion)
