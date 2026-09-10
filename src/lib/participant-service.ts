@@ -232,6 +232,11 @@ export async function getParticipantFlowByDate(date: string): Promise<Participan
 
 /**
  * Walk backwards day-by-day from today (IST) until we find a stored entry.
+ * Starts at offset 0 (TODAY) — the user uploads NSE EOD reports the SAME
+ * evening (fii-dii CSV says "10-Sep", FAO says "as on Sep 10" and is saved
+ * ~8:30 PM IST). Excluding today would make same-day data invisible until
+ * IST midnight. During the live session today's key simply doesn't exist
+ * yet, so the walk falls through to yesterday — no downside.
  * Stops after `maxLookback` days (default 14 — covers weekends, holidays,
  * and the typical "user forgot to paste for a few days" gap).
  *
@@ -248,7 +253,7 @@ export async function getMostRecentParticipantFlow(
   if (!yy || !mm || !dd) return null;
 
   try {
-    for (let offset = 1; offset <= maxLookback; offset++) {
+    for (let offset = 0; offset <= maxLookback; offset++) {
       const d = new Date(Date.UTC(yy, mm - 1, dd - offset));
       const dateStr = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
       const raw = await redis.get(participantKey(dateStr));
