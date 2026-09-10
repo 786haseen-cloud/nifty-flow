@@ -491,3 +491,17 @@ Work Log:
 Stage Summary:
 - User's continuity concern resolved: expiry days lean futures-first (their own model), not blind; new weekly series (Friday) auto-restores option footprints
 - Pending on user: download CM participant volume CSV (cm_participant_10092026.csv) → unlocks real Client/PropDesk cash split
+
+---
+Task ID: 16
+Agent: Main
+Task: Identify user-uploaded MA100926.csv ("may be this report") — hunting for the 4th report (CM participant volume)
+
+Work Log:
+- Inspected /home/z/my-project/upload/MA100926.csv (136.9KB): NSE "Market Activity" daily summary for 10-Sep-2026 (index OHLC closes, traded value 104,645 Cr, traded qty 52,169 L, 36.1M trades, market cap, securities price/volume sections)
+- rg scan confirmed: no "participant", no "client type", no "net value", no Pro rows anywhere → contains nothing for Factor 12 / Client-PropDesk split
+- Verdict given to user: wrong report, engine ignores it; instructed to use All-Reports page search box with keyword "participant" and pick the Capital Market segment one (file like cm_participant_10092026.csv, first line inside = "Participant wise Trading Volume - Capital Market Segment as on ...")
+- No code changes
+
+Stage Summary:
+- MA report ruled out; user still needs the CM participant volume CSV to unlock real Client/PropDesk cash values
