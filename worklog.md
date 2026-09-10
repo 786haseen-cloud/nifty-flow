@@ -474,3 +474,20 @@ Work Log:
 Stage Summary:
 - Footprint is now expiry-aware: on NIFTY Tuesdays the verdict = futures-only read (clean big-player signal per user model); on monthly roll days footprint stands down entirely
 - This completes the flow-side robustness: cash flows (Factor 12) same-day, futures OI continuous, option flow trusted only on non-expiry days
+
+---
+Task ID: 15
+Agent: Main
+Task: User follow-up Q&A on expiry-day behavior (Monday buildup → Tuesday expiry continuity) + identify which NSE report to download from All-Reports screenshot
+
+Work Log:
+- User asked: (a) is option data excluded on expiry day? (b) Monday bearish buildup continuing Tuesday morning — will engine/footprint be blind on Tuesday? (c) which report to download from the All-Reports page screenshot
+- Verified Task 14 guard is deployed (commit 6fdbbf3 on origin/main) and data-driven: magnet-scan route compares each symbol's real option/future expiry dates from Kite instruments vs istDate — no hardcoded weekdays, survives NSE rescheduling
+- Answered: engine does NOT stop on expiry day. Option footprints (PCR velocity/fresh walls/churn) muted in VERDICT only; futures buildup keeps full read → continued bearishness still fires SHORT_BUILDUP → "SMART MONEY BEARISH · FUT ONLY" → PUT signal can align on expiry day. Monday's option buildup persists as OI LEVELS which the structure side (GEX/max-pain/walls) still reads. If futures also neutral → "EXPIRY DAY stands down" (no-signal by design, not blindness). Factor 12 cash flows unaffected
+- Screenshot analysis: user is in CM group of NSE All-Reports (10-Sep-2026); visible cards (Close out prices, Price Band, UDiFF Bhavcopy, MII Security files ×2) are ALL irrelevant to the engine. Needed 4th report = CM "Participant wise Trading Volume" → cm_participant_*.csv (parser detects by filename cm_participant or title "trading volume"+"capital market"); gave 4-report cheat sheet
+- Attempted direct archive URL probes (403 — NSE blocks non-browser sessions); guidance given by card name + filename pattern instead
+- No production code changes this turn
+
+Stage Summary:
+- User's continuity concern resolved: expiry days lean futures-first (their own model), not blind; new weekly series (Friday) auto-restores option footprints
+- Pending on user: download CM participant volume CSV (cm_participant_10092026.csv) → unlocks real Client/PropDesk cash split
