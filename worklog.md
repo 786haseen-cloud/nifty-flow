@@ -456,3 +456,21 @@ Stage Summary:
 - "Only big players bet in futures" insight validates Factor 13 design (futures OI change = clean institutional signal)
 - Factor 12 after fix: Sep 10 data → -0.14 (neutral, reduced conviction — correct: FII sold less, DII absorbed 2.6x; Factor 13 + engine structure carry direction when Factor 12 is soft)
 - Client=0/Prop=0 in cash segment is expected until user uploads 4th report (CM participant volume — parser already supports cm_participant_volume format with Lakhs→Cr conversion)
+
+---
+Task ID: 14
+Agent: Main
+Task: Expiry-day guard for Factor 13 footprint — user insight "future and cash data continue, option data not relevant on expiry day" (NIFTY weekly expiry = Tuesday, SENSEX = Thursday)
+
+Work Log:
+- User explained the expiry calendar (NIFT50 weekly = Tue, SENSEX weekly = Thu) and that futures/cash data remain valid across expiries while option data is settlement-distorted on expiry day
+- Audited src/lib/footprint.ts: zero expiry-awareness — PCR velocity, fresh walls and churn would read settlement mechanics (writers closing, ITM assignment, square-off volume) as fake positioning on expiry days; on monthly roll days near-futures OI also decays mechanically
+- Implemented guard in footprint.ts: FootprintInput += optionExpiryDay/futureExpiryDay; SymbolFootprint echoes both flags. optionExpiryDay → verdict sees futures buildup ONLY (monthly futures continue across weekly expiries), raw option values still computed for display, label gains "· FUT ONLY". futureExpiryDay → futures classification skipped too → verdict "EXPIRY DAY" neutral, Factor 13 = 0, alignment gate keeps engine direction. Engine STRUCTURE side (GEX/charm/max-pain/pin) intentionally stays active on expiry day (gamma mechanics = home turf)
+- magnet-scan route: futureExpiryMap captured from getFutureInstrument; detection = sd.expiry === istDate / futureExpiryMap.get(symbol) === istDate (Kite expiry is YYYY-MM-DD, direct string compare)
+- UI: amber EXPIRY / ROLL chip on footprint index cards + stock table (smart-money-footprint-card.tsx)
+- Tests: scripts/test-expiry-guard.ts 10/10 (normal day -4 unchanged; option expiry -2 futures-only; monthly roll stands down). Regression: alignment gate 7/7, phase1 61/61
+- Commit 6fdbbf3 pushed → Vercel deployed, site 200, bias still Sep 10 / Factor 12 -0.14 neutral
+
+Stage Summary:
+- Footprint is now expiry-aware: on NIFTY Tuesdays the verdict = futures-only read (clean big-player signal per user model); on monthly roll days footprint stands down entirely
+- This completes the flow-side robustness: cash flows (Factor 12) same-day, futures OI continuous, option flow trusted only on non-expiry days
