@@ -669,3 +669,18 @@ Stage Summary:
 - Both views share the same data pipeline (FlowTrendPoint now carries both) — zero extra Kite API calls
 - Backfill covers per-stock too: morning reconstructed for all 15 stocks individually, not just the aggregate
 - User needs to hard-refresh to load the new dropdown + per-stock data plumbing
+
+---
+Task ID: 25
+Agent: Main
+Task: Format large Cum values as K Cr — user: "Cum: 14089 Cr should look like 14.089"
+
+Work Log:
+- fmtCr in trend-analysis-tab.tsx showed raw integers ≥ 100 Cr ("14089 Cr"). User asked for readable magnitude format
+- New formatting tiers: ≥1,00,000 Cr → "1.42 L Cr" (lakh crore); ≥1,000 Cr → "14.09 K Cr"; ≥100 Cr → "142 Cr"; <100 Cr unchanged ("12.3 Cr" / "0.85 Cr"). Sign preserved for negatives
+- fmtRaw (cash-flow card, raw rupees → Cr) left unchanged — smaller values, not part of the complaint
+- Display-only fix, no flow math touched. Commit 217fa0f pushed → Vercel deploy
+
+Stage Summary:
+- Stock Options Money Flow card now reads "Cum: 14.09 K Cr" instead of "Cum: 14089 Cr"
+- Same metric as before (delta-weighted OI flow, engine-consistent across live/backfill/footprint) — only the display formatting changed
