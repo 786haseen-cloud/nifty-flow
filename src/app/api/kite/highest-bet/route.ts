@@ -82,7 +82,30 @@ function bsDelta(isCall: boolean, S: number, K: number, T: number, r = 0.065, si
 
 // ─── LIVE MODE: Batch fetch all 19 symbols ───
 
+// Per-symbol diagnostics captured during fetchLiveData(). Read by the
+// GET handler when ?debug=1 is passed. Solves the "BANKNIFTY/FINNIFTY/
+// SENSEX flat at zero" class of bugs — the response symbols array omits
+// dropped symbols silently, so the client can't tell whether a zero line
+// means "no flow today" or "no instrument matched".
+export interface SymDiag {
+  symbol: string;
+  type: 'index' | 'stock';
+  cashFound: boolean;
+  cashToken: number;
+  futFound: boolean;
+  optInstrumentCount: number;       // how many instruments matched (any expiry)
+  expiryOptsCount: number;          // how many at the chosen expiry
+  nearestExpiry: string | null;
+  atmStrike: number | null;
+  strikeStep: number | null;
+  strikesInResponse: number;        // final count after strikeList filter + quote success
+  skipReason: string | null;        // 'no cash instrument' / 'no options' / 'no expiry opts' / 'no strikes'
+}
+
+let _lastDiag: SymDiag[] = [];
+
 async function fetchLiveData(): Promise<HighestBetResponse> {
+  _lastDiag = [];
   const allSpecs = [...INDEX_SPECS, ...STOCK_SPECS];
 
   // Step 1: Get ALL instruments from cache (single CSV, cached 1hr)
@@ -154,7 +177,16 @@ async function fetchLiveData(): Promise<HighestBetResponse> {
         altNames.some(n => i.name.toUpperCase().includes(n.toUpperCase()))
       );
 
-    if (!cashInst) continue;
+    if (!cashInst) {
+      _lastDiag.push({
+        symbol: spec.symbol, type: isIndex ? 'index' : 'stock',
+        cashFound: false, cashToken: 0, futFound: false,
+        optInstrumentCount: 0, expiryOptsCount: 0, nearestExpiry: null,
+        atmStrike: null, strikeStep: null, strikesInResponse: 0,
+        skipReason: `no cash instrument on ${cashExchange}/${cashType} for names [${altNames.join(',')}]`,
+      });
+      continue;
+    }
 
     const KITE_STOCK_NAMES: Record<string, string[]> = {
       'LT': ['LARSEN', 'LT'],
@@ -255,7 +287,19 @@ async function fetchLiveData(): Promise<HighestBetResponse> {
 
   for (const prep of prepared) {
     const spotQuote = tokenQuoteMap[String(prep.cashToken)];
-    if (!spotQuote || !spotQuote.lastPrice || spotQuote.lastPrice <= 0) continue;
+    if (!spotQuote || !spotQuote.lastPrice || spotQuote.lastPrice <= 0) {
+      // No spot quote for this symbol — silently skipped in the original
+      // code, leaving the user with no clue why the chart line is flat.
+      // Surface it in debug mode.
+      _lastDiag.push({
+        symbol: prep.symbol, type: prep.type,
+        cashFound: true, cashToken: prep.cashToken, futFound: prep.futToken > 0,
+        optInstrumentCount: 0, expiryOptsCount: 0, nearestExpiry: null,
+        atmStrike: null, strikeStep: null, strikesInResponse: 0,
+        skipReason: `no spot quote (cashToken ${prep.cashToken} returned ${spotQuote ? 'lastPrice=0' : 'no quote'})`,
+      });
+      continue;
+    }
 
     const spotPrice = spotQuote.lastPrice;
 
@@ -295,6 +339,13 @@ async function fetchLiveData(): Promise<HighestBetResponse> {
     );
     if (opts.length === 0) {
       console.warn(`[HighestBet] No options found for ${prep.symbol} (exchange=${prep.optExchange}, type=${prep.instrumentType}, altNames=[${altNames.join(',')}])`);
+      _lastDiag.push({
+        symbol: prep.symbol, type: prep.type,
+        cashFound: true, cashToken: prep.cashToken, futFound: prep.futToken > 0,
+        optInstrumentCount: 0, expiryOptsCount: 0, nearestExpiry: null,
+        atmStrike: null, strikeStep: null, strikesInResponse: 0,
+        skipReason: `no options on ${prep.optExchange}/${prep.instrumentType} for names [${altNames.join(',')}]`,
+      });
       continue;
     }
 
@@ -346,6 +397,21 @@ async function fetchLiveData(): Promise<HighestBetResponse> {
       strikeStep,
       expiry: nearestExpiry,
       optTokenStrikes,
+    });
+    // Per-symbol diagnostic for ?debug=1. Captured during the FIRST pass
+    // (instrument matching) so we can see exactly how many option
+    // instruments matched, which expiry was chosen, and how many strikes
+    // survived the ATM ±4 filter — even if the second pass later drops
+    // the symbol due to missing quote.
+    _lastDiag.push({
+      symbol: prep.symbol, type: prep.type,
+      cashFound: true, cashToken: prep.cashToken, futFound: prep.futToken > 0,
+      optInstrumentCount: opts.length, expiryOptsCount: expiryOpts.length,
+      nearestExpiry, atmStrike, strikeStep,
+      strikesInResponse: optTokenStrikes.length,
+      skipReason: optTokenStrikes.length === 0
+        ? `no strikes at ATM ${atmStrike} ± 4×${strikeStep} on expiry ${nearestExpiry}`
+        : null,
     });
   }
 
@@ -569,32 +635,40 @@ export async function GET(request: NextRequest) {
     }
     const debug = request.nextUrl.searchParams.get('debug') === '1';
     const data = await fetchLiveData();
+
+    // Debug mode: always return per-symbol diagnostics so we can see exactly
+    // which step drops each symbol (no cash instrument / no options / no
+    // strikes at ATM / etc.). Used to diagnose "BANKNIFTY/FINNIFTY/SENSEX
+    // flat at zero" — the response symbols array omits dropped symbols
+    // silently, so the client can't tell why a line is flat.
+    if (debug) {
+      return NextResponse.json({
+        ...data,
+        debug: {
+          mode: data.mode,
+          error: data.error,
+          symbolsCount: data.symbols.length,
+          timestamp: new Date().toISOString(),
+          perSymbol: _lastDiag,
+          // Also surface a few sample instruments per exchange/type to spot
+          // CSV-format changes (e.g. new Kite naming convention).
+          sampleInstruments: {
+            NFO_OPTIDX: (await getInstruments())
+              .filter(i => i.exchange === 'NFO' && i.instrumentType === 'OPTIDX')
+              .slice(0, 5)
+              .map(i => ({ tradingSymbol: i.tradingSymbol, name: i.name, expiry: i.expiry, strike: i.strike, lotSize: i.lotSize })),
+            BFO_OPTIDX: (await getInstruments())
+              .filter(i => i.exchange === 'BFO' && i.instrumentType === 'OPTIDX')
+              .slice(0, 5)
+              .map(i => ({ tradingSymbol: i.tradingSymbol, name: i.name, expiry: i.expiry, strike: i.strike, lotSize: i.lotSize })),
+          },
+        },
+      });
+    }
+
     // Fallback to demo when live returns error (e.g. market closed, no tokens)
     if (data.mode === 'error' || data.symbols.length === 0) {
       console.warn('[HighestBet] Live mode returned empty/error, falling back to demo:', data.error);
-
-      // In debug mode, return the actual error + diagnostic info instead of silent demo fallback
-      if (debug) {
-        // Pull diagnostics from the module-level cache
-        const allInstruments = await getInstruments();
-        const sampleNiftyOpts = allInstruments
-          .filter(i => i.exchange === 'NFO' && i.instrumentType === 'OPTIDX')
-          .slice(0, 3)
-          .map(i => ({ tradingSymbol: i.tradingSymbol, name: i.name, expiry: i.expiry, strike: i.strike, lotSize: i.lotSize }));
-
-        return NextResponse.json({
-          ...data,
-          debug: {
-            mode: data.mode,
-            error: data.error,
-            symbolsCount: data.symbols.length,
-            timestamp: new Date().toISOString(),
-            instrumentsCacheSize: allInstruments.length,
-            sampleNFO_OPTIDX_instruments: sampleNiftyOpts,
-            cashQuoteStatus: 'untested',  // set elsewhere if needed
-          }
-        });
-      }
       return NextResponse.json(generateDemoData());
     }
     return NextResponse.json(data);
