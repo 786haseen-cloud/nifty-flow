@@ -56,7 +56,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import {
   getInstruments,
-  getCandles,
+  getTodayCandles,
   STOCK_SPECS,
   type KiteHistoricalCandle,
 } from '@/lib/kite-api';
@@ -162,7 +162,7 @@ async function fetchHistoricalCashFlow(): Promise<HistCashFlowResponse> {
     if (st.nseToken > 0) {
       try {
         apiCallCount++;
-        const c = await getCandles(st.nseToken, '5minute', 1);
+        const c = await getTodayCandles(st.nseToken, '5minute');
         if (c.length > 0) nseCandles.set(st.symbol, c);
         if (apiCallCount % 3 === 0) await new Promise((r) => setTimeout(r, 350));
       } catch (e) {
@@ -172,7 +172,7 @@ async function fetchHistoricalCashFlow(): Promise<HistCashFlowResponse> {
     if (st.bseToken > 0) {
       try {
         apiCallCount++;
-        const c = await getCandles(st.bseToken, '5minute', 1);
+        const c = await getTodayCandles(st.bseToken, '5minute');
         if (c.length > 0) bseCandles.set(st.symbol, c);
         if (apiCallCount % 3 === 0) await new Promise((r) => setTimeout(r, 350));
       } catch (e) {

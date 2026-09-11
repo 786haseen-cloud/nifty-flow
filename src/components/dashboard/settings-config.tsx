@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
+import { useTrendStore } from '@/lib/trend-store';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
@@ -126,6 +127,12 @@ export default function SettingsConfig() {
   const handleSave = useCallback(() => {
     setKiteCreds(apiKey, accessToken);
     if (apiKey && accessToken) {
+      // Mid-session paste recovery: tell the trend store so it clears any
+      // stale/frozen flow data and re-backfills the day from 09:15. Without
+      // this, the three flow cards only show data from the paste time when
+      // the browser was opened after market open (e.g. the daily
+      // laptop→office token move). No-op when the live feed is healthy.
+      useTrendStore.getState().notifyCredsRefreshed();
       testConnection();
     } else {
       setConnStatus('unknown');

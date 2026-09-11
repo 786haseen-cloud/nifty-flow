@@ -39,7 +39,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import {
   getInstruments,
   getQuotes,
-  getCandles,
+  getTodayCandles,
   INDEX_SPECS,
   STOCK_SPECS,
   KITE_FNO_ALT_NAMES,
@@ -295,6 +295,9 @@ async function fetchHistoricalFlow(): Promise<HistoricalFlowResponse> {
     const T = daysToExpiry / 365;
 
     // Fetch 5-min candles for each CE and PE contract
+    // TODAY ONLY (09:15→now) — getCandles(...,1) would include yesterday's
+    // session tail, whose OI deltas + time-key collisions corrupt the
+    // reconstructed curve (see getTodayCandles docblock).
     const ceCandlesByToken = new Map<number, KiteHistoricalCandle[]>();
     const peCandlesByToken = new Map<number, KiteHistoricalCandle[]>();
 
@@ -308,7 +311,7 @@ async function fetchHistoricalFlow(): Promise<HistoricalFlowResponse> {
     for (const { token, strike, isCE } of tokensToFetch) {
       try {
         apiCallCount++;
-        const candles = await getCandles(token, '5minute', 1);
+        const candles = await getTodayCandles(token, '5minute');
         if (candles.length > 0) {
           if (isCE) ceCandlesByToken.set(strike, candles);
           else peCandlesByToken.set(strike, candles);

@@ -109,6 +109,7 @@ interface TrendState {
   _pollTimer: ReturnType<typeof setInterval> | null;
   _historicalBackfillDone: boolean;  // true after first successful options-flow backfill today
   _cashBackfillDone: boolean;        // true after first successful cash-flow backfill today
+  _lastBackfillTriggerAt: number;    // Date.now() when backfills were last scheduled (60s debounce)
 
   // ─── Actions ───
   startPolling: () => void;
@@ -117,6 +118,11 @@ interface TrendState {
   clearTrendData: () => void;
   backfillHistoricalFlow: () => Promise<void>;
   backfillHistoricalCashFlow: () => Promise<void>;
+  /** Debounced scheduler for both backfills (60s stamp + open/post gate). */
+  scheduleBackfillTrigger: () => void;
+  /** Called by Settings when the user saves fresh Kite creds — recovers
+   *  the flow cards after a mid-session token paste (see implementation). */
+  notifyCredsRefreshed: () => void;
 }
 
 // ─── Constants ───
@@ -165,6 +171,7 @@ export const useTrendStore = create<TrendState>()(
       _pollTimer: null,
       _historicalBackfillDone: false,
       _cashBackfillDone: false,
+      _lastBackfillTriggerAt: 0,
 
       // ─── Actions ───
 
@@ -199,51 +206,13 @@ export const useTrendStore = create<TrendState>()(
         // Immediate first poll
         get().pollOnce().catch((e) => console.error('[TrendStore] initial poll error:', e));
 
-        // Trigger historical backfill in background (only once per day)
-        // This fetches today's OI history from Kite and reconstructs the
-        // morning-to-now options flow trend.
-        // Market-hours gate: only backfill when session is open or just
-        // finished ('post') — pre-market/weekend backfill returns nothing
-        // and would retry in a loop.
-        const backfillPhase = getMarketPhase();
-        if ((backfillPhase === 'open' || backfillPhase === 'post') &&
-            !get()._historicalBackfillDone && get().flowTrend.length === 0) {
-          // Wait a few seconds for the first poll to complete and set trendMode
-          setTimeout(() => {
-            const state = get();
-            if (state.trendMode === 'live' && !state._historicalBackfillDone) {
-              console.log('[TrendStore] Triggering historical flow backfill...');
-              get().backfillHistoricalFlow().catch((e) =>
-                console.error('[TrendStore] backfill error:', e)
-              );
-            }
-          }, 3000);
-        }
-
-        // Cash-flow backfill — mirrors the options-flow backfill above.
-        // Reconstructs the morning-to-now Net Cash Flow trend (NSE + BSE for
-        // 15 F&O stocks) from Kite's historical 5-min cash candles. Without
-        // this, the "Net Cash Flow — 15 Stocks" card only shows data from the
-        // moment the user pasted their access token (the morning history is
-        // missing — same fundamental problem the options-flow backfill solves
-        // for the Index/Stock Options Money Flow cards).
-        // Same trigger logic: market open/post, not already done, cashFlowTrend empty.
-        // 3s delay lets the first live poll set trendMode before we trigger.
-        // NOTE: If this setTimeout fires while trendMode === 'demo' (user opened
-        // the app without a token), it skips. The demo→live transition in
-        // pollOnce re-triggers it when the user later pastes a token.
-        if ((backfillPhase === 'open' || backfillPhase === 'post') &&
-            !get()._cashBackfillDone && get().cashFlowTrend.length === 0) {
-          setTimeout(() => {
-            const state = get();
-            if (state.trendMode === 'live' && !state._cashBackfillDone) {
-              console.log('[TrendStore] Triggering historical cash backfill...');
-              get().backfillHistoricalCashFlow().catch((e) =>
-                console.error('[TrendStore] cash backfill error:', e)
-              );
-            }
-          }, 3000);
-        }
+        // Trigger both historical backfills (options flow + cash flow) in
+        // the background — reconstructs the morning-to-now trends so the
+        // three flow cards show data from 09:15 no matter when the token
+        // was pasted. Debounced + market-hours-gated inside
+        // scheduleBackfillTrigger (open/post only — pre-market/weekend
+        // backfill returns nothing and would retry in a loop).
+        get().scheduleBackfillTrigger();
 
         // Start interval
         const timer = setInterval(() => {
@@ -323,6 +292,85 @@ export const useTrendStore = create<TrendState>()(
           _historicalBackfillDone: false,
           _cashBackfillDone: false,
         });
+      },
+
+      /**
+       * Schedule both historical backfills (options flow + cash flow) with a
+       * 60s debounce + market-hours gate.
+       *
+       * WHY ONE HELPER: there are three trigger sites — app boot
+       * (startPolling), the demo→live transition in pollOnce, and Settings'
+       * notifyCredsRefreshed. Each backfill takes ~2 minutes of rate-limited
+       * Kite API calls, so two overlapping runs would double the API load,
+       * race on the merge, and risk 429s. The _lastBackfillTriggerAt stamp
+       * guarantees only one schedule per minute across all sites.
+       */
+      scheduleBackfillTrigger: () => {
+        const phase = getMarketPhase();
+        if (phase !== 'open' && phase !== 'post') return;
+        if (Date.now() - get()._lastBackfillTriggerAt < 60_000) return;
+        set({ _lastBackfillTriggerAt: Date.now() });
+        console.log('[TrendStore] Scheduling historical backfills (open/post, debounced)...');
+        // 3s delay lets the triggering poll complete and set trendMode first.
+        setTimeout(() => {
+          const s = get();
+          if (s.trendMode !== 'live') return;
+          if (!s._historicalBackfillDone && s.flowTrend.length === 0) {
+            console.log('[TrendStore] Triggering options-flow backfill...');
+            get().backfillHistoricalFlow().catch((e) =>
+              console.error('[TrendStore] backfill error:', e)
+            );
+          }
+          if (!s._cashBackfillDone && s.cashFlowTrend.length === 0) {
+            console.log('[TrendStore] Triggering cash-flow backfill...');
+            get().backfillHistoricalCashFlow().catch((e) =>
+              console.error('[TrendStore] cash backfill error:', e)
+            );
+          }
+        }, 3000);
+      },
+
+      /**
+       * Mid-session credentials refresh (user clicked Save & Test in Settings).
+       *
+       * THE USER'S DAILY WORKFLOW THIS FIXES: laptop paste at 09:14, then a
+       * SECOND paste from the office browser later in the morning. The office
+       * browser's store is empty → the three flow cards would only show data
+       * from the paste time. This action clears the stale/empty trend and
+       * re-triggers the backfills so the full 09:15→now history is
+       * reconstructed from Kite's candles — same as the NIFTY spot line,
+       * which always rebuilds the whole day from historical candles.
+       *
+       * GUARD: if the feed is already healthy live (token refreshed before
+       * expiry, same browser), the accumulated 15s-resolution live data is
+       * BETTER than a 5-min candle reconstruction — keep it untouched.
+       */
+      notifyCredsRefreshed: () => {
+        const phase = getMarketPhase();
+        if (phase !== 'open' && phase !== 'post') return; // pre/closed: nothing missed
+        const s = get();
+        const feedHealthy = s.trendMode === 'live' && s.flowFeedMode === 'live' &&
+          s.lastPollAt > 0 && (Date.now() - s.lastPollAt) < 5 * 60_000;
+        if (feedHealthy) {
+          console.log('[TrendStore] Creds refreshed but feed healthy — keeping live data');
+          return;
+        }
+        console.log('[TrendStore] Creds refreshed mid-session — clearing stale trend + re-triggering backfills');
+        set({
+          lastPollAt: 0,
+          cashFlowTrend: [],
+          flowTrend: [],
+          prevSnapshots: {},
+          cumulativeFlow: { ...INITIAL_FLOW },
+          prevStockTotals: { nse: 0, bse: 0, weighted: 0 },
+          currentIdxFlows: { NIFTY: 0, BANKNIFTY: 0, FINNIFTY: 0, SENSEX: 0 },
+          currentStockFlow: 0,
+          currentStockPerSym: {},
+          currentIntervalCashFlow: 0,
+          _historicalBackfillDone: false,
+          _cashBackfillDone: false,
+        });
+        get().scheduleBackfillTrigger();
       },
 
       /**
@@ -667,32 +715,16 @@ export const useTrendStore = create<TrendState>()(
               prevStockTotals: { nse: 0, bse: 0, weighted: 0 },
               currentIdxFlows: { NIFTY: 0, BANKNIFTY: 0, FINNIFTY: 0, SENSEX: 0 },
               currentStockFlow: 0,
+              currentStockPerSym: {},
               currentIntervalCashFlow: 0,
               _historicalBackfillDone: false,
               _cashBackfillDone: false,
             });
 
-            // Re-trigger both backfills — same gating + 3s delay as startPolling.
-            // 3s lets this live poll complete and update trendMode before backfill fires.
-            const backfillPhase = getMarketPhase();
-            if (backfillPhase === 'open' || backfillPhase === 'post') {
-              setTimeout(() => {
-                const s = get();
-                if (s.trendMode !== 'live') return;
-                if (!s._historicalBackfillDone && s.flowTrend.length === 0) {
-                  console.log('[TrendStore] Triggering options-flow backfill (post demo→live)...');
-                  get().backfillHistoricalFlow().catch((e) =>
-                    console.error('[TrendStore] backfill error:', e)
-                  );
-                }
-                if (!s._cashBackfillDone && s.cashFlowTrend.length === 0) {
-                  console.log('[TrendStore] Triggering cash-flow backfill (post demo→live)...');
-                  get().backfillHistoricalCashFlow().catch((e) =>
-                    console.error('[TrendStore] cash backfill error:', e)
-                  );
-                }
-              }, 3000);
-            }
+            // Re-trigger both backfills — debounced inside
+            // scheduleBackfillTrigger so this and Settings'
+            // notifyCredsRefreshed never run two backfills concurrently.
+            get().scheduleBackfillTrigger();
           }
 
           // Compute cumulative-since-market-open totals (these come directly

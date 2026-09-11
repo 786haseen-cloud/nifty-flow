@@ -19,7 +19,7 @@
 
 const KITE_BASE = 'https://api.kite.trade';
 
-import { toIST, istKiteDateFormat } from './ist';
+import { toIST, istKiteDateFormat, istTodayISO } from './ist';
 
 // ─── Config ───
 
@@ -394,21 +394,14 @@ export async function getQuotes(instruments: string[]): Promise<Record<string, K
  * instrumentToken: numeric token from instruments list
  * interval: "minute", "3minute", "5minute", "15minute", "30minute", "hour", "day"
  */
-export async function getCandles(
+/** Shared candle fetcher — explicit from/to in Kite format 'YYYY-MM-DD HH:MM:SS'. */
+async function fetchCandleRange(
   instrumentToken: number,
-  interval: string = '15minute',
-  days: number = 1,
+  interval: string,
+  fromStr: string,
+  toStr: string,
 ): Promise<KiteHistoricalCandle[]> {
-  if (!isKiteConfigured()) return [];
-
-  // Kite historical API expects IST dates. Use centralized IST helpers.
-  const toDate = toIST(new Date());
-  const fromDate = toIST(new Date());
-  fromDate.setDate(fromDate.getDate() - days);
-
   try {
-    const fromStr = istKiteDateFormat(fromDate);
-    const toStr = istKiteDateFormat(toDate);
     // URL-encode the date strings (they contain a space: "2026-08-25 09:15")
     const url = `${KITE_BASE}/instruments/historical/${instrumentToken}/${interval}?from=${encodeURIComponent(fromStr)}&to=${encodeURIComponent(toStr)}&continuous=0`;
 
@@ -442,6 +435,46 @@ export async function getCandles(
     console.error('[Kite] candles error:', errMsg);
     return [];
   }
+}
+
+export async function getCandles(
+  instrumentToken: number,
+  interval: string = '15minute',
+  days: number = 1,
+): Promise<KiteHistoricalCandle[]> {
+  if (!isKiteConfigured()) return [];
+
+  // Kite historical API expects IST dates. Use centralized IST helpers.
+  const toDate = toIST(new Date());
+  const fromDate = toIST(new Date());
+  fromDate.setDate(fromDate.getDate() - days);
+
+  return fetchCandleRange(
+    instrumentToken,
+    interval,
+    istKiteDateFormat(fromDate),
+    istKiteDateFormat(toDate),
+  );
+}
+
+/**
+ * Fetch TODAY's candles only (09:15 IST session open → now) for an instrument.
+ *
+ * WHY NOT getCandles(token, interval, 1)? That helper sets from =
+ * (now − 1 day), which for a mid-session backfill includes YESTERDAY's
+ * session tail. The historical flow backfill walks candles cumulatively
+ * and keys points by time-of-day only ('HH:MM:SS'), so yesterday's candles
+ * would (a) inject overnight OI deltas into today's first intervals and
+ * (b) collide with today's time keys — corrupting the reconstructed curve
+ * (wrong morning values, phantom jumps at the session boundary).
+ */
+export async function getTodayCandles(
+  instrumentToken: number,
+  interval: string = '5minute',
+): Promise<KiteHistoricalCandle[]> {
+  if (!isKiteConfigured()) return [];
+  const today = istTodayISO();
+  return fetchCandleRange(instrumentToken, interval, `${today} 09:15:00`, `${today} 15:30:00`);
 }
 
 // ─── Option Chain ───
