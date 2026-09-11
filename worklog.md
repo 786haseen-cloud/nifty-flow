@@ -774,3 +774,19 @@ Stage Summary:
 - Sep 11 FAO positioning (contracts, L/S): Client 14.28M/10.42M (net +3.86M long, 1.37); FII 6.06M/5.48M (net +0.58M, 1.11); Pro 5.33M/5.19M (~flat, 1.03); DII 0.51M/5.08M (net -4.58M = hedges, cash-only player). fao_vol: all L/S ≈ 1.00 (two-way churn), Pro ≈ 54% of F&O volume
 - ACTION NEEDED: user must upload the REAL 11-Sep FII/DII activity file (dated 11-Sep-2026) and Save under 2026-09-11 — current cash entry is a Sep 10 duplicate, so Factor 12 (-0.14 neutral) is reading yesterday's cash flows
 - Same-key overwrite is safe (participants:2026-09-11 + bias cache refresh within 5 min)
+
+---
+Task ID: 31
+Agent: main (Super Z)
+Task: Daily routine follow-up — user said "i reuploaded cash report again"; verify the real Sep 11 cash entry replaced the Sep 10 duplicate
+
+Work Log:
+- Read Task 30 action item; queried production GET https://nifty-flow.vercel.app/api/participants/daily (no new file landed in upload/ — user re-saved via the app form, which is the correct path)
+- CONFIRMED overwrite: participants:2026-09-11 cash now FII -978.60 Cr / DII +2070.87 Cr (ts 00:44:23 IST Sep 12), replacing the stale FII -357.38 / DII +937.22 (saved 00:12 IST). New values ≠ Sep 10 and ≠ Sep 9 → genuine 11-Sep file
+- Re-verified positioning diagnostic ?positioning=2026-09-11: fao_oi + fao_vol intact under the same key (saved ~00:11 IST) — all 3 reports now consistent
+- Factor 12 bias cache already refreshed (well within the 5-min window): -0.14 neutral → -0.39 BEAR, detail "Smart money (FII+Prop) -979 Cr selling → market drops; Retail +0 Cr balanced; DII +2071 Cr (absorbing FII sells)"
+
+Stage Summary:
+- Sep 11 (Friday) 3-report routine COMPLETE: cash FII -978.6 / DII +2070.9 (Client/Prop 0 — not published in cash report), fao_oi Client 14.28M L/10.42M S (1.37 net long) vs FII 6.06M L/5.48M S (1.11), Pro flat (1.03), DII -4.58M net short (hedges); fao_vol all L/S ≈ 1.00, Pro ≈ 54% of volume
+- Thesis read: FII dumped -979 Cr cash while retail went net long +3.9M contracts — smart money selling into retail bid, DII absorbing; Factor 12 now -0.39 bear for the next session
+- No code changes; verification only
