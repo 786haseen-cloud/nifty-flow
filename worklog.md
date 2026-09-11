@@ -737,3 +737,24 @@ Stage Summary:
 - Tuesday expectation: paste at office → Save & Test → 3s later backfills fire → ~2 min later all three cards show the full day from 09:20 (today-only candle window, correct curve) → live 15s polls resume on top with offset merge
 - Laptop 09:14 paste: phase 'pre' → notify no-ops → live starts at open naturally (nothing missed)
 - NOTE: creds are per-browser localStorage (by design); office re-paste is still needed until creds move server-side — but data now reconstructs
+
+---
+Task ID: 29
+Agent: main (Super Z)
+Task: Paste-once-per-day across all devices — user confirmed after Task 28 that the office re-paste itself should disappear ("yes want paste-once-per-day across all devices, next day i will paste new access token again")
+
+Work Log:
+- Task 28 fixed data reconstruction on re-paste but creds were still per-browser localStorage — this task moved the token to a server-side hub
+- New src/lib/kite-creds-store.ts: in-memory mirror + db/kite-creds.json file (best-effort write; read-only FS degrades to memory-only). ISOMORPHIC: fs loaded via runtime-guarded eval('require') because kite-api.ts is also in the client bundle — a static fs import broke the browser build (caught by npm run build)
+- New GET/POST/DELETE /api/kite/creds-store route; POST busts instruments cache
+- kite-api.ts creds resolution now 3 tiers: URL override → env vars → server store. Creds-less clients (fresh office browser, boot-sync not yet done) get LIVE data on first poll
+- kite-creds.ts: localStorage payload gains savedAt version stamp (back-compat: missing = 0, so server wins on first boot after deploy)
+- New use-server-creds-sync.ts hook, called once in page.tsx boot: ADOPT server token when local missing/older; PUSH local up when server empty/older (migration + self-heal of failed POSTs). Adoption calls notifyCredsRefreshed() — REQUIRED because with an expired token the trends route returns mode 'error' (not 'demo'), so pollOnce's demo→live transition misses; notifyCredsRefreshed clears frozen data + re-runs 09:15→now backfills (Task 28 machinery)
+- Settings: Save & Test POSTs creds to the store (serverSync hint: 'Synced — all devices will use this token'); Clear Credentials now clears local + server (renamed 'Clear (all devices)'); help text rewritten for the paste-once workflow; hash-link transfer kept as backup
+- .gitignore: db/kite-creds.json (contains the live token)
+- Verification: tsc zero errors in touched files (39 pre-existing elsewhere untouched); npm run build OK incl. route registration; 10/10 smoke tests in scripts/test-creds-store.ts (empty→null, save→memory+file, savedAt, trim, mask, clear); LIVE E2E — the user's open browser HMR'd the new hook and already pushed today's real token (Case 2 migration path fired in production); GET returns full+masked creds; smoke-test cleanup deleted the store file, restored via live POST + verified
+
+Stage Summary:
+- DAILY WORKFLOW NOW: paste token once at 09:14 on the laptop → office/phone devices open the dashboard and auto-adopt the token at boot → feed goes live → backfill reconstructs 09:15→now on all three flow cards → ZERO re-pasting. Next morning paste the new token once on any device; every other device converges on boot (last-writer-wins by savedAt)
+- Trust model unchanged in practice: single-user dashboard URL is the boundary; creds already transited as query params on every poll
+- One paste per day, all devices — confirmed working end-to-end on the live server
