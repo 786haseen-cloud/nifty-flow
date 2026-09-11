@@ -69,6 +69,7 @@ export default function SettingsConfig() {
   const [testing, setTesting] = useState(false);
   const [copied, setCopied] = useState(false);
   const [hashLoaded, setHashLoaded] = useState(false);
+  const [serverSync, setServerSync] = useState<'idle' | 'syncing' | 'ok' | 'fail'>('idle');
 
   // ── App Settings State ──
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
@@ -125,8 +126,21 @@ export default function SettingsConfig() {
 
   // Save & Connect
   const handleSave = useCallback(() => {
-    setKiteCreds(apiKey, accessToken);
+    const savedAt = Date.now();
+    setKiteCreds(apiKey, accessToken, savedAt);
     if (apiKey && accessToken) {
+      // PASTE-ONCE-PER-DAY: also push the token to the SERVER store so every
+      // other device (office PC, phone) adopts it automatically at boot via
+      // useServerCredsSync — no re-pasting when you move between devices.
+      // Fire-and-forget: local creds already work if the push fails.
+      setServerSync('syncing');
+      fetch('/api/kite/creds-store', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ apiKey, accessToken, savedAt }),
+      })
+        .then((r) => setServerSync(r.ok ? 'ok' : 'fail'))
+        .catch(() => setServerSync('fail'));
       // Mid-session paste recovery: tell the trend store so it clears any
       // stale/frozen flow data and re-backfills the day from 09:15. Without
       // this, the three flow cards only show data from the paste time when
@@ -164,10 +178,15 @@ export default function SettingsConfig() {
   // Disconnect
   const handleDisconnect = useCallback(() => {
     clearKiteCreds();
+    // Also clear the SERVER store — the button says "all devices": every
+    // device boot-syncs from the server, so leaving the token there would
+    // keep other devices live after a disconnect. Fire-and-forget.
+    fetch('/api/kite/creds-store', { method: 'DELETE' }).catch(() => {});
     setApiKey('');
     setAccessToken('');
     setConnStatus('unknown');
     setConnMsg('');
+    setServerSync('idle');
   }, []);
 
   // Update settings helper
@@ -288,8 +307,19 @@ export default function SettingsConfig() {
               className="text-xs"
             >
               <Trash2 className="mr-2 h-3 w-3" />
-              Clear Credentials
+              Clear (all devices)
             </Button>
+            {serverSync !== 'idle' && (
+              <span
+                className={`self-center text-xs ${
+                  serverSync === 'ok' ? 'text-emerald-400' : serverSync === 'fail' ? 'text-amber-400' : 'text-muted-foreground'
+                }`}
+              >
+                {serverSync === 'syncing' && 'Syncing to server…'}
+                {serverSync === 'ok' && '✓ Synced — all devices will use this token'}
+                {serverSync === 'fail' && 'Saved locally only (server sync failed)'}
+              </span>
+            )}
             {apiKey && accessToken && !testing && connStatus !== 'testing' && (
               <Button
                 variant="ghost"
@@ -320,10 +350,14 @@ export default function SettingsConfig() {
               Then call <code className="bg-muted px-1 rounded">/api/kite/auth?request_token=xxx</code> to generate an access token, or paste a pre-generated token directly above.
             </p>
             <p>
-              Credentials are saved in your browser&apos;s localStorage — they never leave your device except as query params to your own API routes.
+              <span className="text-emerald-400 font-medium">Paste once per day:</span>{' '}
+              The token is saved on the dashboard server, so every device that opens this dashboard automatically picks up the newest token — paste at 9:14 on your laptop and the office PC works without re-pasting. Whichever device saved the token last wins.
             </p>
             <p>
-              <span className="text-amber-400 font-medium">Cross-device transfer:</span>{' '}
+              Tokens auto-expire at ~6 AM IST — paste the new one each morning on any one device.
+            </p>
+            <p>
+              <span className="text-amber-400 font-medium">Manual transfer (backup):</span>{' '}
               Click &quot;Copy Link&quot; above, then open that link on your other device. Credentials are embedded in the URL hash (never sent to server) and auto-saved to localStorage on the new device. The hash is cleared immediately after loading.
             </p>
             {hashLoaded && (
@@ -503,8 +537,8 @@ export default function SettingsConfig() {
               <span className="text-foreground font-medium">Demo Mode</span>: Without credentials, dashboard uses realistic simulated data.
             </p>
             <p>
-              <span className="text-foreground font-medium">Credential Storage</span>: Saved in browser localStorage only. Never sent to third parties.
-              Tokens auto-expire at midnight IST — re-paste each morning.
+              <span className="text-foreground font-medium">Credential Storage</span>: Saved in your browser&apos;s localStorage AND on the dashboard server (so all your devices sync to the newest token automatically). Never sent to third parties.
+              Tokens auto-expire at ~6 AM IST — paste the new one each morning on any one device.
             </p>
             <p>
               <span className="text-foreground font-medium">Signal Engine</span>: Weighted flow analysis, contrarian flow detection, no Theta/VIX in scores

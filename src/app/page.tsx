@@ -17,6 +17,7 @@ import type { NSESessionInfo } from '@/lib/types';
 import { getNSESession } from '@/lib/nse-sessions';
 import { hasKiteCreds } from '@/lib/kite-creds';
 import { useKiteSnapshot } from '@/hooks/use-kite-snapshot';
+import { useServerCredsSync } from '@/hooks/use-server-creds-sync';
 
 export default function DashboardPage() {
   const [activeTab, setActiveTab] = useState('oi-walls');
@@ -25,6 +26,10 @@ export default function DashboardPage() {
   const [marketStatus, setMarketStatus] = useState<string>('closed');
   const [nseSession, setNseSession] = useState<NSESessionInfo | null>(null);
   const { curr: snapshot } = useKiteSnapshot(15000);
+
+  // Paste-once-per-day: pull the newest token from the server store at boot
+  // (laptop paste → office device auto-adopts; no re-pasting across devices).
+  useServerCredsSync();
 
   // Start the global trend poller ONCE at app boot
   const startTrendPolling = useTrendStore((s) => s.startPolling);

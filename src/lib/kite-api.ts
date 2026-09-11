@@ -20,6 +20,7 @@
 const KITE_BASE = 'https://api.kite.trade';
 
 import { toIST, istKiteDateFormat, istTodayISO } from './ist';
+import { getStoredCredsSync } from './kite-creds-store';
 
 // ─── Config ───
 
@@ -36,15 +37,31 @@ export function setKiteOverride(apiKey?: string, accessToken?: string): void {
 }
 
 export function isKiteConfigured(): boolean {
-  return !!(
-    (process.env.KITE_API_KEY && process.env.KITE_ACCESS_TOKEN) ||
-    (_overrideApiKey && _overrideAccessToken)
-  );
+  if (_overrideApiKey && _overrideAccessToken) return true;
+  if (process.env.KITE_API_KEY && process.env.KITE_ACCESS_TOKEN) return true;
+  // Tier 3: server-side store — the last token pasted on ANY device
+  // (paste-once-per-day sync hub). See kite-creds-store.ts.
+  const stored = getStoredCredsSync();
+  return !!(stored?.apiKey && stored?.accessToken);
 }
 
 function kiteHeaders() {
-  const apiKey = _overrideApiKey || process.env.KITE_API_KEY || '';
-  const accessToken = _overrideAccessToken || process.env.KITE_ACCESS_TOKEN || '';
+  // Credential resolution order (per field):
+  //   1. URL creds from the calling browser (per-request override)
+  //   2. env vars (.env KITE_API_KEY / KITE_ACCESS_TOKEN)
+  //   3. server-side store — the last token pasted on ANY device.
+  // Tier 3 is what lets a freshly-opened browser (no localStorage yet) get
+  // LIVE data on its very first poll, before the client-side boot sync
+  // even completes.
+  let apiKey = _overrideApiKey || process.env.KITE_API_KEY || '';
+  let accessToken = _overrideAccessToken || process.env.KITE_ACCESS_TOKEN || '';
+  if (!apiKey || !accessToken) {
+    const stored = getStoredCredsSync();
+    if (stored) {
+      apiKey = apiKey || stored.apiKey;
+      accessToken = accessToken || stored.accessToken;
+    }
+  }
   return {
     'Authorization': `token ${apiKey}:${accessToken}`,
     'X-Kite-Version': '3',
