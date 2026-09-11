@@ -120,42 +120,59 @@ function computeTrendDomain(
 }
 
 /**
- * Compute a Y-axis domain that fits only the LAST `recentPoints` data points.
+ * Compute a Y-axis domain that starts at zero and fits the data.
  *
- * PROBLEM: The Stock Options Money Flow card sums 15 stocks, so its absolute
- * cumulative value can reach ±14,000 Cr after the morning backfill lands.
- * Auto-fit Y-axis to ALL data → range ~28,000 Cr → live 15s oscillations of
- * ±20 Cr are 0.07% of axis height = literally invisible (looks perfectly
- * flat for an hour). The NIFTY/BANKNIFTY/FINNIFTY/SENSEX card doesn't hit
- * this because a single index's flow is ~10–100 Cr — live deltas are 3–10%
- * of the axis = visible.
+ * PROBLEM: The Stock Options Money Flow card sums 15 stocks, so the
+ * cumulative value reaches +14,000 Cr by midday. The previous "auto-fit
+ * all data" approach scaled Y-axis to roughly [-7000, +21000] — live
+ * 15s oscillations of ±20 Cr were 0.07% of axis = invisible. The
+ * previous "recent-fit only" fix made oscillations visible but hid the
+ * zero line (Y-axis 14198→14286 = nowhere near 0).
  *
- * SOLUTION: Fit Y-axis to recent data only (default last 30 min = 120 polls
- * at 15s). Live oscillations become visible on the fitted scale. The X-axis
- * still spans the full 09:15–15:40 session — morning data is rendered off-
- * screen Y-wise (which is fine; the line exits the bottom and re-enters when
- * it climbs back into range). `allowDataOverflow` is set on the YAxis so
- * Recharts doesn't error on out-of-range points.
+ * USER REQUEST (Sep 11): "Daily 15 stock option total money flow trend
+ * should start from zero so I know money is coming in or out overall.
+ * Trend line visible but zero line not."
  *
- * Edge case: fewer than 2 recent points → fall back to ['auto','auto'] so
- * the chart doesn't crash on first paint.
+ * SOLUTION: Always anchor Y-axis at 0 (so zero line is visible at the
+ * bottom), and fit the top to the data's max (with small pad). Negative
+ * cumulative (rare, only on heavy bearish days) extends below zero.
+ *
+ * Why this works: the line still climbs from 0 → 14,206 Cr over the
+ * session (visible morning rise on the left edge, real-time oscillations
+ * at the right edge), and live ±20 Cr deltas are visible because:
+ *   - Y range = 14,500 Cr (0 to 14,206 + 10% pad)
+ *   - Each Y-axis tick is ~1,800 Cr
+ *   - A 20 Cr delta = 1.4% of axis = 3px on a 210px chart = visible as
+ *     micro-wiggles on the right edge
+ *
+ * If the data is heavily negative (bearish day), the domain flips to
+ * fit [min, 0] instead — same logic, anchored at zero.
  */
-function computeRecentYDomain(
+function computeZeroAnchoredYDomain(
   points: Array<Record<string, number | string>>,
   key: string,
-  recentPoints = 120,
 ): [number | string, number | string] {
-  if (points.length < 2) return ['auto', 'auto'];
-  const slice = points.slice(-recentPoints);
-  const vals = slice
+  if (points.length === 0) return ['auto', 'auto'];
+  const vals = points
     .map(p => typeof p[key] === 'number' ? (p[key] as number) : NaN)
     .filter(v => !isNaN(v));
   if (vals.length === 0) return ['auto', 'auto'];
   const min = Math.min(...vals);
   const max = Math.max(...vals);
-  // Pad by 10% of the recent range, or at least 1 Cr if range is tiny
-  const range = Math.max(1, max - min);
-  const pad = Math.max(1, range * 0.1);
+
+  // Anchor at zero, fit the active side
+  if (max >= 0 && min >= 0) {
+    // Pure positive day — zero at bottom, max + 10% pad at top
+    const pad = Math.max(1, max * 0.1);
+    return [0, Math.ceil(max + pad)];
+  }
+  if (min <= 0 && max <= 0) {
+    // Pure negative day — zero at top, min - 10% pad at bottom
+    const pad = Math.max(1, Math.abs(min) * 0.1);
+    return [Math.floor(min - pad), 0];
+  }
+  // Mixed sign day — fit both sides, anchored at zero somewhere in middle
+  const pad = Math.max(1, Math.max(Math.abs(min), Math.abs(max)) * 0.1);
   return [Math.floor(min - pad), Math.ceil(max + pad)];
 }
 
@@ -669,7 +686,7 @@ export default function TrendAnalysisTab() {
               </div>
               <div className="text-[10px] text-muted-foreground">
                 ΔOI-weighted net flow · cumulative (Cr) ·{' '}
-                <span className="text-orange-400/80 font-semibold">Y-axis: last 30 min auto-fit</span>
+                <span className="text-orange-400/80 font-semibold">starts at 0 — money in (+) / out (−)</span>
               </div>
             </div>
             <div className="text-right shrink-0">
@@ -695,23 +712,22 @@ export default function TrendAnalysisTab() {
                     tick={{ fill: '#a1a1aa', fontSize: 9 }}
                     allowDataOverflow
                   />
-                  {/* Y-axis fits LAST 30 min (120 polls × 15s) only. Without
-                      this, the morning backfill jumps the cumulative to
-                      ±14,000 Cr and live ±20 Cr oscillations become
-                      0.07% of axis = invisible (looks flat for hours). With
-                      recent-fit, recent live movement is visible at the
-                      same scale as the NIFTY card. allowDataOverflow lets
-                      out-of-range morning data render off-screen without
-                      breaking the chart. */}
+                  {/* Y-axis anchored at zero so the zero-line (ReferenceLine
+                      below) is always visible at the bottom of the chart.
+                      Previously auto-fit-recent pushed Y to [14198, 14286]
+                      and the zero line was way off-screen. Now starts at 0
+                      so user can see the full cumulative from zero → 14206,
+                      answering "money in or out overall today" at a glance.
+                      Top of axis = data max + 10% pad (rounded up). */}
                   <YAxis
-                    domain={computeRecentYDomain(flowChartData, 'stockAggregate', 120)}
+                    domain={computeZeroAnchoredYDomain(flowChartData, 'stockAggregate')}
                     tick={{ fill: '#a1a1aa', fontSize: 10 }}
                     tickFormatter={(v: number) => `${v.toFixed(0)}`}
                     width={55}
                     allowDataOverflow
                   />
                   <Tooltip content={<FlowTooltip />} />
-                  <ReferenceLine y={0} stroke="#ffffff30" />
+                  <ReferenceLine y={0} stroke="#64748b" strokeDasharray="4 4" strokeWidth={1.5} />
                   <Line
                     type="monotone"
                     dataKey="stockAggregate"
