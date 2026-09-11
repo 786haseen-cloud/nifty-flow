@@ -600,3 +600,23 @@ Stage Summary:
 - Diagnostic endpoint now live. User hits `https://preview-<bot-id>.space-z.ai/api/kite/highest-bet?debug=1&api_key=...&access_token=...` and shares the JSON response — we'll see exactly which step is dropping BANKNIFTY/FINNIFTY/SENSEX
 - Likely root causes (to be confirmed by the diagnostic): (a) Kite renamed something in their instruments CSV again, (b) the nearest expiry filter is returning a date with no options (e.g. weekly expiry not in CSV yet), (c) the ATM ± 4 strikes window misses because strikeStep is computed wrong, (d) spot quote returns 0 for these indices' cash tokens (unlikely — cash tokens are simple)
 - No fix yet — diagnose first, then patch the specific failure point. This is the third time this symptom has appeared; the diagnostic will prevent a fourth round-trip
+
+---
+Task ID: 22
+Agent: Main
+Task: User wants Stock Options Money Flow card back to "real-time single trend line as it was in the morning" — visible live oscillations on a fitted scale, single line, options-only
+
+Work Log:
+- User clarified the Index card is fine ("BANKNIFTY/FINNIFTY/SENSEX are not zero, they are small numbers compared to NIFTY50"). Real bug: Stock Options card perfectly flat for 1+ hour at +14,245 Cr after backfill landed
+- User asked if futures were added to the trend line. VERIFIED via code read: NO. computeSymbolFlow (trend-types.ts:127-170) uses only ceOI/peOI deltas × delta × lotSize / 1e7. StrikeData type (line 39-49) has no futOI field. Response from /api/kite/highest-bet DOES return futOI but computeSymbolFlow only reads sym.strikes. Options-only since day one. Historical backfill (commit 75c474f Aug 24) uses computeFlowBetweenCandles (route.ts:113-145) — same options-only math
+- ROOT CAUSE confirmed: chart Y-axis defaults to ['auto','auto'] = fit ALL data. After backfill lands cumulative at +14,000 Cr, Y-axis spans -7000 to +21000 (range 28,000). Live ±20 Cr oscillations = 0.07% of axis = literally 1 pixel = invisible. This is a SCALE problem, not a DATA problem
+- NIFTY card doesn't hit this because a single index's flow is ~10–100 Cr → live deltas are 3–10% of axis = visible. Stock aggregate = 15 stocks summed → 100–1000× larger absolute values
+- FIX (059d235): computeRecentYDomain() helper fits Y-axis to last 120 polls (30 min at 15s) only. Applied to Stock Options Money Flow card's YAxis domain. allowDataOverflow on Y-axis + connectNulls on Line so out-of-range morning data doesn't break the chart. X-axis still spans full 09:15–15:40 session
+- Card subtitle now reads "ΔOI-weighted net flow · cumulative (Cr) · Y-axis: last 30 min auto-fit" so user understands why morning's rise is clipped
+- NO changes to flow math — still options-only, single trend line. Index Options card untouched (its scale already works)
+- tsc clean; build clean; pushed → Vercel auto-deploy
+
+Stage Summary:
+- Stock Options Money Flow card now behaves "as it was in the morning": live real-time oscillations visible on a fitted scale, single orange trend line, options-only (no futures)
+- User needs to hard-refresh to load the new Y-axis code
+- Trade-off: morning's rise from 0 to +14,000 Cr is now clipped off-screen below (line exits the bottom of the chart). This is intentional — user prioritized real-time visibility over morning history. If they want to see the morning rise again, the Cum: +XXXX Cr number in the top-right still shows the full-day total
