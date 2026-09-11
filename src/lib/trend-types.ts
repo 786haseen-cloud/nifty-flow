@@ -87,7 +87,8 @@ export interface FlowTrendPoint {
 }
 
 export interface HighestBetResponse {
-  mode: string;
+  /** Tight union — trend-store gates flow math on this (never accumulate demo data). */
+  mode: 'live' | 'demo' | 'error';
   timestamp: string;
   symbols: SymbolSnapshot[];
 }
