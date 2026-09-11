@@ -250,6 +250,22 @@ function fmtAxisCr(v: number): string {
   return `${sign}${abs.toFixed(0)}`;
 }
 
+/**
+ * Full-format a Cr value WITH its unit — the single source of truth for
+ * money-flow rendering, shared by the Cum/Int badges AND the chart
+ * tooltips so a hovered point reads the same as the badge
+ * (13961 -> "13.96 K Cr", -88.3 -> "-88.3 Cr", 1,42,000 -> "1.42 L Cr").
+ */
+function fmtCrFull(v: number): string {
+  const abs = Math.abs(v);
+  const sign = v < 0 ? '-' : '';
+  if (abs >= 100000) return `${sign}${(abs / 100000).toFixed(2)} L Cr`;
+  if (abs >= 1000) return `${sign}${(abs / 1000).toFixed(2)} K Cr`;
+  if (abs >= 100) return `${sign}${abs.toFixed(0)} Cr`;
+  if (abs >= 1) return `${sign}${abs.toFixed(1)} Cr`;
+  return `${sign}${abs.toFixed(2)} Cr`;
+}
+
 // ─── Custom Tooltips ───
 
 function NiftyTooltip({ active, payload, label }: any) {
@@ -303,7 +319,7 @@ function FlowTooltip({ active, payload, label }: any) {
       {payload.map((p: any) => (
         <div key={p.dataKey} style={{ color: p.color }} className="flex items-center gap-1">
           <span className="inline-block w-2 h-2 rounded-full" style={{ backgroundColor: p.color }} />
-          {p.dataKey}: {typeof p.value === 'number' ? p.value.toFixed(1) : p.value} Cr
+          {p.dataKey}: {typeof p.value === 'number' ? fmtCrFull(p.value) : p.value}
         </div>
       ))}
     </div>
@@ -453,18 +469,10 @@ export default function TrendAnalysisTab() {
     if (Math.abs(cr) >= 1) return `${cr.toFixed(1)}`;
     return `${cr.toFixed(2)}`;
   };
-  const fmtCr = (v: number) => {
-    const abs = Math.abs(v);
-    const sign = v < 0 ? '-' : '';
-    // Large values in K Cr (thousands of crore) / L Cr (lakh crore) so the
-    // magnitude is readable at a glance: 14089 Cr → "14.09 K Cr",
-    // 1,42,000 Cr → "1.42 L Cr". Sub-100 values keep absolute Cr.
-    if (abs >= 100000) return `${sign}${(abs / 100000).toFixed(2)} L Cr`;
-    if (abs >= 1000) return `${sign}${(abs / 1000).toFixed(2)} K Cr`;
-    if (abs >= 100) return `${sign}${abs.toFixed(0)} Cr`;
-    if (abs >= 1) return `${sign}${abs.toFixed(1)} Cr`;
-    return `${sign}${abs.toFixed(2)} Cr`;
-  };
+  // K-notation formatter — logic lives at module level (fmtCrFull) so the
+  // chart tooltips render the exact same string as these badges
+  // ("13.96 K Cr", not "13961.0 Cr").
+  const fmtCr = fmtCrFull;
 
   // Stock-flow card Y-axis: zero-anchored domain + round uniform ticks.
   // Computed once per render so the domain and its ticks always agree
