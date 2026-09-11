@@ -398,9 +398,16 @@ export default function TrendAnalysisTab() {
     return `${cr.toFixed(2)}`;
   };
   const fmtCr = (v: number) => {
-    if (Math.abs(v) >= 100) return `${v.toFixed(0)}`;
-    if (Math.abs(v) >= 1) return `${v.toFixed(1)}`;
-    return `${v.toFixed(2)}`;
+    const abs = Math.abs(v);
+    const sign = v < 0 ? '-' : '';
+    // Large values in K Cr (thousands of crore) / L Cr (lakh crore) so the
+    // magnitude is readable at a glance: 14089 Cr → "14.09 K Cr",
+    // 1,42,000 Cr → "1.42 L Cr". Sub-100 values keep absolute Cr.
+    if (abs >= 100000) return `${sign}${(abs / 100000).toFixed(2)} L Cr`;
+    if (abs >= 1000) return `${sign}${(abs / 1000).toFixed(2)} K Cr`;
+    if (abs >= 100) return `${sign}${abs.toFixed(0)} Cr`;
+    if (abs >= 1) return `${sign}${abs.toFixed(1)} Cr`;
+    return `${sign}${abs.toFixed(2)} Cr`;
   };
 
   // ─── Render ───
