@@ -194,6 +194,62 @@ function computeTrendTicks(domain: [number, number]): number[] {
   return ticks;
 }
 
+/**
+ * Round uniform Y-axis ticks for a zero-anchored domain.
+ *
+ * WHY THIS EXISTS: recharts' built-in tick picker produces non-uniform
+ * junk on ugly numeric domains — e.g. domain [-8076, 15890] rendered
+ * ticks 15890 / 3024 / -2076 / -8076 (uneven gaps, no zero tick, top
+ * tick equals the domain max). This generator produces evenly spaced
+ * round numbers on a 1 / 2 / 5 × 10^n step (3-6 ticks), and always
+ * includes 0 when the domain spans it — preserving the zero-anchored
+ * contract from computeZeroAnchoredYDomain.
+ *
+ * Example: [-8076, 15890] -> [-5000, 0, 5000, 10000, 15000]
+ *          [0, 15890]     -> [0, 5000, 10000, 15000]
+ */
+function computeNiceYTicks(
+  domain: [number | string, number | string],
+): number[] {
+  if (typeof domain[0] !== 'number' || typeof domain[1] !== 'number') return [];
+  const min = domain[0] as number;
+  const max = domain[1] as number;
+  const range = max - min;
+  if (range <= 0) return [min];
+  // Nice step: 1/2/5 × 10^n closest to range/5 (gives 3-6 uniform ticks)
+  const rawStep = range / 5;
+  const mag = Math.pow(10, Math.floor(Math.log10(rawStep)));
+  const norm = rawStep / mag;
+  const step = (norm <= 1 ? 1 : norm <= 2 ? 2 : norm <= 5 ? 5 : 10) * mag;
+  const start = Math.ceil(min / step) * step;
+  const ticks: number[] = [];
+  for (let v = start; v <= max + step * 1e-6; v += step) {
+    ticks.push(Math.round(v * 1e6) / 1e6);
+  }
+  // Zero-anchored contract: 0 must be a tick when the domain spans it
+  if (min <= 0 && max >= 0 && !ticks.some(t => Math.abs(t) < step * 1e-6)) {
+    ticks.push(0);
+    ticks.sort((a, b) => a - b);
+  }
+  return ticks;
+}
+
+/**
+ * Compact Y-axis label for Cr values — K notation for thousands, matching
+ * the Cum/Int badges (14050 -> "14K", -5000 -> "-5K", 300 -> "300").
+ */
+function fmtAxisCr(v: number): string {
+  if (v === 0) return '0';
+  const abs = Math.abs(v);
+  const sign = v < 0 ? '-' : '';
+  if (abs >= 1000) {
+    const k = abs / 1000;
+    // 15000 -> "15K", 5000 -> "5K" (not "5.0K"), 2500 -> "2.5K"
+    return `${sign}${(k >= 10 ? k.toFixed(0) : k.toFixed(1).replace(/\.0$/, ''))}K`;
+  }
+  return `${sign}${abs.toFixed(0)}`;
+}
+
 // ─── Custom Tooltips ───
 
 function NiftyTooltip({ active, payload, label }: any) {
@@ -409,6 +465,16 @@ export default function TrendAnalysisTab() {
     if (abs >= 1) return `${sign}${abs.toFixed(1)} Cr`;
     return `${sign}${abs.toFixed(2)} Cr`;
   };
+
+  // Stock-flow card Y-axis: zero-anchored domain + round uniform ticks.
+  // Computed once per render so the domain and its ticks always agree
+  // (recharts' auto ticks on this domain were non-uniform junk —
+  // 15890 / 3024 / −2076 / −8076 in the Task 26 screenshot).
+  const stockYDomain = computeZeroAnchoredYDomain(
+    flowChartData,
+    stockView === 'aggregate' ? 'stockAggregate' : stockView,
+  );
+  const stockYTicks = computeNiceYTicks(stockYDomain);
 
   // ─── Render ───
 
@@ -642,10 +708,10 @@ export default function TrendAnalysisTab() {
             </div>
             <div className="text-right shrink-0">
               <div className="text-sm font-mono font-bold text-purple-300">
-                Cum: {idxCumTotal >= 0 ? '+' : ''}{fmtCr(idxCumTotal)} Cr
+                Cum: {idxCumTotal >= 0 ? '+' : ''}{fmtCr(idxCumTotal)}
               </div>
               <div className={`text-[10px] font-mono ${idxIntTotal >= 0 ? 'text-emerald-300' : 'text-red-300'}`}>
-                Int: {idxIntTotal >= 0 ? '+' : ''}{fmtCr(idxIntTotal)} Cr
+                Int: {idxIntTotal >= 0 ? '+' : ''}{fmtCr(idxIntTotal)}
               </div>
             </div>
           </div>
@@ -725,7 +791,7 @@ export default function TrendAnalysisTab() {
               }`}>
                 Cum: {fmtCr(stockView === 'aggregate'
                   ? (cumulativeFlow.stockAggregate || 0)
-                  : (cumulativeFlow[stockView] || 0))} Cr
+                  : (cumulativeFlow[stockView] || 0))}
               </div>
               <div className={`text-[10px] font-mono ${
                 (stockView === 'aggregate'
@@ -738,7 +804,7 @@ export default function TrendAnalysisTab() {
                   : (currentStockPerSym[stockView] || 0)) >= 0 ? '+' : ''}
                 {fmtCr(stockView === 'aggregate'
                   ? currentStockFlow
-                  : (currentStockPerSym[stockView] || 0))} Cr
+                  : (currentStockPerSym[stockView] || 0))}
               </div>
             </div>
           </div>
@@ -786,21 +852,20 @@ export default function TrendAnalysisTab() {
                     allowDataOverflow
                   />
                   {/* Y-axis anchored at zero so the zero-line (ReferenceLine
-                      below) is always visible at the bottom of the chart.
-                      Both the aggregate view and the per-stock view use
-                      the same computeZeroAnchoredYDomain — for a single
-                      stock the values are ±10-500 Cr, so live oscillations
-                      are visible AND the zero line is on screen. For the
-                      aggregate the values are ±14000 Cr, so the morning
-                      rise is visible but live micro-oscillations are not
-                      (the trade-off user accepted in Task 23). */}
+                      below) is always visible. Both the aggregate view and
+                      the per-stock view use the same computeZeroAnchoredYDomain
+                      + computeNiceYTicks — round uniform ticks (0 / ±5K / …)
+                      instead of recharts' auto junk (15890/3024/-2076/-8076).
+                      For a single stock the values are ±10-500 Cr, so live
+                      oscillations are visible AND the zero line is on screen.
+                      For the aggregate the values are ±14000 Cr, so the
+                      morning rise is visible but live micro-oscillations are
+                      not (the trade-off user accepted in Task 23). */}
                   <YAxis
-                    domain={computeZeroAnchoredYDomain(
-                      flowChartData,
-                      stockView === 'aggregate' ? 'stockAggregate' : stockView
-                    )}
+                    domain={stockYDomain}
+                    ticks={stockYTicks.length > 0 ? stockYTicks : undefined}
                     tick={{ fill: '#a1a1aa', fontSize: 10 }}
-                    tickFormatter={(v: number) => `${v.toFixed(0)}`}
+                    tickFormatter={fmtAxisCr}
                     width={55}
                     allowDataOverflow
                   />
