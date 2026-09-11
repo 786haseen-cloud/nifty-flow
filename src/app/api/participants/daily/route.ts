@@ -29,6 +29,7 @@ import {
   saveParticipantFlow,
   getRecentParticipantFlow,
   getCachedParticipantBias,
+  getParticipantPositioningByDate,
   type ParticipantFlow,
   type ParticipantBiasResult,
 } from '@/lib/participant-service';
@@ -88,9 +89,25 @@ export async function POST(request: NextRequest) {
 }
 
 // ─── GET: fetch recent history + current bias ───
+// Diagnostic: ?positioning=YYYY-MM-DD → raw FAO OI + Vol reports for that
+// date (verifies the daily upload routine landed under the right key).
 
-export async function GET() {
+export async function GET(req: NextRequest) {
   try {
+    const posDate = req.nextUrl.searchParams.get('positioning');
+    if (posDate && /^\d{4}-\d{2}-\d{2}$/.test(posDate)) {
+      const [fao_oi, fao_vol] = await Promise.all([
+        getParticipantPositioningByDate(posDate, 'fao_oi'),
+        getParticipantPositioningByDate(posDate, 'fao_vol'),
+      ]);
+      return NextResponse.json({
+        date: posDate,
+        fao_oi,
+        fao_vol,
+        configured: Boolean(process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN),
+      });
+    }
+
     const [history, bias] = await Promise.all([
       getRecentParticipantFlow(7, 30),
       getCachedParticipantBias(),
