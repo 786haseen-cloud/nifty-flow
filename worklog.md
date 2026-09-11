@@ -620,3 +620,26 @@ Stage Summary:
 - Stock Options Money Flow card now behaves "as it was in the morning": live real-time oscillations visible on a fitted scale, single orange trend line, options-only (no futures)
 - User needs to hard-refresh to load the new Y-axis code
 - Trade-off: morning's rise from 0 to +14,000 Cr is now clipped off-screen below (line exits the bottom of the chart). This is intentional — user prioritized real-time visibility over morning history. If they want to see the morning rise again, the Cum: +XXXX Cr number in the top-right still shows the full-day total
+
+---
+Task ID: 23
+Agent: Main
+Task: User wants zero line visible — "trend should start from zero so I know money in or out overall 15 stocks. Now trend line visible but zero line not"
+
+Work Log:
+- VLM re-read screenshot (upload/pasted_image_1789115892486.png): Y-axis 14198→14286, orange line in 14200-14210 range. Cum: 14206 Cr, Int: -8.8 Cr. Zero line NOT visible (way off-screen below)
+- User feedback: Task 22's "recent 30 min auto-fit" made oscillations visible BUT hid the zero line — user couldn't tell if cumulative was positive or negative
+- NEW APPROACH (commit be733c8): computeZeroAnchoredYDomain() always anchors Y at 0:
+  * Pure positive day → [0, max + 10% pad] — zero at bottom, line climbs up
+  * Pure negative day → [min - 10% pad, 0] — zero at top, line drops down
+  * Mixed sign → [min, max] with pad both sides
+- Zero ReferenceLine styling bumped: stroke #64748b (slate-500), strokeWidth 1.5, strokeDasharray "4 4" — clearly visible against dark chart background
+- Subtitle updated: 'ΔOI-weighted net flow · cumulative (Cr) · starts at 0 — money in (+) / out (−)'
+- TRADE-OFF accepted (acknowledged in commit message): live ±20 Cr oscillations on a 14,500 Cr Y-axis are ~0.14% of axis = ~0.3px = micro-wiggles not really visible. User explicitly prioritized seeing the ZERO line + full cumulative-from-zero over micro-oscillations. The Cum/Int numbers in the top-right of the card give the precise live delta every 15s — so the user still has real-time delta info even if the chart line looks smooth
+- Index Options Money Flow card UNCHANGED — its absolute cumulative is small (NIFTY oscillates in +1 to +8 range), so auto-fit Y-axis naturally shows the zero line in the middle. No fix needed
+- tsc clean; build clean; pushed → Vercel auto-deploy
+
+Stage Summary:
+- Stock Options Money Flow card now shows: Y-axis starts at 0 → climbs to +14,206 Cr. Zero line visible at bottom. Orange line covers full session from 0 → 14206 (with the 12:28 backfill spike visible as the line jumping up from 0 to ~14000). User can immediately see 'money IN today' (line above zero) vs 'money OUT' (line below zero)
+- Trade-off: micro-oscillations (~20 Cr deltas every 15s) are not visible at this scale. User has the Cum/Int numeric values for precise live delta
+- If user later wants both (zero line + visible micro-oscillations), Option A from Task 22 (per-stock breakdown, each at NIFTY-scale) would solve both — but user did not ask for that
