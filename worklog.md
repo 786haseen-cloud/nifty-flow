@@ -720,3 +720,20 @@ Work Log:
 Stage Summary:
 - Commit pushed. Single source of truth for Cr formatting: fmtCrFull() — badges, tooltips consistent. Axis labels use fmtAxisCr (compact K).
 - Cash flow tooltip (NSE/BSE Cum) still raw toFixed(1) — can adopt fmtCrFull later if user wants (values occasionally >1000 Cr).
+
+---
+Task ID: 28
+Agent: main (Super Z)
+Task: Flow cards start from office token-paste time instead of 09:15 (user pastes at 09:14 laptop + again from office daily)
+
+Work Log:
+- Traced the full backfill pipeline: trigger sites, historical-flow route, candle fetch, merge
+- BUG 1 (critical): getCandles(token,'5minute',1) fetches from YESTERDAY same-time — yesterday's session tail entered the cumulative walk: overnight OI deltas polluted first intervals + HH:MM:SS time-key collisions blended both days. Added getTodayCandles() (today 09:15→15:30 IST) in kite-api.ts; adopted by historical-flow + historical-cash-flow routes
+- BUG 2: backfill trigger only fired on app boot (setTimeout 3s) or demo→live. Consolidated 3 trigger sites into scheduleBackfillTrigger() with 60s debounce stamp (_lastBackfillTriggerAt) — prevents overlapping 2-min backfill runs
+- BUG 3: new notifyCredsRefreshed() action wired into Settings handleSave — clears stale trend/snapshots + re-backfills on ANY mid-session paste; guarded to skip when live feed healthy (15s data > 5-min candles); also clears currentStockPerSym now
+- tsc clean; build OK; commit 51b4ac pushed
+
+Stage Summary:
+- Tuesday expectation: paste at office → Save & Test → 3s later backfills fire → ~2 min later all three cards show the full day from 09:20 (today-only candle window, correct curve) → live 15s polls resume on top with offset merge
+- Laptop 09:14 paste: phase 'pre' → notify no-ops → live starts at open naturally (nothing missed)
+- NOTE: creds are per-browser localStorage (by design); office re-paste is still needed until creds move server-side — but data now reconstructs
