@@ -230,6 +230,17 @@ export default function TrendAnalysisTab() {
   const currentStockFlow = useTrendStore((s) => s.currentStockFlow);
   const currentIntervalCashFlow = useTrendStore((s) => s.currentIntervalCashFlow);
   const prevStockTotals = useTrendStore((s) => s.prevStockTotals);
+  // Options-flow feed health — highest-bet endpoint falls back to demo
+  // INDEPENDENTLY of the trends endpoint. When this is not 'live' the two
+  // flow charts below are FROZEN at the last real poll (by store design),
+  // which shows as a flat line. Surface it loudly on the cards.
+  const flowFeedMode = useTrendStore((s) => s.flowFeedMode);
+  const lastLiveFlowAt = useTrendStore((s) => s.lastLiveFlowAt);
+  const flowFeedLabel =
+    flowFeedMode === 'live' ? null
+    : flowFeedMode === 'demo' ? 'DEMO FEED — token expired? Flow chart frozen at last live point'
+    : flowFeedMode === 'error' ? 'FEED ERROR — flow chart frozen at last live point'
+    : null;
   const lastPollAt = useTrendStore((s) => s.lastPollAt);
 
   // Magnet & Gamma Dashboard — separate 60s poller (heavy batched call,
@@ -527,6 +538,11 @@ export default function TrendAnalysisTab() {
 
         {/* Card 3 (row 3): Index Options Money Flow */}
         <div className="rounded-xl border border-border/50 bg-card/50 p-4 flex flex-col">
+          {flowFeedLabel && (
+            <div className="mb-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-[10px] font-semibold text-amber-300">
+              ⚠ {flowFeedLabel}{lastLiveFlowAt > 0 && ` · last live ${new Date(lastLiveFlowAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata' })} IST`}
+            </div>
+          )}
           <div className="flex items-start justify-between gap-2 mb-2 min-h-[52px] flex-wrap">
             <div className="min-w-0">
               <div className="flex items-center gap-2">
@@ -601,6 +617,11 @@ export default function TrendAnalysisTab() {
 
         {/* Card 4 (row 4): Stock Options Money Flow (15 F&O Stocks) */}
         <div className="rounded-xl border border-border/50 bg-card/50 p-4 flex flex-col">
+          {flowFeedLabel && (
+            <div className="mb-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-[10px] font-semibold text-amber-300">
+              ⚠ {flowFeedLabel}{lastLiveFlowAt > 0 && ` · last live ${new Date(lastLiveFlowAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata' })} IST`}
+            </div>
+          )}
           <div className="flex items-start justify-between gap-2 mb-2 min-h-[52px] flex-wrap">
             <div className="min-w-0">
               <div className="flex items-center gap-2">

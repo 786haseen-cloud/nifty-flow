@@ -355,7 +355,16 @@ async function fetchLiveData(): Promise<HighestBetResponse> {
     return { mode: 'error', timestamp: new Date().toISOString(), symbols: [], error: 'No option/future tokens found' };
   }
 
-  const optFutQuotes = await getQuotes(allTokens);
+  // One retry — the ~400-token batch occasionally hits Kite's transient rate
+  // limit (the dashboard also polls magnet-scan / trends / oi-walls in
+  // parallel). A single 400ms backoff absorbs most blips. Without this, one
+  // failed batch silently falls through to DEMO data and the client's flow
+  // charts pollute/freeze (see the feed gate in trend-store).
+  let optFutQuotes = await getQuotes(allTokens);
+  if ('_error' in optFutQuotes) {
+    await new Promise((r) => setTimeout(r, 400));
+    optFutQuotes = await getQuotes(allTokens);
+  }
   if ('_error' in optFutQuotes) {
     return { mode: 'error', timestamp: new Date().toISOString(), symbols: [], error: String(optFutQuotes._error) };
   }

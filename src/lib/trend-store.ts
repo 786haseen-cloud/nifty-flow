@@ -84,6 +84,15 @@ interface TrendState {
   niftyCandles: NiftyCandle[];
   stockCashFlow: StockCashFlow[];
   trendMode: 'live' | 'demo' | 'error';
+  // Options-flow feed health (highest-bet endpoint). The /trends and
+  // /highest-bet endpoints fall back to demo INDEPENDENTLY — trends can be
+  // live while the options feed is demo (e.g. big batch quote hit a Kite
+  // rate limit). Without this flag the flow cards silently plot demo noise
+  // (flat line) while the demo banner stays hidden because trendMode is live.
+  // Sep 11 2026: "Stock Options Money Flow flat" bug — this is the fix.
+  flowFeedMode: 'live' | 'demo' | 'error' | 'loading';
+  /** Epoch ms of the last poll that contributed REAL (live) flow points. */
+  lastLiveFlowAt: number;
 
   // ─── Current interval display values ───
   currentIdxFlows: Record<string, number>;
@@ -135,6 +144,8 @@ export const useTrendStore = create<TrendState>()(
       niftyCandles: [],
       stockCashFlow: [],
       trendMode: 'demo',
+      flowFeedMode: 'loading',
+      lastLiveFlowAt: 0,
 
       currentIdxFlows: { NIFTY: 0, BANKNIFTY: 0, FINNIFTY: 0, SENSEX: 0 },
       currentStockFlow: 0,
@@ -715,6 +726,19 @@ export const useTrendStore = create<TrendState>()(
 
         if (betRes.status === 'fulfilled') {
           const data = betRes.value as HighestBetResponse;
+
+          // FEED GATE — never let demo/error data touch the flow math.
+          // When Kite auth fails or the big batch quote is rate-limited, the
+          // endpoint silently returns DEMO data (random OI 0.1–5.1M per leg).
+          // Diffing that against our last live snapshot would corrupt
+          // prevSnapshots AND paint a flat/garbage line. Instead: freeze the
+          // chart at the last live point and surface the feed state on the
+          // card. prevSnapshots stay untouched so live resumes cleanly.
+          if (data.mode !== 'live') {
+            set({ flowFeedMode: data.mode });
+            return;  // poll cycle ends — cash/candle updates already applied above
+          }
+
           if (data.symbols && data.symbols.length > 0) {
             const prevSnapshots = get().prevSnapshots;
             const cumulativeFlow = { ...get().cumulativeFlow };
@@ -770,6 +794,8 @@ export const useTrendStore = create<TrendState>()(
               currentIdxFlows: newCurrentIdx,
               currentStockFlow: stockAgg,
               lastPollAt: now,
+              flowFeedMode: 'live',
+              lastLiveFlowAt: now,
             });
           }
         }
