@@ -684,3 +684,23 @@ Work Log:
 Stage Summary:
 - Stock Options Money Flow card now reads "Cum: 14.09 K Cr" instead of "Cum: 14089 Cr"
 - Same metric as before (delta-weighted OI flow, engine-consistent across live/backfill/footprint) — only the display formatting changed
+
+---
+Task ID: 26
+Agent: main (Super Z)
+Task: Fix stock-flow Y-axis (screenshot showed junk ticks 15890/3024/-2076/-8076) + double "Cr Cr" unit visible in Cum/Int badges
+
+Work Log:
+- Read screenshot: Y-axis ticks non-uniform (15890/3024/-2076/-8076) and badges showed "Cum : 14.05 K Cr Cr" / "Int : -1.2 Cr Cr"
+- Root cause 1: YAxis had no explicit ticks — recharts' auto tick picker produces non-uniform junk on the ugly zero-anchored domain [-8076, 15890]
+- Root cause 2: commit 217fa0f added K-notation units inside fmtCr() but the 4 Cum/Int label templates still appended " Cr" → duplicate unit
+- Added computeNiceYTicks(): round 1/2/5×10^n uniform ticks, always includes 0 when domain spans it ([-8076,15890] → -5K|0|5K|10K|15K)
+- Added fmtAxisCr(): K-notation tick labels matching the Cum badge (15000→"15K", -5000→"-5K", 300→"300"); trims ".0" (5K not 5.0K)
+- Removed trailing " Cr" from all 4 badge templates (index Cum/Int + stock Cum/Int) — fmtCr is now the single source of the unit
+- NOTE: MultiEdit tool applied edits non-atomically (reported failure but inserted 3 helper copies); cleaned up via line-splice, switched to single Edit calls with verification after each
+- tsc: zero errors in trend-analysis-tab.tsx (pre-existing errors elsewhere untouched); npm run build OK
+- Sanity-tested tick math in node across 5 domain scenarios (mixed/pure-pos/pure-neg/per-stock)
+
+Stage Summary:
+- Commit ce1ac28 pushed. Stock-flow card Y-axis now shows round uniform ticks with 0 always visible; badges read "14.05 K Cr" / "-1.2 Cr"
+- Reusable helpers in trend-analysis-tab.tsx: computeNiceYTicks(domain), fmtAxisCr(v) — other cards can adopt if the same junk-tick artifact appears
