@@ -522,3 +522,21 @@ Stage Summary:
 - Definitive: daily upload routine is exactly 3 reports (fii-dii activity + fao_participant_oi + fao_participant_vol); stop hunting a CM participant CSV
 - Cash "other side" aggregate available analytically: Client+Prop = -(FII+DII) (Sep 10 = -579.84); Client-vs-Prop split unknowable from public NSE data
 - MA (Market Activity) CSV stays unused by the parser (gross market summary only)
+
+---
+Task ID: 18
+Agent: Main
+Task: "Stock Options Money Flow flat trend line — did you change something?" — root cause + fix
+
+Work Log:
+- Sandbox had been rolled back to Task-11-era snapshot mid-session (local main + stale reflog at 7b3f091; remote intact at b9a6fed) → hard-reset to origin/main before diagnosing
+- Proved pipeline unchanged: diff 81f90cd..b9a6fed on magnet-scan route = +15 additive expiry-flag lines; trend-store/trend-analysis-tab/highest-bet untouched since Factor 13 deploy
+- Live probe pitfall: curling /api/kite/highest-bet WITHOUT creds returns DEMO data (random OI 0.1–5.1M/leg per fresh lambda) — first "OI oscillation" reading was a test artifact, discarded
+- ROOT CAUSE: highest-bet route silently falls back to generateDemoData() when Kite auth fails (daily ~7:30 IST token expiry) OR the ~400-token batch quote hits a transient rate limit; the dashboard's demo banner tracks only /api/kite/trends mode, so the flow cards plotted demo noise with no banner. Demo noise diffs ≈ symmetric → cumulative line hugs zero = the user's flat line. Index card shares the same feed (equally affected)
+- FIX (d3fbfe9 + f65c3e3): trend-store FEED GATE (flow math advances only when mode==='live'; chart freezes at last live point; flowFeedMode/lastLiveFlowAt state; tightened trend-types mode union) · amber feed-health strip on both Options Money Flow cards with last-live IST time · one 400ms retry on the big batch quote in the route
+- tsc clean for touched files (pre-existing errors in highest-bet-tracker.tsx unrelated, site builds with them); pushed → Vercel deploy
+
+Stage Summary:
+- Flow charts can never again silently plot demo data; frozen-at-last-live + amber strip makes feed health visible
+- User action: re-paste today's Kite token (expires daily), hard refresh, watch for the amber strip
+- If badge shows live and line still flat → next suspect is client-side (report back)
