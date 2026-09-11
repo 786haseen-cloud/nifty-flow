@@ -704,3 +704,19 @@ Work Log:
 Stage Summary:
 - Commit ce1ac28 pushed. Stock-flow card Y-axis now shows round uniform ticks with 0 always visible; badges read "14.05 K Cr" / "-1.2 Cr"
 - Reusable helpers in trend-analysis-tab.tsx: computeNiceYTicks(domain), fmtAxisCr(v) — other cards can adopt if the same junk-tick artifact appears
+
+---
+Task ID: 27
+Agent: main (Super Z)
+Task: Trend-line hover value still showed raw number ("13961.0 Cr") while Cum badge showed K notation ("13.90 K Cr") — unify
+
+Work Log:
+- Screenshot confirmed Y-axis fix (Task 26) works: ticks now -5K|0|5K|10K|15K, zero dashed line visible
+- Remaining inconsistency: FlowTooltip rendered p.value.toFixed(1) raw — hover read "stockAggregate: 13961.0 Cr" vs badge "13.90 K Cr"
+- Extracted badge formatter to module-level fmtCrFull(v) (L Cr / K Cr / Cr tiers); component fmtCr is now an alias — badges unchanged
+- FlowTooltip (shared by Index + Stock money-flow cards) now renders fmtCrFull(p.value) — hover reads "stockAggregate: 13.96 K Cr"
+- tsc clean for the file; npm run build OK
+
+Stage Summary:
+- Commit pushed. Single source of truth for Cr formatting: fmtCrFull() — badges, tooltips consistent. Axis labels use fmtAxisCr (compact K).
+- Cash flow tooltip (NSE/BSE Cum) still raw toFixed(1) — can adopt fmtCrFull later if user wants (values occasionally >1000 Cr).
