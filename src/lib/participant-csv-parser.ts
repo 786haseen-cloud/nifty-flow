@@ -401,9 +401,15 @@ function parseFaoParticipantOi(rows: string[][]): Omit<ParsedParticipantCsv, 'fo
 
 /**
  * Parse the NSE "Participant wise Trading Volume — Capital Market Segment"
- * report (cash market trades in ₹). This is the 4th report that completes
- * Factor 12 inputs: it provides real Client and Pro (PropDesk) net values
- * in ₹ — no more manual guessing.
+ * report (cash market trades in ₹). Provides real Client and Pro (PropDesk)
+ * net values in ₹.
+ *
+ * NOTE (Sep 2026): NSE does NOT publish this report publicly — participant-
+ * wise breakdowns (Client/NRI/FII/DII/Pro) exist for the F&O segment only
+ * (fao_participant_oi / fao_participant_vol). Confirmed by the user's
+ * research + NSE All-Reports page. This parser is kept for forward-compat
+ * in case NSE adds the report, or for BSE-style cash participant turnover
+ * files. Daily routine is 3 reports: FII/DII activity + fao OI + fao vol.
  *
  * Expected layout (typical NSE archive):
  *   Row 0: "Participant wise Trading Volume - Capital Market Segment as on Sep 08, 2026"

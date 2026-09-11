@@ -505,3 +505,20 @@ Work Log:
 
 Stage Summary:
 - MA report ruled out; user still needs the CM participant volume CSV to unlock real Client/PropDesk cash values
+
+---
+Task ID: 17
+Agent: Main
+Task: Reconcile external research claiming NSE has NO cash-segment participant report; close the "4th report" hunt
+
+Work Log:
+- User pasted research (with NSE links): participant-wise Client/NRI/FII/DII/Pro breakdown is F&O-only; cash segment publishes just FII/DII activity. Cross-checked: user could not find the CM card on All-Reports page, archive probes 403'd, third-party trackers (niftytrader/groww/stockmojo) only ever reference F&O participant files + cash FII/DII → research verdict accepted as correct; the cm_participant_volume format was written speculatively for a report NSE does not publicly publish
+- Verified engine impact = none: computeParticipantBias smart = FII + PropDesk, retail = Client — with fii_dii_cash parser setting Client/Prop = 0, Factor 12 has always run on FII vs DII (Sep 10 = -0.14 unaffected); F&O 4-way breakdown already flows from the 2 fao reports user uploads daily
+- Fixed misleading UI: participant-flow-card.tsx checksum warning no longer claims "the NSE Participant wise Trading Volume — Capital Market CSV has the real numbers" — now explains NSE publishes no cash participant report, Client/Prop stay 0, Factor 12 reads FII vs DII
+- Updated parseCmParticipantVolume docstring: parser kept for forward-compat (NSE future / BSE-style cash participant turnover); daily routine documented as 3 reports
+- tsc --noEmit: zero errors in both edited files; committed + pushed for Vercel deploy
+
+Stage Summary:
+- Definitive: daily upload routine is exactly 3 reports (fii-dii activity + fao_participant_oi + fao_participant_vol); stop hunting a CM participant CSV
+- Cash "other side" aggregate available analytically: Client+Prop = -(FII+DII) (Sep 10 = -579.84); Client-vs-Prop split unknowable from public NSE data
+- MA (Market Activity) CSV stays unused by the parser (gross market summary only)

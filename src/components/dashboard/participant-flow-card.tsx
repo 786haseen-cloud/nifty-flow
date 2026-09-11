@@ -167,11 +167,18 @@ export function ParticipantFlowCard() {
       // Zero-sum sanity check: in the cash market, FII + DII + Client + Pro
       // must net to ~0 (every buy has a seller). A large imbalance usually
       // means a guessed/missing Client or Prop value — warn, don't block.
+      // NOTE (Sep 2026): NSE publishes participant-wise breakdowns for the
+      // F&O segment ONLY — there is no cash-segment Client/Pro report. The
+      // normal daily flow is FII/DII from the activity report + Client/Prop
+      // left at 0, which the engine handles by design (Factor 12 runs on
+      // FII vs DII).
       const sum = f + d + c + p;
       if (Math.abs(sum) > 1500) {
         setChecksumWarn(
           `Checksum: FII + DII + Client + Prop = ${sum >= 0 ? '+' : ''}${sum.toFixed(0)} Cr ` +
-          `(expected ≈ 0). Client/Prop values may be guesses — the NSE "Participant wise Trading Volume — Capital Market" CSV has the real numbers.`
+          `(expected ≈ 0). NSE has no cash-segment participant report — Client/Prop ` +
+          `stay 0 and Factor 12 reads the flow as FII vs DII. Only fill them if you have ` +
+          `a verified external source for the split.`
         );
       }
 
