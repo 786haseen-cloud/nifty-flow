@@ -581,3 +581,22 @@ Stage Summary:
 - The +14,279 Cr is the real Sep 11 morning stock-options delta-weighted net flow reconstructed by the historical-flow backfill. Sep 11 = Friday non-expiry = normal OI-building morning
 - No code changes needed; user should expect staircase pattern (long flat → small jump → long flat) for rest of session as OI updates arrive
 - If user wants to verify live polling: open browser devtools Network tab, look for /api/kite/highest-bet every 15s with response mode:"live"; the flowTrend array grows by 1 point per poll
+
+---
+Task ID: 21
+Agent: Main
+Task: Diagnose "3 of 4 indices flat at zero" on Index Options Money Flow card (BANKNIFTY/FINNIFTY/SENSEX flat, NIFTY works, Stock Options card shows +14,245 Cr)
+
+Work Log:
+- User uploaded screenshot (upload/pasted_image_1789113332717.png). VLM analysis: Index card — NIFTY active (+1.5 to +8.5 oscillations), BANKNIFTY/FINNIFTY/SENSEX all flat at 0 entire day. Stock card — V-spike at 12:28 then flat at +14,245 Cr. No amber strip on either card
+- Confirmed chart Y-axis is `domain=['auto','auto']` (line 432 + 590+656 of trend-analysis-tab.tsx) — auto-fits to data, so 3 flat-at-zero lines means data is literally 0 (not just visually flat at this scale)
+- Reviewed git history: this exact symptom has been fixed TWICE before — cdc745e (Aug 27: "fix: BANKNIFTY/FINNIFTY money flow zero on Trends tab" — added KITE_FNO_ALT_NAMES mapping) and 1bc9837 ("Fix FINNIFTY zero in Trends"). The fixes are still in place (verified KITE_FNO_ALT_NAMES at line 713 of kite-api.ts, KNOWN_FNO_INDICES at line 206). So the bug is a NEW regression OR an edge case not covered by those fixes
+- Audited silent-skip paths in highest-bet/route.ts: (1) no cash instrument → continue (line 180), (2) no spot quote → continue (line 290), (3) no options matched → continue (line 328), (4) strikes empty after ATM filter → symbol in response with empty strikes, trend-store.ts:752 silently skips. NONE of these surfaced to the user — the chart just shows flat
+- ENHANCEMENT: Added per-symbol diagnostics (`_lastDiag: SymDiag[]`) captured during fetchLiveData(). Each entry has: symbol, type, cashFound, cashToken, futFound, optInstrumentCount, expiryOptsCount, nearestExpiry, atmStrike, strikeStep, strikesInResponse, skipReason. Pushed at every skip point: no cash instrument / no spot quote / no options / no strikes at ATM window / success
+- Updated GET handler: when ?debug=1 is passed, ALWAYS return perSymbol diagnostics + 5 sample NFO_OPTIDX + 5 sample BFO_OPTIDX instruments (to spot Kite CSV format changes). Previous debug-only-on-error path was unreachable for the empty-symbols case because silent demo fallback consumed it
+- tsc clean for the touched file; build clean; pushed 442064d → Vercel auto-deploy
+
+Stage Summary:
+- Diagnostic endpoint now live. User hits `https://preview-<bot-id>.space-z.ai/api/kite/highest-bet?debug=1&api_key=...&access_token=...` and shares the JSON response — we'll see exactly which step is dropping BANKNIFTY/FINNIFTY/SENSEX
+- Likely root causes (to be confirmed by the diagnostic): (a) Kite renamed something in their instruments CSV again, (b) the nearest expiry filter is returning a date with no options (e.g. weekly expiry not in CSV yet), (c) the ATM ± 4 strikes window misses because strikeStep is computed wrong, (d) spot quote returns 0 for these indices' cash tokens (unlikely — cash tokens are simple)
+- No fix yet — diagnose first, then patch the specific failure point. This is the third time this symptom has appeared; the diagnostic will prevent a fourth round-trip
