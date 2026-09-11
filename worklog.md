@@ -758,3 +758,19 @@ Stage Summary:
 - DAILY WORKFLOW NOW: paste token once at 09:14 on the laptop → office/phone devices open the dashboard and auto-adopt the token at boot → feed goes live → backfill reconstructs 09:15→now on all three flow cards → ZERO re-pasting. Next morning paste the new token once on any device; every other device converges on boot (last-writer-wins by savedAt)
 - Trust model unchanged in practice: single-user dashboard URL is the boundary; creds already transited as query params on every poll
 - One paste per day, all devices — confirmed working end-to-end on the live server
+
+---
+Task ID: 30
+Agent: main (Super Z)
+Task: Daily 3-report verification ("all 3 reports uploaded") — Sep 11 (Friday) NSE reports
+
+Work Log:
+- This box has NO Upstash env (checked .env + full git history — never had UPSTASH vars; .env reduced to DATABASE_URL only at Sep 11 06:44). Located the production deployment: https://nifty-flow.vercel.app/api/participants/daily (repo nifty-flow, Upstash configured at platform level)
+- Cash entry 2026-09-11 landed (source manual, saved 00:22 IST Sep 12) BUT values FII -357.38 / DII +937.22 are EXACTLY the Sep 10 numbers. Root cause confirmed locally: upload/fii-dii-nse-latest (3).csv has DATE column 10-Sep-2026 — user re-used the stale cash file; only the FAO files were fresh
+- Added diagnostic GET /api/participants/daily?positioning=YYYY-MM-DD returning raw fao_oi + fao_vol entries (first route exposing positioning keys; previously write-only from parse-csv). Commit 1e11137 pushed, Vercel deployed
+- Verified via diagnostic: fao_oi + fao_vol both under 2026-09-11 (saved 00:21 IST), fresh values (≠ Sep 10). Sep 10 keys untouched (yesterday 20:29/20:30 IST)
+
+Stage Summary:
+- Sep 11 FAO positioning (contracts, L/S): Client 14.28M/10.42M (net +3.86M long, 1.37); FII 6.06M/5.48M (net +0.58M, 1.11); Pro 5.33M/5.19M (~flat, 1.03); DII 0.51M/5.08M (net -4.58M = hedges, cash-only player). fao_vol: all L/S ≈ 1.00 (two-way churn), Pro ≈ 54% of F&O volume
+- ACTION NEEDED: user must upload the REAL 11-Sep FII/DII activity file (dated 11-Sep-2026) and Save under 2026-09-11 — current cash entry is a Sep 10 duplicate, so Factor 12 (-0.14 neutral) is reading yesterday's cash flows
+- Same-key overwrite is safe (participants:2026-09-11 + bias cache refresh within 5 min)
