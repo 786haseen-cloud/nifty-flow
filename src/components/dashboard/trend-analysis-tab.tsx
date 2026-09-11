@@ -113,11 +113,50 @@ function computeTrendDomain(
   if (dataMin >= SESSION_START_MIN && dataMax <= SESSION_END_MIN) {
     return [SESSION_START_MIN, SESSION_END_MIN];
   }
-
   // Data is (partially) outside market hours (e.g. demo mode at 3 AM, or
   // pre-market polling). Use the data's own range with a small pad.
   const pad = Math.max(5, (dataMax - dataMin) * 0.05);
   return [Math.max(0, Math.floor(dataMin - pad)), Math.ceil(dataMax + pad)];
+}
+
+/**
+ * Compute a Y-axis domain that fits only the LAST `recentPoints` data points.
+ *
+ * PROBLEM: The Stock Options Money Flow card sums 15 stocks, so its absolute
+ * cumulative value can reach ±14,000 Cr after the morning backfill lands.
+ * Auto-fit Y-axis to ALL data → range ~28,000 Cr → live 15s oscillations of
+ * ±20 Cr are 0.07% of axis height = literally invisible (looks perfectly
+ * flat for an hour). The NIFTY/BANKNIFTY/FINNIFTY/SENSEX card doesn't hit
+ * this because a single index's flow is ~10–100 Cr — live deltas are 3–10%
+ * of the axis = visible.
+ *
+ * SOLUTION: Fit Y-axis to recent data only (default last 30 min = 120 polls
+ * at 15s). Live oscillations become visible on the fitted scale. The X-axis
+ * still spans the full 09:15–15:40 session — morning data is rendered off-
+ * screen Y-wise (which is fine; the line exits the bottom and re-enters when
+ * it climbs back into range). `allowDataOverflow` is set on the YAxis so
+ * Recharts doesn't error on out-of-range points.
+ *
+ * Edge case: fewer than 2 recent points → fall back to ['auto','auto'] so
+ * the chart doesn't crash on first paint.
+ */
+function computeRecentYDomain(
+  points: Array<Record<string, number | string>>,
+  key: string,
+  recentPoints = 120,
+): [number | string, number | string] {
+  if (points.length < 2) return ['auto', 'auto'];
+  const slice = points.slice(-recentPoints);
+  const vals = slice
+    .map(p => typeof p[key] === 'number' ? (p[key] as number) : NaN)
+    .filter(v => !isNaN(v));
+  if (vals.length === 0) return ['auto', 'auto'];
+  const min = Math.min(...vals);
+  const max = Math.max(...vals);
+  // Pad by 10% of the recent range, or at least 1 Cr if range is tiny
+  const range = Math.max(1, max - min);
+  const pad = Math.max(1, range * 0.1);
+  return [Math.floor(min - pad), Math.ceil(max + pad)];
 }
 
 /**
@@ -628,7 +667,10 @@ export default function TrendAnalysisTab() {
                 <TrendingDown className="h-4 w-4 text-orange-400" />
                 <h3 className="text-sm font-semibold">Stock Options Money Flow (15 F&O Stocks)</h3>
               </div>
-              <div className="text-[10px] text-muted-foreground">ΔOI-weighted net flow · cumulative (Cr)</div>
+              <div className="text-[10px] text-muted-foreground">
+                ΔOI-weighted net flow · cumulative (Cr) ·{' '}
+                <span className="text-orange-400/80 font-semibold">Y-axis: last 30 min auto-fit</span>
+              </div>
             </div>
             <div className="text-right shrink-0">
               <div className={`text-sm font-mono font-bold ${cumulativeFlow.stockAggregate >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
@@ -653,10 +695,20 @@ export default function TrendAnalysisTab() {
                     tick={{ fill: '#a1a1aa', fontSize: 9 }}
                     allowDataOverflow
                   />
+                  {/* Y-axis fits LAST 30 min (120 polls × 15s) only. Without
+                      this, the morning backfill jumps the cumulative to
+                      ±14,000 Cr and live ±20 Cr oscillations become
+                      0.07% of axis = invisible (looks flat for hours). With
+                      recent-fit, recent live movement is visible at the
+                      same scale as the NIFTY card. allowDataOverflow lets
+                      out-of-range morning data render off-screen without
+                      breaking the chart. */}
                   <YAxis
+                    domain={computeRecentYDomain(flowChartData, 'stockAggregate', 120)}
                     tick={{ fill: '#a1a1aa', fontSize: 10 }}
                     tickFormatter={(v: number) => `${v.toFixed(0)}`}
                     width={55}
+                    allowDataOverflow
                   />
                   <Tooltip content={<FlowTooltip />} />
                   <ReferenceLine y={0} stroke="#ffffff30" />
@@ -667,6 +719,7 @@ export default function TrendAnalysisTab() {
                     strokeWidth={2}
                     dot={false}
                     activeDot={{ r: 4, fill: '#f97316', stroke: '#fff', strokeWidth: 2 }}
+                    connectNulls
                   />
                 </LineChart>
               </ResponsiveContainer>
