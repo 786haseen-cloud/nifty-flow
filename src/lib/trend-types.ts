@@ -84,6 +84,26 @@ export interface FlowTrendPoint {
   FINNIFTY: number;
   SENSEX: number;
   stockAggregate: number;
+  // Per-stock cumulative option money flow (Cr). Added Sep 11 2026 — the
+  // aggregate line at ±14,000 Cr hides which stock is driving the move.
+  // Per-stock values are at NIFTY-like scale (~10-500 Cr each), so live
+  // 15s oscillations are visible when the user selects one in the
+  // Stock Options Money Flow card's dropdown.
+  HDFCBANK: number;
+  ICICIBANK: number;
+  RELIANCE: number;
+  BHARTIARTL: number;
+  LT: number;
+  SBIN: number;
+  INFY: number;
+  AXISBANK: number;
+  KOTAKBANK: number;
+  'M&M': number;
+  BAJFINANCE: number;
+  ITC: number;
+  TCS: number;
+  ETERNAL: number;
+  TITAN: number;
 }
 
 export interface HighestBetResponse {
@@ -94,6 +114,16 @@ export interface HighestBetResponse {
 }
 
 export const INDEX_SYMBOLS = ['NIFTY', 'BANKNIFTY', 'FINNIFTY', 'SENSEX'] as const;
+
+// 15 F&O stocks tracked by the engine. Order matches STOCK_SPECS in kite-api.ts
+// (by NIFTY weight). Single source of truth — used by trend-store (initial
+// cumulative + per-stock delta accumulation) and trend-analysis-tab (the
+// stock selector dropdown).
+export const STOCK_SYMBOLS = [
+  'HDFCBANK', 'ICICIBANK', 'RELIANCE', 'BHARTIARTL', 'LT',
+  'SBIN', 'INFY', 'AXISBANK', 'KOTAKBANK', 'M&M',
+  'BAJFINANCE', 'ITC', 'TCS', 'ETERNAL', 'TITAN',
+] as const;
 
 export const IDX_COLORS: Record<string, { stroke: string; fill: string; bg: string }> = {
   NIFTY:     { stroke: '#10b981', fill: '#10b98120', bg: 'bg-emerald-500/10' },

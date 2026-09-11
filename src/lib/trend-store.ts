@@ -33,6 +33,7 @@ import { withCreds } from './kite-creds';
 import { getMarketPhase } from './market-hours';
 import {
   INDEX_SYMBOLS,
+  STOCK_SYMBOLS,
   computeSymbolFlow,
   type NiftyCandle,
   type StockCashFlow,
@@ -97,6 +98,10 @@ interface TrendState {
   // ─── Current interval display values ───
   currentIdxFlows: Record<string, number>;
   currentStockFlow: number;
+  /** Per-stock delta (Cr) for the most recent live poll. Used by the Stock
+   *  Options Money Flow card's stock-selector dropdown to show the Int: +X.X
+   *  Cr value for the selected stock (not just the aggregate). */
+  currentStockPerSym: Record<string, number>;
   currentIntervalCashFlow: number;
 
   // ─── Polling control (NOT persisted — runtime only) ───
@@ -125,6 +130,10 @@ const STALE_GAP_MS = 4 * 60 * 60 * 1000;  // 4h gap = treat as new session
 
 const INITIAL_FLOW: Record<string, number> = {
   NIFTY: 0, BANKNIFTY: 0, FINNIFTY: 0, SENSEX: 0, stockAggregate: 0,
+  // Per-stock cumulative option money flow — added Sep 11 2026 for the
+  // Stock Options Money Flow card's stock-selector dropdown. Each stock
+  // accumulates independently; the aggregate is the sum of these 15.
+  ...Object.fromEntries(STOCK_SYMBOLS.map((s) => [s, 0])),
 };
 
 // ─── Store implementation ───
@@ -149,6 +158,7 @@ export const useTrendStore = create<TrendState>()(
 
       currentIdxFlows: { NIFTY: 0, BANKNIFTY: 0, FINNIFTY: 0, SENSEX: 0 },
       currentStockFlow: 0,
+      currentStockPerSym: {},
       currentIntervalCashFlow: 0,
 
       _pollingStarted: false,
@@ -308,6 +318,7 @@ export const useTrendStore = create<TrendState>()(
           trendMode: 'demo',
           currentIdxFlows: { NIFTY: 0, BANKNIFTY: 0, FINNIFTY: 0, SENSEX: 0 },
           currentStockFlow: 0,
+          currentStockPerSym: {},
           currentIntervalCashFlow: 0,
           _historicalBackfillDone: false,
           _cashBackfillDone: false,
@@ -397,14 +408,22 @@ export const useTrendStore = create<TrendState>()(
             const lastHistTime = histFlow[histFlow.length - 1]?.time || '';
             for (const pt of liveFlowTrend) {
               if (pt.time > lastHistTime) {
-                mergedFlow.push({
+                const adjusted = {
                   time: pt.time,
                   NIFTY: Math.round(((pt.NIFTY || 0) + (offsets.NIFTY || 0)) * 10) / 10,
                   BANKNIFTY: Math.round(((pt.BANKNIFTY || 0) + (offsets.BANKNIFTY || 0)) * 10) / 10,
                   FINNIFTY: Math.round(((pt.FINNIFTY || 0) + (offsets.FINNIFTY || 0)) * 10) / 10,
                   SENSEX: Math.round(((pt.SENSEX || 0) + (offsets.SENSEX || 0)) * 10) / 10,
                   stockAggregate: Math.round(((pt.stockAggregate || 0) + (offsets.stockAggregate || 0)) * 10) / 10,
-                });
+                } as FlowTrendPoint;
+                // Per-stock cumulative — apply same offset as the 4 indices.
+                // Without this the stock-selector dropdown would show a
+                // discontinuity at the historical→live boundary (live
+                // started from 0, historical accumulated from morning).
+                for (const s of STOCK_SYMBOLS) {
+                  (adjusted as any)[s] = Math.round(((pt[s] || 0) + (offsets[s] || 0)) * 10) / 10;
+                }
+                mergedFlow.push(adjusted);
               }
             }
 
@@ -416,6 +435,10 @@ export const useTrendStore = create<TrendState>()(
               mergedCumulative.FINNIFTY = last.FINNIFTY;
               mergedCumulative.SENSEX = last.SENSEX;
               mergedCumulative.stockAggregate = last.stockAggregate;
+              // Per-stock cumulative also takes the latest merged value
+              for (const s of STOCK_SYMBOLS) {
+                mergedCumulative[s] = (last as any)[s] || 0;
+              }
             }
 
             // Keep the more recent prevSnapshots (live > historical)
@@ -746,6 +769,9 @@ export const useTrendStore = create<TrendState>()(
               NIFTY: 0, BANKNIFTY: 0, FINNIFTY: 0, SENSEX: 0,
             };
             const newPrevSnapshots: Record<string, StrikeData[]> = { ...prevSnapshots };
+            // Per-stock cumulative delta for this poll — used for the
+            // stock selector dropdown on the Stock Options Money Flow card.
+            const stockDeltaThisPoll: Record<string, number> = {};
             let stockAgg = 0;
 
             for (const sym of data.symbols) {
@@ -765,6 +791,12 @@ export const useTrendStore = create<TrendState>()(
                 newCurrentIdx[sym.symbol] = flow.net;
               } else if (sym.type === 'stock') {
                 stockAgg += flow.net;
+                // Track per-stock cumulative so the dropdown can show one
+                // stock's flow at NIFTY-like scale (±10-500 Cr) instead of
+                // the ±14,000 Cr aggregate where live oscillations are
+                // 0.07% of the Y-axis = invisible.
+                cumulativeFlow[sym.symbol] = (cumulativeFlow[sym.symbol] || 0) + flow.net;
+                stockDeltaThisPoll[sym.symbol] = flow.net;
               }
 
               newPrevSnapshots[sym.symbol] = sym.strikes;
@@ -779,7 +811,16 @@ export const useTrendStore = create<TrendState>()(
               FINNIFTY: Math.round((cumulativeFlow.FINNIFTY || 0) * 10) / 10,
               SENSEX: Math.round((cumulativeFlow.SENSEX || 0) * 10) / 10,
               stockAggregate: Math.round((cumulativeFlow.stockAggregate || 0) * 10) / 10,
-            };
+              // Per-stock cumulative — round to 0.1 Cr. Symbols that didn't
+              // get a snapshot this poll (e.g. spot quote failed) carry
+              // forward the previous cumulative (kept in cumulativeFlow).
+              ...Object.fromEntries(
+                STOCK_SYMBOLS.map((s) => [
+                  s,
+                  Math.round((cumulativeFlow[s] || 0) * 10) / 10,
+                ])
+              ),
+            } as FlowTrendPoint;
 
             const prevFlowTrend = get().flowTrend;
             const newFlowTrend = [...prevFlowTrend, flowPoint];
@@ -793,6 +834,8 @@ export const useTrendStore = create<TrendState>()(
               cumulativeFlow,
               currentIdxFlows: newCurrentIdx,
               currentStockFlow: stockAgg,
+              // Expose per-stock delta this poll for the dropdown's "Int" value
+              currentStockPerSym: stockDeltaThisPoll,
               lastPollAt: now,
               flowFeedMode: 'live',
               lastLiveFlowAt: now,

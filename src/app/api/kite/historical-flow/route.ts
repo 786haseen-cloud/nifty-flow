@@ -61,6 +61,25 @@ interface HistoricalFlowResponse {
     FINNIFTY: number;
     SENSEX: number;
     stockAggregate: number;
+    // Per-stock cumulative option money flow (Cr). Added Sep 11 2026 for
+    // the Stock Options Money Flow card's stock-selector dropdown. Each
+    // stock's individual flow is reconstructed from its own 5-min OI
+    // candles — the aggregate is the sum of all 15.
+    HDFCBANK: number;
+    ICICIBANK: number;
+    RELIANCE: number;
+    BHARTIARTL: number;
+    LT: number;
+    SBIN: number;
+    INFY: number;
+    AXISBANK: number;
+    KOTAKBANK: number;
+    'M&M': number;
+    BAJFINANCE: number;
+    ITC: number;
+    TCS: number;
+    ETERNAL: number;
+    TITAN: number;
   }>;
   /** Last OI snapshot per symbol per strike — used by client to continue
    *  delta computation from the latest historical candle. */
@@ -393,6 +412,10 @@ async function fetchHistoricalFlow(): Promise<HistoricalFlowResponse> {
 
   for (const time of sortedTimes) {
     let niftyFlow = 0, bankniftyFlow = 0, finniftyFlow = 0, sensexFlow = 0, stockAgg = 0;
+    // Per-stock running totals — same pattern as the 4 indices above.
+    // We carry forward each stock's last known cumulative when the symbol
+    // has no data at this exact timestamp (5-min candles may stagger).
+    const perStockFlow: Record<string, number> = {};
 
     for (const r of results) {
       // If this symbol has data at this timestamp, update running total
@@ -407,7 +430,10 @@ async function fetchHistoricalFlow(): Promise<HistoricalFlowResponse> {
         case 'FINNIFTY': finniftyFlow = val; break;
         case 'SENSEX': sensexFlow = val; break;
       }
-      if (r.type === 'stock') stockAgg += val;
+      if (r.type === 'stock') {
+        stockAgg += val;
+        perStockFlow[r.symbol] = val;
+      }
     }
 
     flowTrend.push({
@@ -417,6 +443,23 @@ async function fetchHistoricalFlow(): Promise<HistoricalFlowResponse> {
       FINNIFTY: Math.round(finniftyFlow * 10) / 10,
       SENSEX: Math.round(sensexFlow * 10) / 10,
       stockAggregate: Math.round(stockAgg * 10) / 10,
+      // Per-stock cumulative (rounded to 0.1 Cr). Missing stocks (e.g.
+      // symbol had no candles at all) default to 0.
+      HDFCBANK:   Math.round((perStockFlow.HDFCBANK   || 0) * 10) / 10,
+      ICICIBANK:  Math.round((perStockFlow.ICICIBANK  || 0) * 10) / 10,
+      RELIANCE:   Math.round((perStockFlow.RELIANCE   || 0) * 10) / 10,
+      BHARTIARTL: Math.round((perStockFlow.BHARTIARTL || 0) * 10) / 10,
+      LT:         Math.round((perStockFlow.LT         || 0) * 10) / 10,
+      SBIN:       Math.round((perStockFlow.SBIN       || 0) * 10) / 10,
+      INFY:       Math.round((perStockFlow.INFY       || 0) * 10) / 10,
+      AXISBANK:   Math.round((perStockFlow.AXISBANK   || 0) * 10) / 10,
+      KOTAKBANK:  Math.round((perStockFlow.KOTAKBANK  || 0) * 10) / 10,
+      'M&M':      Math.round((perStockFlow['M&M']      || 0) * 10) / 10,
+      BAJFINANCE: Math.round((perStockFlow.BAJFINANCE || 0) * 10) / 10,
+      ITC:        Math.round((perStockFlow.ITC        || 0) * 10) / 10,
+      TCS:        Math.round((perStockFlow.TCS        || 0) * 10) / 10,
+      ETERNAL:    Math.round((perStockFlow.ETERNAL    || 0) * 10) / 10,
+      TITAN:      Math.round((perStockFlow.TITAN      || 0) * 10) / 10,
     });
   }
 

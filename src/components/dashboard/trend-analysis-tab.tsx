@@ -30,6 +30,7 @@ import { useTrendStore } from '@/lib/trend-store';
 import {
   IDX_COLORS,
   INDEX_SYMBOLS,
+  STOCK_SYMBOLS,
   type NiftyCandle,
   type StockCashFlow,
   type CashFlowTrendPoint,
@@ -284,8 +285,20 @@ export default function TrendAnalysisTab() {
   const cumulativeFlow = useTrendStore((s) => s.cumulativeFlow);
   const currentIdxFlows = useTrendStore((s) => s.currentIdxFlows);
   const currentStockFlow = useTrendStore((s) => s.currentStockFlow);
+  // Per-stock 15s delta (Cr) for the most recent live poll. Used by the
+  // stock-selector dropdown on the Stock Options Money Flow card so the
+  // "Int: +X.X Cr" label reflects the SELECTED stock's delta, not the
+  // aggregate. The aggregate card uses currentStockFlow directly.
+  const currentStockPerSym = useTrendStore((s) => s.currentStockPerSym);
   const currentIntervalCashFlow = useTrendStore((s) => s.currentIntervalCashFlow);
   const prevStockTotals = useTrendStore((s) => s.prevStockTotals);
+
+  // Stock-selector dropdown state — 'aggregate' is the default single-line
+  // view; selecting a stock swaps the chart to that stock's per-stock line
+  // at NIFTY-like scale (±10-500 Cr instead of ±14,000 Cr). Persists across
+  // re-renders but NOT across page reloads — the card opens on the
+  // aggregate view by default, which is what most users want.
+  const [stockView, setStockView] = useState<'aggregate' | string>('aggregate');
   // Options-flow feed health — highest-bet endpoint falls back to demo
   // INDEPENDENTLY of the trends endpoint. When this is not 'live' the two
   // flow charts below are FROZEN at the last real poll (by store design),
@@ -686,17 +699,70 @@ export default function TrendAnalysisTab() {
               </div>
               <div className="text-[10px] text-muted-foreground">
                 ΔOI-weighted net flow · cumulative (Cr) ·{' '}
-                <span className="text-orange-400/80 font-semibold">starts at 0 — money in (+) / out (−)</span>
+                <span className="text-orange-400/80 font-semibold">
+                  {stockView === 'aggregate'
+                    ? 'starts at 0 — money in (+) / out (−)'
+                    : `${stockView} · drill-down view`}
+                </span>
               </div>
             </div>
             <div className="text-right shrink-0">
-              <div className={`text-sm font-mono font-bold ${cumulativeFlow.stockAggregate >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                Cum: {fmtCr(cumulativeFlow.stockAggregate || 0)} Cr
+              {/* When dropdown is on a specific stock, show that stock's
+                  cumulative + interval — not the aggregate. The aggregate
+                  view shows the sum across all 15 stocks. */}
+              <div className={`text-sm font-mono font-bold ${
+                (stockView === 'aggregate'
+                  ? cumulativeFlow.stockAggregate
+                  : (cumulativeFlow[stockView] || 0)) >= 0
+                  ? 'text-emerald-400' : 'text-red-400'
+              }`}>
+                Cum: {fmtCr(stockView === 'aggregate'
+                  ? (cumulativeFlow.stockAggregate || 0)
+                  : (cumulativeFlow[stockView] || 0))} Cr
               </div>
-              <div className={`text-[10px] font-mono ${currentStockFlow >= 0 ? 'text-emerald-300' : 'text-red-300'}`}>
-                Int: {currentStockFlow >= 0 ? '+' : ''}{fmtCr(currentStockFlow)} Cr
+              <div className={`text-[10px] font-mono ${
+                (stockView === 'aggregate'
+                  ? currentStockFlow
+                  : (currentStockPerSym[stockView] || 0)) >= 0
+                  ? 'text-emerald-300' : 'text-red-300'
+              }`}>
+                Int: {(stockView === 'aggregate'
+                  ? currentStockFlow
+                  : (currentStockPerSym[stockView] || 0)) >= 0 ? '+' : ''}
+                {fmtCr(stockView === 'aggregate'
+                  ? currentStockFlow
+                  : (currentStockPerSym[stockView] || 0))} Cr
               </div>
             </div>
+          </div>
+          {/* Stock selector dropdown — 'aggregate' = single orange line
+              (sum of 15 stocks, ±14000 Cr scale, morning backfill visible,
+              zero-anchored Y-axis). Selecting a stock = drill-down view
+              that swaps to that stock's individual cumulative (±10-500 Cr
+              scale, live 15s oscillations visible, also zero-anchored). */}
+          <div className="flex items-center gap-2 mb-2">
+            <label className="text-[10px] text-muted-foreground font-semibold uppercase tracking-wider">
+              View
+            </label>
+            <select
+              value={stockView}
+              onChange={(e) => setStockView(e.target.value)}
+              className="bg-card border border-border/60 rounded px-2 py-1 text-xs font-medium text-foreground hover:border-orange-400/40 focus:border-orange-400 focus:outline-none focus:ring-1 focus:ring-orange-400/40"
+            >
+              <option value="aggregate">Aggregate (15 stocks)</option>
+              {STOCK_SYMBOLS.map((s) => (
+                <option key={s} value={s}>{s}</option>
+              ))}
+            </select>
+            {stockView !== 'aggregate' && (
+              <button
+                type="button"
+                onClick={() => setStockView('aggregate')}
+                className="text-[10px] text-muted-foreground hover:text-orange-400 underline underline-offset-2"
+              >
+                ← back to aggregate
+              </button>
+            )}
           </div>
           <div className="h-[210px]">
             {flowChartData.length > 1 ? (
@@ -714,13 +780,18 @@ export default function TrendAnalysisTab() {
                   />
                   {/* Y-axis anchored at zero so the zero-line (ReferenceLine
                       below) is always visible at the bottom of the chart.
-                      Previously auto-fit-recent pushed Y to [14198, 14286]
-                      and the zero line was way off-screen. Now starts at 0
-                      so user can see the full cumulative from zero → 14206,
-                      answering "money in or out overall today" at a glance.
-                      Top of axis = data max + 10% pad (rounded up). */}
+                      Both the aggregate view and the per-stock view use
+                      the same computeZeroAnchoredYDomain — for a single
+                      stock the values are ±10-500 Cr, so live oscillations
+                      are visible AND the zero line is on screen. For the
+                      aggregate the values are ±14000 Cr, so the morning
+                      rise is visible but live micro-oscillations are not
+                      (the trade-off user accepted in Task 23). */}
                   <YAxis
-                    domain={computeZeroAnchoredYDomain(flowChartData, 'stockAggregate')}
+                    domain={computeZeroAnchoredYDomain(
+                      flowChartData,
+                      stockView === 'aggregate' ? 'stockAggregate' : stockView
+                    )}
                     tick={{ fill: '#a1a1aa', fontSize: 10 }}
                     tickFormatter={(v: number) => `${v.toFixed(0)}`}
                     width={55}
@@ -730,7 +801,7 @@ export default function TrendAnalysisTab() {
                   <ReferenceLine y={0} stroke="#64748b" strokeDasharray="4 4" strokeWidth={1.5} />
                   <Line
                     type="monotone"
-                    dataKey="stockAggregate"
+                    dataKey={stockView === 'aggregate' ? 'stockAggregate' : stockView}
                     stroke="#f97316"
                     strokeWidth={2}
                     dot={false}
