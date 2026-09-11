@@ -540,3 +540,22 @@ Stage Summary:
 - Flow charts can never again silently plot demo data; frozen-at-last-live + amber strip makes feed health visible
 - User action: re-paste today's Kite token (expires daily), hard refresh, watch for the amber strip
 - If badge shows live and line still flat → next suspect is client-side (report back)
+
+---
+Task ID: 19
+Agent: Main
+Task: User follow-up on Stock Options Money Flow flat line + LONG UNWINDING semantics Q&A
+
+Work Log:
+- User message: (a) NIFTY footprint card shows "RETAIL CHURN / Futures / LONG UNWINDING" — asks "this long unwinding is for put or call?"; (b) "access token is working"; (c) "Stock Options Money Flow (15 F&O Stocks) ... was working well 1 hour before your last commit i think" — implying recent commits caused the flat-line regression
+- Verified git log: the last two code commits BEFORE this turn were d3fbfe9 (FEED GATE + amber strip + retry) at 07:25:42 UTC and f65c3e3 (mode union tighten) at 07:26:27 UTC. The "last commit" ac16fc2 was worklog-only. 1h before ac16fc2 (~06:27 UTC = ~11:57 IST) the latest deployed commit was b9a6fed (participants UI text only) — cannot affect flow chart
+- Cross-checked Task 18 worklog: the FEED GATE fix was the documented answer to the user's prior flat-line report; user's screenshot timestamp "Poll: 12:51:46 IST" = 07:21:46 UTC, which is BEFORE d3fbfe9 deployed at 07:25:42 UTC. So the user's flat-line observation preceded the fix by ~4 minutes — the commits are the FIX not the cause
+- Inspected trend-store.ts:725-800 (FEED GATE + flow math) and highest-bet route:564-611 (mode='live' only when fetchLiveData succeeds AND symbols.length > 0, else generateDemoData). Confirmed gate logic correct: data.mode !== 'live' → set flowFeedMode, return (freeze at last live point); data.mode === 'live' with non-empty symbols → advance flow math, set flowFeedMode='live' + lastLiveFlowAt
+- Confirmed post-reload behavior: prevSnapshots NOT persisted (partialize excludes them, line 828). First live poll after hard refresh stores snapshot + skips delta (line 756). Chart starts advancing from poll #2. This is by design (avoids fake OI-diff spike on stale snapshot)
+- LONG UNWINDING semantics (footprint.ts:13-16, 199-202, 410-414): it is a FUTURES buildup classification — price ↓ + OI ↓ → existing long futures holders closing (no conviction, mildly bearish). NEITHER put nor call (those are option legs). 4 futures categories: LONG BUILDUP (price↑ + OI↑, bullish), SHORT BUILDUP (price↓ + OI↑, bearish), SHORT COVERING (price↑ + OI↓, weak rally), LONG UNWINDING (price↓ + OI↓, no conviction). Score in composeVerdict: LONG_UNWINDING → score -= 1, parts.push('futures long unwinding')
+- RETAIL CHURN verdict (footprint.ts:265-326): fires when churn==='CHURN' AND |score|<=1 — heavy volume + little fresh OI + no directional desk evidence. Meaning: the crowd (retail lottery-ticket churning) is the story, NOT the desks. So the LONG UNWINDING read on the futures leg is WEAK — not a desk-driven signal
+
+Stage Summary:
+- Flat-line root cause remains as documented in Task 18: silent demo fallback when Kite auth/rate-limit fails (pre-existing bug, fixed by d3fbfe9 + f65c3e3). User's regression timing hypothesis ("1h before last commit") was a coincidence — the fix deployed 4 minutes after their screenshot, not before the regression
+- User action: hard refresh to load FEED GATE code; on first poll after refresh chart won't move (snapshot seed), from poll #2 it advances; amber strip will surface if feed is not live
+- LONG UNWINDING = futures leg verdict (neither put nor call); RETAIL CHURN above it = the overall verdict overrides the directional read because the tape is retail-dominant, not desk-driven (the futures long-unwind signal is weak by design in this regime)
