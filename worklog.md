@@ -643,3 +643,29 @@ Stage Summary:
 - Stock Options Money Flow card now shows: Y-axis starts at 0 → climbs to +14,206 Cr. Zero line visible at bottom. Orange line covers full session from 0 → 14206 (with the 12:28 backfill spike visible as the line jumping up from 0 to ~14000). User can immediately see 'money IN today' (line above zero) vs 'money OUT' (line below zero)
 - Trade-off: micro-oscillations (~20 Cr deltas every 15s) are not visible at this scale. User has the Cum/Int numeric values for precise live delta
 - If user later wants both (zero line + visible micro-oscillations), Option A from Task 22 (per-stock breakdown, each at NIFTY-scale) would solve both — but user did not ask for that
+
+---
+Task ID: 24
+Agent: Main
+Task: Per-stock selector dropdown for Stock Options Money Flow card — user wants to drill down to individual stocks at NIFTY-like scale
+
+Work Log:
+- User confirmed: "Keep the aggregate chart as-is. Then add a stock selector dropdown ABOVE the chart that lets you pick any of the 15 stocks to view individually. this is okay"
+- Implementation steps:
+  1. FlowTrendPoint type extended with 15 per-stock fields (HDFCBANK, ICICIBANK, RELIANCE, BHARTIARTL, LT, SBIN, INFY, AXISBANK, KOTAKBANK, 'M&M', BAJFINANCE, ITC, TCS, ETERNAL, TITAN). New STOCK_SYMBOLS constant in trend-types.ts as single source of truth
+  2. trend-store.ts: INITIAL_FLOW now spreads per-stock 0s. New state field currentStockPerSym: Record<string, number>. pollOnce tracks per-stock cumulative in cumulativeFlow and writes per-stock fields into every FlowTrendPoint. clearTrendData resets per-stock state
+  3. historical-flow/route.ts: response type extended with per-stock fields. flowTrend build loop now tracks perStockFlow running totals and writes all 15 per-stock fields per point
+  4. Backfill merge in trend-store.ts: per-stock fields get the same offset treatment as NIFTY/BANKNIFTY/etc. so no discontinuity at historical→live boundary. cumulativeFlow also takes latest merged per-stock values
+  5. trend-analysis-tab.tsx: stock selector dropdown added ABOVE the chart. 'Aggregate (15 stocks)' is default; 15 stocks listed by NIFTY weight. When user picks a stock, chart + Cum/Int labels + Y-axis all swap to that stock. Same orange color, same zero-anchored domain (computeZeroAnchoredYDomain), single trend line. '← back to aggregate' link appears in dropdown row
+- tsc clean across all touched files (trend-types, trend-store, historical-flow, trend-analysis-tab)
+- Build clean
+- Commit ec38451 pushed → Vercel auto-deploy
+
+Stage Summary:
+- Stock Options Money Flow card now has TWO views:
+  a) Aggregate (default): single orange line, zero-anchored, ±14000 Cr scale, morning backfill visible, answers "money in/out overall"
+  b) Per-stock (selectable): single orange line, zero-anchored, ±10-500 Cr scale, live 15s oscillations visible, answers "which stock is driving the move"
+- Cum and Int numbers in the top-right always reflect the SELECTED view (aggregate or single stock)
+- Both views share the same data pipeline (FlowTrendPoint now carries both) — zero extra Kite API calls
+- Backfill covers per-stock too: morning reconstructed for all 15 stocks individually, not just the aggregate
+- User needs to hard-refresh to load the new dropdown + per-stock data plumbing
