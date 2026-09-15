@@ -2121,3 +2121,436 @@ export function computeAggregateSignal(symbols: MagnetResult[]): AggregateSignal
     notes,
   };
 }
+
+// ═══════════════════════════════════════════════════════════════════
+// MAX-PROBABILITY DUAL SIGNAL (Sep 2026 — user request)
+// ═══════════════════════════════════════════════════════════════════
+// "i want two signal with maximum prediction.... strongest for call buy
+//  and strongest for put buy — two signals with maximum probability."
+//
+// WHY THIS EXISTS (the 500-point fall that produced no PUT signal):
+// On a genuine trend day the engine's STRUCTURE factors (charm, magnet
+// pull, PCR — slow option-chain positioning) keep scoring bullish while
+// the FLOW factors (footprint, basis, VIX, OI buildup, participant bias)
+// scream bearish. The alignment gate correctly blocks the bogus CALL,
+// but the score never reaches the PUT band either — so the user sees
+// WAIT everywhere while the market falls 500 points. The fired
+// `signal.direction` alone cannot answer "where is the put buy signal?"
+//
+// THE FIX: score each symbol INDEPENDENTLY for CALL and PUT using two
+// half-weight lenses, so a flow-driven candidate surfaces even while
+// structure lags:
+//
+//   Lens A — STRUCTURE (50%): tier-anchored map of the engine's adjusted
+//   score using the ASYMMETRIC Sep-2026 bands (CALL +2/+5.5/+9,
+//   PUT -1.5/-4.5/-8). Task 8 calibrated those bands for "symmetry in
+//   probability space", so equal tiers map to equal probabilities:
+//   0 → 50%, WEAK → 55%, MODERATE → 66%, STRONG → 78%, 2×STRONG → 90%.
+//   A score OPPOSING the direction mirrors below 50 (bull structure
+//   actively penalizes a PUT candidate — honest, not hidden).
+//
+//   Lens B — FLOW (50%): five independent live-flow factors, each mapped
+//   to a lean in [-1,+1] and weighted:
+//     footprint verdict (0.30) · futures basis (0.20) · participant bias
+//     (0.20) · VIX 30-min RoC (0.15) · OI buildup (0.15).
+//   Missing factors renormalize (stocks often lack basis/VIX). Lean is
+//   converted with flowProb = 50 + 42 × lean (single lens capped ~92%).
+//
+//   Modifiers: 7-day pattern-match win rate (±, needs ≥3 samples) and
+//   pinning (≥70% → -5, ≤35% → +2 — pins fight directional bets).
+//
+// The two best candidates (one per direction) are returned ALWAYS —
+// with an honest tier label (ELITE/HIGH/MODERATE/LEAN/NO EDGE) — so the
+// panel answers "if you MUST buy a call, buy THIS one; if you MUST buy
+// a put, buy THIS one" and can say "no edge" when that is the truth.
+
+export interface MaxProbDriver {
+  label: string;    // short driver name, e.g. "Smart-money footprint"
+  detail: string;   // human-readable one-liner
+  points: number;   // signed contribution to FINAL probability (pts)
+}
+
+export type MaxProbTier = 'ELITE' | 'HIGH' | 'MODERATE' | 'LEAN' | 'NO EDGE';
+
+export interface MaxProbSignal {
+  symbol: string;
+  name: string;
+  type: 'index' | 'stock';
+  direction: 'CALL' | 'PUT';
+  probability: number;        // 0-100, clamped [5, 95]
+  tier: MaxProbTier;
+  structureProb: number;      // lens A (0-100)
+  flowProb: number;           // lens B (0-100)
+  engineFired: boolean;       // computeSignal actually fired this direction
+  gated: boolean;             // fired pre-gate, then killed by divergence gate
+  alignment: 'aligned' | 'divergent' | 'neutral';  // flow vs direction
+  spot: number;
+  score: number;              // engine adjusted score (display)
+  strike: number;             // 1 strike OTM (mirrors computeSignal plan)
+  target: number;
+  stop: number;
+  timing: 'NOW' | 'AFTERNOON' | 'EOD' | 'WAIT';
+  drivers: MaxProbDriver[];   // sorted by |points| desc, top 5
+  runnerUp?: { symbol: string; probability: number };
+  notes: string;              // one-line recommendation sentence
+}
+
+export interface MaxProbabilityResult {
+  call: MaxProbSignal | null;
+  put: MaxProbSignal | null;
+  asOf: string;               // ISO timestamp
+}
+
+/** Tier bands on the final probability. */
+function maxProbTier(p: number): MaxProbTier {
+  if (p >= 75) return 'ELITE';
+  if (p >= 66) return 'HIGH';
+  if (p >= 58) return 'MODERATE';
+  if (p >= 52) return 'LEAN';
+  return 'NO EDGE';
+}
+
+/** Piecewise-linear tier map on |score| — the asymmetric bands make CALL
+ *  and PUT tiers EQUIVALENT in probability space (Task 8 calibration). */
+function interpTierProb(absScore: number, weak: number, moderate: number, strong: number): number {
+  const pts: Array<[number, number]> = [
+    [0, 50], [weak, 55], [moderate, 66], [strong, 78], [strong * 2, 90],
+  ];
+  if (absScore <= 0) return 50;
+  if (absScore >= strong * 2) return 90;
+  for (let i = 1; i < pts.length; i++) {
+    if (absScore <= pts[i][0]) {
+      const [x0, y0] = pts[i - 1];
+      const [x1, y1] = pts[i];
+      return y0 + ((absScore - x0) / (x1 - x0)) * (y1 - y0);
+    }
+  }
+  return 90;
+}
+
+const clamp1 = (v: number) => Math.max(-1, Math.min(1, v));
+
+/** Trade plan for an ARBITRARY direction (computeSignal only plans for its
+ *  fired direction — WAIT plans are placeholders). Mirrors the exact
+ *  strike/target/stop rules of computeSignal so both panels agree. */
+function buildMaxProbPlan(m: MagnetResult, dir: 'CALL' | 'PUT') {
+  const atmStrike = Math.round(m.spot / m.strikeStep) * m.strikeStep;
+  const strike = dir === 'CALL' ? atmStrike + m.strikeStep : atmStrike - m.strikeStep;
+  const target = m.magnetCenter > 0 ? Math.round(m.magnetCenter) : atmStrike;
+
+  let stop: number;
+  if (dir === 'CALL') {
+    if (m.zeroGamma !== null && m.zeroGamma > 0 && m.zeroGamma < m.spot) {
+      stop = Math.round(m.zeroGamma - m.strikeStep * 0.5);
+    } else if (m.magnetZone.length > 0) {
+      stop = Math.min(...m.magnetZone) - m.strikeStep;
+    } else {
+      stop = atmStrike - m.strikeStep * 2;
+    }
+  } else {
+    if (m.zeroGamma !== null && m.zeroGamma > 0 && m.zeroGamma > m.spot) {
+      stop = Math.round(m.zeroGamma + m.strikeStep * 0.5);
+    } else if (m.magnetZone.length > 0) {
+      stop = Math.max(...m.magnetZone) + m.strikeStep;
+    } else {
+      stop = atmStrike + m.strikeStep * 2;
+    }
+  }
+
+  // Timing mirrors computeSignal: charm-aligned window = afternoon session
+  let timing: SignalResult['timing'] = 'NOW';
+  if (m.charmDirection === 'up' && dir === 'CALL') timing = 'AFTERNOON';
+  else if (m.charmDirection === 'down' && dir === 'PUT') timing = 'AFTERNOON';
+
+  return { strike, target, stop, timing };
+}
+
+/**
+ * Probability that a CALL (or PUT) bought NOW moves in its favor.
+ * Pure function — safe for client bundle, no I/O.
+ */
+export function computeDirectionalProbability(
+  m: MagnetResult,
+  dir: 'CALL' | 'PUT',
+): { probability: number; structureProb: number; flowProb: number; drivers: MaxProbDriver[]; alignment: MaxProbSignal['alignment'] } {
+  // Defensive normalization (same rationale as computeSignal — JSON
+  // round-trips may omit optional numerics; undefined must behave as null).
+  const basisPct = m.basisPct ?? null;
+  const vixChangePct = m.vixChangePct ?? null;
+  const pinning = m.pinningProbability ?? 50;
+  const bias = m.participantBias ?? 0;
+  const fpScore = m.footprintScore ?? 0;
+  const fpTone = m.footprintTone ?? 'neutral';
+  const buildup = m.oiBuildup ?? 'neutral';
+  const buildupStrength = m.oiBuildupStrength ?? 0;
+  const score = m.signal?.score ?? 0;
+
+  const drivers: MaxProbDriver[] = [];
+
+  // ── Lens A: STRUCTURE (50%) — tier-anchored engine score ──
+  const tiers = dir === 'CALL'
+    ? { weak: 2.0, moderate: 5.5, strong: 9.0 }
+    : { weak: 1.5, moderate: 4.5, strong: 8.0 };
+  const alignedAbs = dir === 'CALL' ? score : -score;
+  let structureProb: number;
+  if (alignedAbs >= 0) {
+    structureProb = interpTierProb(alignedAbs, tiers.weak, tiers.moderate, tiers.strong);
+  } else {
+    // Score OPPOSES this direction — mirror below 50 (honest penalty).
+    structureProb = 50 - (interpTierProb(-alignedAbs, tiers.weak, tiers.moderate, tiers.strong) - 50);
+  }
+  structureProb = Math.max(5, Math.min(95, structureProb));
+  drivers.push({
+    label: 'Structure lens (13-factor score)',
+    detail: `Engine score ${score >= 0 ? '+' : ''}${score.toFixed(1)} vs ${dir} bands (+${tiers.weak}/+${tiers.moderate}/+${tiers.strong} ${dir === 'CALL' ? 'CALL' : 'PUT'} tiers)`,
+    points: Math.round(0.5 * (structureProb - 50) * 10) / 10,
+  });
+
+  // ── Lens B: FLOW (50%) — five independent live-flow factors ──
+  interface FlowLean { label: string; detail: string; lean: number; weight: number; }
+  const leans: FlowLean[] = [];
+
+  // 1. Live footprint verdict (±3) — strongest single flow read
+  if (fpScore !== 0) {
+    leans.push({
+      label: 'Smart-money footprint',
+      detail: m.footprintDetail || `verdict ${fpScore > 0 ? '+' : ''}${fpScore.toFixed(0)}/3`,
+      lean: clamp1(fpScore / 3),
+      weight: 0.30,
+    });
+  }
+
+  // 2. Futures basis — premium = longs paying up (bull), discount = unwinding (bear)
+  if (basisPct !== null) {
+    leans.push({
+      label: 'Futures basis',
+      detail: `${basisPct >= 0 ? 'premium' : 'discount'} ${Math.abs(basisPct).toFixed(2)}%`,
+      lean: clamp1(basisPct / 0.15),
+      weight: 0.20,
+    });
+  }
+
+  // 3. VIX 30-min RoC — rising fear = bear, receding fear = bull
+  if (vixChangePct !== null) {
+    leans.push({
+      label: 'India VIX momentum',
+      detail: `${vixChangePct >= 0 ? '+' : ''}${vixChangePct.toFixed(1)}% / 30min`,
+      lean: clamp1(-vixChangePct / 6),
+      weight: 0.15,
+    });
+  }
+
+  // 4. OI buildup (ΔOI vs previous snapshot)
+  const buildupLean =
+    buildup === 'long_buildup'   ? Math.abs(buildupStrength) :
+    buildup === 'short_buildup'  ? -Math.abs(buildupStrength) :
+    buildup === 'long_unwinding' ? -0.4 :
+    buildup === 'short_covering' ? 0.4 : 0;
+  if (buildupLean !== 0) {
+    const label: Record<typeof buildup, string> = {
+      long_buildup: 'OI long buildup', short_buildup: 'OI short buildup',
+      long_unwinding: 'OI long unwinding', short_covering: 'OI short covering',
+      neutral: 'OI buildup',
+    };
+    leans.push({ label: label[buildup], detail: 'live ΔOI directional build', lean: clamp1(buildupLean), weight: 0.15 });
+  }
+
+  // 5. Participant bias (FII+Prop smart money vs retail, basket-level)
+  if (bias !== 0) {
+    leans.push({
+      label: 'Participant bias (FII+Prop)',
+      detail: m.participantBiasDetail || `${bias >= 0 ? '+' : ''}${bias.toFixed(1)} smart-money tilt`,
+      lean: clamp1(bias / 2),
+      weight: 0.20,
+    });
+  }
+
+  // Renormalize over AVAILABLE factors, then convert lean → probability.
+  // flowLean is signed toward CALL(+)/PUT(−), so the CALL-flavored
+  // probability is 50 + 42×lean and PUT mirrors it (100 − call-side).
+  const totalW = leans.reduce((s, l) => s + l.weight, 0) || 1;
+  const flowLean = leans.reduce((s, l) => s + l.lean * l.weight, 0) / totalW;
+  const flowProbCall = Math.max(5, Math.min(95, 50 + 42 * flowLean));
+  const flowProb = dir === 'CALL' ? flowProbCall : 100 - flowProbCall;
+  drivers.push({
+    label: 'Flow lens (live smart money)',
+    detail: leans.length > 0
+      ? `${leans.length} flow factor${leans.length > 1 ? 's' : ''}: ${leans.map(l => l.label).join(', ')}`
+      : 'no live flow data',
+    points: Math.round(0.5 * (flowProb - 50) * 10) / 10,
+  });
+
+  // Sub-drivers: each flow factor's share of the final probability
+  // (sign flipped for PUT — lean is CALL-flavored)
+  const subSign = dir === 'CALL' ? 1 : -1;
+  for (const l of leans) {
+    const pts = subSign * (42 / 2) * l.lean * (l.weight / totalW);
+    if (Math.abs(pts) >= 1.5) {
+      drivers.push({
+        label: l.label,
+        detail: l.detail,
+        points: Math.round(pts * 10) / 10,
+      });
+    }
+  }
+
+  // ── Modifiers ──
+  // 7-day pattern history for THIS symbol+direction (route attaches it)
+  const pm = m.patternMatch;
+  let histMod = 0;
+  if (pm && pm.total >= 3) {
+    histMod = Math.max(-6, Math.min(8, (pm.winRate - 50) * 0.2));
+    drivers.push({
+      label: '7-day pattern history',
+      detail: `${pm.wins}/${pm.total} similar setups won (${pm.winRate.toFixed(0)}%)`,
+      points: Math.round(histMod * 10) / 10,
+    });
+  }
+
+  // Pinning — a strong pin fights any directional option buy
+  let pinMod = 0;
+  if (pinning >= 70) pinMod = -5;
+  else if (pinning <= 35) pinMod = 2;
+  if (pinMod !== 0) {
+    drivers.push({
+      label: 'Pinning probability',
+      detail: `${pinning.toFixed(0)}% — ${pinning >= 70 ? 'pin fights the trend' : 'low pin, room to trend'}`,
+      points: pinMod,
+    });
+  }
+
+  // ── Alignment (flow tone vs direction) ──
+  const alignment: MaxProbSignal['alignment'] =
+    (dir === 'CALL' && fpTone === 'bullish') || (dir === 'PUT' && fpTone === 'bearish') ? 'aligned' :
+    (dir === 'CALL' && fpTone === 'bearish') || (dir === 'PUT' && fpTone === 'bullish') ? 'divergent' :
+    'neutral';
+
+  const probability = Math.round(Math.max(5, Math.min(95,
+    0.5 * structureProb + 0.5 * flowProb + histMod + pinMod,
+  )));
+
+  drivers.sort((a, b) => Math.abs(b.points) - Math.abs(a.points));
+
+  return {
+    probability,
+    structureProb: Math.round(structureProb),
+    flowProb: Math.round(flowProb),
+    drivers: drivers.slice(0, 5),
+    alignment,
+  };
+}
+
+/** One-line recommendation sentence per candidate. */
+function maxProbNotes(
+  dir: 'CALL' | 'PUT',
+  opts: { engineFired: boolean; gated: boolean; alignment: MaxProbSignal['alignment']; structureProb: number; flowProb: number; pinning: number },
+): string {
+  const parts: string[] = [];
+  if (opts.gated) {
+    parts.push(`Engine fired ${dir} but live flow OPPOSES — divergence gate active, stand aside until flow agrees.`);
+  } else if (opts.alignment === 'aligned' && opts.engineFired) {
+    parts.push(`Engine + flow ALIGNED — maximum-conviction ${dir} setup.`);
+  } else if (opts.alignment === 'aligned' && !opts.engineFired) {
+    parts.push(`Flow strongly ${dir === 'CALL' ? 'bullish' : 'bearish'} while structure still lags (structure ${opts.structureProb}% vs flow ${opts.flowProb}%) — trend-day setup: enter small or wait for the structure lens to flip.`);
+  } else if (opts.alignment === 'divergent') {
+    parts.push(`Live flow opposes this ${dir} — counter-flow bet, probability capped; avoid unless it crosses HIGH.`);
+  } else {
+    parts.push(`Flow neutral — ${dir} case rests on structure alone.`);
+  }
+  if (opts.pinning >= 70) parts.push('High pin risk — use tight stops.');
+  return parts.join(' ');
+}
+
+/**
+ * Pick the STRONGEST call-buy and the STRONGEST put-buy across the whole
+ * scanned universe (4 indices + 15 stocks). Always returns one candidate
+ * per direction (null only when there is no data at all) — the tier label
+ * carries the honest quality signal ("NO EDGE" when nothing qualifies).
+ */
+export function computeMaxProbabilitySignals(symbols: MagnetResult[]): MaxProbabilityResult {
+  if (!symbols || symbols.length === 0) {
+    return { call: null, put: null, asOf: new Date().toISOString() };
+  }
+
+  interface Candidate {
+    m: MagnetResult;
+    dir: 'CALL' | 'PUT';
+    probability: number;
+    structureProb: number;
+    flowProb: number;
+    alignment: MaxProbSignal['alignment'];
+    drivers: MaxProbDriver[];
+  }
+
+  const collect = (dir: 'CALL' | 'PUT'): Candidate[] => {
+    const out: Candidate[] = [];
+    for (const m of symbols) {
+      if (!m?.signal) continue;
+      const r = computeDirectionalProbability(m, dir);
+      out.push({ m, dir, ...r });
+    }
+    // Rank: probability desc → engine-fired first → deeper flow lean first
+    out.sort((a, b) => {
+      if (b.probability !== a.probability) return b.probability - a.probability;
+      const aFired = a.m.signal.direction === a.dir ? 1 : 0;
+      const bFired = b.m.signal.direction === b.dir ? 1 : 0;
+      if (bFired !== aFired) return bFired - aFired;
+      return b.flowProb - a.flowProb;
+    });
+    return out;
+  };
+
+  const build = (c: Candidate, runnerUp?: Candidate): MaxProbSignal => {
+    const { m, dir } = c;
+    const sig = m.signal;
+    const fpTone = m.footprintTone ?? 'neutral';
+
+    // engineFired / gated — did computeSignal fire this direction, and if it
+    // ended up WAIT while the raw score would have fired, was it the gate?
+    const engineFired = sig.direction === dir;
+    const wouldFire = dir === 'CALL' ? sig.score >= 2.0 : sig.score <= -1.5;
+    const gated = !engineFired && wouldFire &&
+      ((dir === 'CALL' && fpTone === 'bearish') || (dir === 'PUT' && fpTone === 'bullish'));
+
+    const plan = buildMaxProbPlan(m, dir);
+
+    return {
+      symbol: m.symbol,
+      name: m.name,
+      type: m.type,
+      direction: dir,
+      probability: c.probability,
+      tier: maxProbTier(c.probability),
+      structureProb: c.structureProb,
+      flowProb: c.flowProb,
+      engineFired,
+      gated,
+      alignment: c.alignment,
+      spot: m.spot,
+      score: sig.score,
+      strike: plan.strike,
+      target: plan.target,
+      stop: plan.stop,
+      timing: plan.timing,
+      drivers: c.drivers,
+      runnerUp: runnerUp ? { symbol: runnerUp.m.symbol, probability: runnerUp.probability } : undefined,
+      notes: maxProbNotes(dir, {
+        engineFired,
+        gated,
+        alignment: c.alignment,
+        structureProb: c.structureProb,
+        flowProb: c.flowProb,
+        pinning: m.pinningProbability ?? 50,
+      }),
+    };
+  };
+
+  const callList = collect('CALL');
+  const putList = collect('PUT');
+
+  return {
+    call: callList.length > 0 ? build(callList[0], callList[1]) : null,
+    put: putList.length > 0 ? build(putList[0], putList[1]) : null,
+    asOf: new Date().toISOString(),
+  };
+}

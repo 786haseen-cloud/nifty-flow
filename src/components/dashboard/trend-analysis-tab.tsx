@@ -40,6 +40,7 @@ import { getMarketPhase, getMarketPhaseLabel } from '@/lib/market-hours';
 import { useMagnetScan } from '@/hooks/use-magnet-scan';
 import MagnetCard, { MagnetSummaryRow } from '@/components/dashboard/magnet-card';
 import { SignalBanner } from '@/components/dashboard/signal-banner';
+import { MaxProbabilitySignals } from '@/components/dashboard/max-probability-signals';
 import { RecentSignalsCard } from '@/components/dashboard/recent-signals-card';
 import { ParticipantFlowCard } from '@/components/dashboard/participant-flow-card';
 import { SmartMoneyFootprintCard } from '@/components/dashboard/smart-money-footprint-card';
@@ -973,6 +974,13 @@ export default function TrendAnalysisTab() {
             {/* HERO: Aggregate Market Signal Banner */}
             <SignalBanner symbols={magnetScan.data} />
 
+            {/* MAX-PROBABILITY DUAL SIGNAL — strongest CALL BUY + strongest
+                PUT BUY with dual-lens probability (Sep 2026 user request:
+                "two signals with maximum probability"). Sits directly under
+                the aggregate banner: banner = market-wide verdict, these two
+                cards = the single best instrument per direction. */}
+            <MaxProbabilitySignals symbols={magnetScan.data} />
+
             {/* Aggregate summary row */}
             <MagnetSummaryRow symbols={magnetScan.data} />
 
@@ -1036,7 +1044,7 @@ export default function TrendAnalysisTab() {
               <div className="italic">
                 Magnet Score combines: distance-from-max-pain (45%) + gamma concentration (35%) + OI concentration (20%).
                 Pinning Probability factors: distance, DTE, gamma regime, GEX magnitude, charm alignment.
-                Trade Signal uses 12 factors: Charm Drift (±3.0, neutralized when trend overwhelms it), Zero-Γ (±2.0), Magnet Zone Pull (±1.5), GEX Walls (±1.5), PCR (±1.0), Gamma Regime (±0.25), Pinning (×0.6-1.2), Futures Basis (±1.5), IV Skew (±1.5), OI Buildup (±1.5), VIX Regime (±1.0), Participant Bias (±2.0 — FII+Prop smart money leads, retail faded).
+                Trade Signal uses 13 factors: Charm Drift (±3.0, neutralized when trend overwhelms it), Zero-Γ (±2.0), Magnet Zone Pull (±1.5), GEX Walls (±1.5), PCR (±1.0), Gamma Regime (±0.25), Pinning (×0.6-1.2), Futures Basis (±1.5), IV Skew (±1.5), OI Buildup (±1.5), VIX Regime (±1.0), Participant Bias (±2.0 — FII+Prop smart money leads, retail faded), Live Footprint (±1.5).
                 Max raw score ±17. Thresholds are ASYMMETRIC to offset India&apos;s structural put-written bull tilt: CALL at +2.0/+5.5/+9.0 (WEAK/MODERATE/STRONG), PUT at -1.5/-4.5/-8.0 — so genuine downtrends reach PUT STRONG exactly as often as uptrends reach CALL STRONG.
               </div>
             </div>
