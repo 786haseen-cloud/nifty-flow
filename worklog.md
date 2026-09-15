@@ -790,3 +790,21 @@ Stage Summary:
 - Sep 11 (Friday) 3-report routine COMPLETE: cash FII -978.6 / DII +2070.9 (Client/Prop 0 — not published in cash report), fao_oi Client 14.28M L/10.42M S (1.37 net long) vs FII 6.06M L/5.48M S (1.11), Pro flat (1.03), DII -4.58M net short (hedges); fao_vol all L/S ≈ 1.00, Pro ≈ 54% of volume
 - Thesis read: FII dumped -979 Cr cash while retail went net long +3.9M contracts — smart money selling into retail bid, DII absorbing; Factor 12 now -0.39 bear for the next session
 - No code changes; verification only
+
+---
+Task ID: 32
+Agent: main (Super Z)
+Task: "market fall more than 500 point where is put buy signal? i want two signal with maximum prediction.... strongest for call buy and strongest for put buy"
+
+Work Log:
+- DIAGNOSIS first (production recent-signals): on the 500-pt fall the engine kept scoring BULLISH structure (+6.9/+7.3/+9.9 across symbols — put-written chain reads as support) while footprint flow went bearish; the Task 12 alignment gate correctly downgraded every CALL to WAIT, but no symbol ever reached the PUT band → user saw WAIT everywhere on a crash day. Root cause: fired-direction-only display cannot express flow-driven bearishness when structure lags.
+- Built the dual-lens probability model in magnet-engine.ts (computeDirectionalProbability, ~120 lines): Lens A STRUCTURE 50% = tier-anchored piecewise map of the adjusted score on the ASYMMETRIC Sep-2026 bands (0→50, WEAK→55, MODERATE→66, STRONG→78, 2×STRONG→90; opposing score mirrors below 50); Lens B FLOW 50% = footprint .30 + basis .20 + participantBias .20 + VIX RoC .15 + OI buildup .15 (renormalized when missing, lean 50±42, PUT mirrors CALL-signed lean — caught a sign bug in self-review before testing). Modifiers: 7-day pattern winRate (needs ≥3 samples, ±8) + pinning (≥70% → −5 / ≤35% → +2); clamp [5,95]
+- computeMaxProbabilitySignals(): ranks all 19 symbols per direction, ALWAYS returns best CALL + best PUT (tier ELITE≥75 / HIGH≥66 / MODERATE≥58 / LEAN≥52 / NO EDGE), engineFired + gated flags, alignment chip, top-5 point-attributed drivers, runner-up, and a trade plan that mirrors computeSignal's strike/target/stop rules exactly (buildMaxProbPlan)
+- New max-probability-signals.tsx (two duel cards: probability ring gauge, structure/flow lens bars, FLOW ALIGNED / GATED / ENGINE FIRED / FLOW NEUTRAL chips, drivers with signed pts, strike/target/stop/timing grid, recommendation sentence, next-best line) inserted in trend-analysis-tab Section 3.5 directly under SignalBanner; fixed stale "12 factors" legend → 13 (Live Footprint was missing)
+- scripts/test-max-probability.ts: 34/34 PASS incl. the FRIDAY CRASH regression (score +6.9 gated, flow bearish → PUT card 55% "Flow strongly bearish while structure still lags", CALL gated 43%), rip day (CALL 82 ELITE / PUT 17 NO EDGE), mixed day (~51/49 LEAN-NO EDGE), agreement-beats-extremity (fired PUT 64 > divergent extreme-flow 55 — intentional ranking law), monotonicity, plan mirroring, history/pinning modifiers. Fixed 2 test-fixture bugs (stop rule needs zeroΓ ABOVE spot for PUT; uniform-structure universe needed for flow-dominance assertion). Regression suites test-put-diagnosis + test-alignment-gate still green; npm run build OK
+- Commit 3198f7f pushed (Vercel auto-deploys)
+
+Stage Summary:
+- The panel now answers the exact question: on any tick it shows the single best CALL BUY and single best PUT BUY across all 19 with honest probability. On the Friday crash it would have shown "BANKNIFTY-class PUT candidate ~55-60% — FLOW ALIGNED, structure still lags (26% vs 84%)" instead of silence
+- Ranking laws verified: agreement beats extremity; deepest flow wins when structure is uniform; NO EDGE tier tells the truth when nothing qualifies
+- Watch item: first live trending day will show flow-driven candidates below the fired-signal threshold — that's by design (flow leads, structure confirms later); calibrate tier bands if real-world outcomes disagree
