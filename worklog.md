@@ -808,3 +808,21 @@ Stage Summary:
 - The panel now answers the exact question: on any tick it shows the single best CALL BUY and single best PUT BUY across all 19 with honest probability. On the Friday crash it would have shown "BANKNIFTY-class PUT candidate ~55-60% — FLOW ALIGNED, structure still lags (26% vs 84%)" instead of silence
 - Ranking laws verified: agreement beats extremity; deepest flow wins when structure is uniform; NO EDGE tier tells the truth when nothing qualifies
 - Watch item: first live trending day will show flow-driven candidates below the fired-signal threshold — that's by design (flow leads, structure confirms later); calibrate tier bands if real-world outcomes disagree
+
+---
+Task ID: 33
+Agent: main (Super Z)
+Task: Daily 3-report verification — user said "i uploaded all 3 reports and market was bullish on friday today gap up opening.... after gap up market fell around 500 points"; also confirm dual-signal panel (Task 32) is live for this scenario
+
+Work Log:
+- Queried production GET /api/participants/daily: history now has 2026-09-15 (Tuesday) cash FII -2736.13 / DII +2297.27 (ts 00:56:22 IST Sep 16, source manual). NO Sep 14 entry -> Monday Sep 14 was a market holiday (trading gap Fri Sep 11 -> Tue Sep 15, consistent with user's "bullish friday ... today gap up")
+- Freshness check: new values != Sep 11 (-978.6/+2070.87), != Sep 10, != Sep 9 -> genuine 15-Sep file. -2736 Cr is the BIGGEST FII cash sell in the visible 7-day series (next worst -978.6)
+- Diagnostic ?positioning=2026-09-15: fao_oi (00:56:12 IST) Client 11.88M L / 7.77M S -> net +4.11M, L/S 1.53 (MORE net long than Friday's 1.37, +0.25M delta); FII 5.65/5.12 (1.10, net +0.53M); Pro 4.59/4.69 (~flat 0.98); DII 0.51/5.05 (net -4.55M, hedges). fao_vol (00:56:04 IST) all L/S ~1.00 two-way churn; Pro 58.1% share, Client 36.0%, FII 5.8%, DII ~0%
+- Factor 12 bias cache auto-refreshed: -0.39 -> -1.50 BEAR (max weight): "Smart money (FII+Prop) -2736 Cr selling -> market drops; Retail +0 Cr balanced; DII +2297 Cr (absorbing FII sells)"
+- Deployment check: origin/main had 3198f7f (dual max-probability CALL/PUT panel) already live on Vercel; local docs-only commit 0666e62 (Task 32 worklog entry) pushed to origin
+- No code changes; verification only
+
+Stage Summary:
+- Sep 15 (Tuesday) 3-report routine COMPLETE. Session read: bullish Friday -> Tuesday GAP-UP TRAP -> ~500 pt fall. FII dumped -2736 Cr cash INTO the gap-up (3x Friday's sell), retail clients went MORE net long F&O (1.37 -> 1.53, +4.11M net contracts) buying the dip, Pro flipped slightly net short, DII absorbed +2297 Cr cash. Textbook smart-money-against-retail distribution day
+- For Wednesday Sep 16: Factor 12 -1.50 BEAR feeds the FLOW lens at maximum bearish weight -> PUT side of the dual-signal panel starts the day favored; on any repeat gap-up-fade the strongest PUT BUY card shows FLOW ALIGNED instead of silence (the exact gap the user reported on the fall day)
+- Watch item stands: first live trending day calibrates the max-probability tier bands
