@@ -8,7 +8,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import {
   Thermometer, ShieldAlert, Info, AlertTriangle,
-  Activity, BarChart3,
+  Activity, BarChart3, Wifi, WifiOff,
 } from 'lucide-react';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
@@ -19,17 +19,45 @@ import {
   generateDemoInstrument,
   generateDemoVIX,
 } from '@/lib/demo-data';
+import { withCreds } from '@/lib/kite-creds';
 
 export default function GreeksDecay() {
   const [vix, setVix] = useState<VIXData | null>(null);
+  // 'live' = real NSE:INDIA VIX quote from /api/kite/vix; 'demo' = random
+  // fallback (Kite not configured or fetch failed) — shown in the badge so a
+  // made-up number is never mistaken for the real index (user caught the
+  // card showing ~19 while the real India VIX was 13.17).
+  const [vixMode, setVixMode] = useState<'live' | 'demo'>('demo');
   const [instrument, setInstrument] = useState<InstrumentData | null>(null);
   const [selectedStrike, setSelectedStrike] = useState<string>('ATM');
 
   useEffect(() => {
-    function refresh() {
-      const v = generateDemoVIX();
+    async function refresh() {
+      // VIX: REAL quote from /api/kite/vix (same source as the magnet engine's
+      // factor 13). Demo fallback only when the fetch fails entirely, so the
+      // card never blanks — the badge always tells the truth.
+      try {
+        const res = await fetch(withCreds('/api/kite/vix'), { cache: 'no-store' });
+        if (res.ok) {
+          const data = await res.json();
+          if (data?.vix && typeof data.vix.value === 'number') {
+            setVix(data.vix);
+            setVixMode(data.mode === 'live' ? 'live' : 'demo');
+          } else {
+            setVix(generateDemoVIX());
+            setVixMode('demo');
+          }
+        } else {
+          setVix(generateDemoVIX());
+          setVixMode('demo');
+        }
+      } catch {
+        setVix(generateDemoVIX());
+        setVixMode('demo');
+      }
+      // Instrument (theta/IV skew context) stays demo for now — the option
+      // chain greeks pipeline is a separate follow-up.
       const inst = generateDemoInstrument('NIFTY', 'Nifty 50', 'index', 24350);
-      setVix(v);
       setInstrument(inst);
     }
     refresh();
@@ -102,6 +130,9 @@ export default function GreeksDecay() {
             <CardTitle className="flex items-center gap-2 text-base">
               <ShieldAlert className="h-4 w-4 text-orange-400" />
               Panic Meter
+              <Badge variant="outline" className={`text-[10px] ${vixMode === 'live' ? 'border-emerald-500/40 text-emerald-300' : 'border-orange-500/40 text-orange-300'}`}>
+                {vixMode === 'live' ? <><Wifi className="mr-1 h-3 w-3" />LIVE</> : <><WifiOff className="mr-1 h-3 w-3" />DEMO</>}
+              </Badge>
               <Badge variant="outline" className="ml-auto text-[10px] border-amber-500/40 text-amber-300">
                 <Info className="mr-1 h-3 w-3" />Info Only
               </Badge>

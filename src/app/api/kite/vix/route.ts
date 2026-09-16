@@ -1,10 +1,12 @@
 /**
- * VIX — REAL India VIX quote when Kite is configured, demo fallback otherwise.
+ * India VIX — REAL quote (NSE:INDIA VIX)
+ * GET /api/kite/vix
  *
- * HISTORY: this route used to return generateDemoVIX() — a RANDOM 12–22
- * number — while nothing in the client even fetched it. Kept for API-surface
- * honesty: same VIXData shape as before, plus mode:'live'|'demo' so callers
- * know which one they got. Prefer /api/kite/vix for new consumers.
+ * Returns the same engine-grade quote the magnet scan uses (factor 13).
+ * mode:'live'  → real Kite quote (server store / env / URL creds)
+ * mode:'demo'  → Kite not configured OR quote fetch failed (error field
+ *                explains) — callers MUST badge this in the UI; demo VIX is
+ *                a random number and must never be presented as live.
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { applyKiteCredsFromRequest } from '@/lib/kite-route-helper';
@@ -23,10 +25,5 @@ export async function GET(req: NextRequest) {
   }
 
   const result = await fetchIndiaVix();
-  return NextResponse.json({
-    mode: result.mode,
-    vix: result.vix,
-    error: result.error,
-    timestamp: new Date().toISOString(),
-  });
+  return NextResponse.json({ ...result, timestamp: new Date().toISOString() });
 }
