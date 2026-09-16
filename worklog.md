@@ -875,3 +875,20 @@ Work Log:
 Stage Summary:
 - Thursday read: structure lens still CALL-leaning (put-writing intact on 4 of 5 scanned names) but flow lens BEAR (Factor 12 -0.90, VIX rising) — exactly the disagreement regime where the dual max-probability panel earns its keep; expected panel state at open: best PUT mid-50s FLOW ALIGNED vs best CALL gated/mid-40s; Sensex expiry pinning is the wildcard that can neuter directional trades by afternoon
 - Watch items unchanged: first regular-session test of Task 34 force-backfill; tier-band calibration after first trending day
+
+---
+Task ID: 37
+Agent: main (Super Z)
+Task: User correction "india vix is on 13.17" — dashboard VIX disagreed with the real India VIX; root-cause and fix
+
+Work Log:
+- User was right. Root cause: greeks-decay.tsx (Panic Meter card) called generateDemoVIX() DIRECTLY in the browser — a RANDOM number in the 12–22 band re-rolled every 15s — and the /api/vix route was also demo-only (and fetched by nobody). Meanwhile the engine itself always used the REAL NSE:INDIA VIX quote (magnet-scan batch, factor 13): 13.17 in every scan entry, matching the user's broker. live-monitor's India VIX card was already real (highest-bet quote pipeline)
+- My Task 36 prediction message quoted the demo endpoint (18.99 "elevated") — engine probabilities were NEVER affected (factor 13 read the real 13.17), only my prose was wrong. Corrected the expiry read in the reply: VIX 13.17 = LOW-vol regime (calm/normal band), which strengthens expiry pin gravitation and makes premium cheap — the PUT bias rests on Factor 12 -0.90 BEAR + FII flow, NOT on VIX (my "VIX rising" argument was void)
+- Fix (commit 6bd7dc1): new src/lib/vix.ts (buildVixData maps Kite quote lastPrice/ohlc/netChange → VIXData; India-calibrated percentile linear 9–25; panic thresholds match card legend calm<12/normal<16/elevated<20/panic>=20; fetchIndiaVix falls back to demo ONLY on failure, never silently); new GET /api/kite/vix (applyKiteCredsFromRequest 3-tier creds); /api/vix rewired same shape + mode flag; greeks-decay polls /api/kite/vix via withCreds every 15s with LIVE/DEMO badge (live-monitor pattern)
+- Verification: tsc clean, build ✓ (both routes registered), local smoke = mode:'demo' + "not configured" (box has no env creds), production smoke = mode:'demo' + honest error "HTTP 403 TokenException" — because the redeploy emptied the in-memory creds hub (Vercel FS read-only, file never persisted) AND the Vercel env-var token is EXPIRED. The user's browser passes valid localStorage creds via URL params (same Tier-1 path as every other working /api/kite/* route) → LIVE badge + real value on their dashboard immediately; use-server-creds-sync Case 2 re-populates the hub on their next boot (self-healing by design)
+- No changes to signal-engine-tab (whole tab is an all-demo playground) or /api/signal (orphaned demo) — noted as follow-ups
+
+Stage Summary:
+- Dashboard VIX is now engine-grade everywhere it is displayed: greeks-decay LIVE/DEMO badged, live-monitor already real, factor 13 always real. Demo numbers can no longer masquerade as live
+- Watch: user's dashboard Panic Meter should show green LIVE badge + 13.17-ish close value; Thursday session = first regular test of Task 34 force-backfill + tier-band calibration
+- Env note: Vercel env KITE_ACCESS_TOKEN is expired (harmless for browser UX, breaks cred-less server-side calls like cron/curl; hub self-heals on next user boot)
