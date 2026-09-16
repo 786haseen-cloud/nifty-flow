@@ -860,3 +860,18 @@ Stage Summary:
 - Sep 16 (Wednesday) 3-report routine COMPLETE. Read: FII selling persists into a 3rd session while retail stays pinned net long (1.49) and DII keeps absorbing (+3535 Cr) — distribution pattern intact; Factor 12 -0.90 BEAR carries into Thursday's session
 - Signals: TCS PUT -6.9 is the first PUT-side scan entry — the "where is put buy signal" gap is closing from both sides (engine fires + dual max-probability card always shows best PUT)
 - Watch: Thursday — first regular-session test of Task 34's force-backfill (office token paste) and continued calibration of max-probability tier bands
+
+---
+Task ID: 36
+Agent: main (Super Z)
+Task: User asked "what is the prediction for tomorrow? tomorrow sensex expiry also" — synthesize a Thursday Sep 17 outlook from engine state
+
+Work Log:
+- Pulled production state: Factor 12 -0.90 BEAR (3rd straight FII cash-sell day: -979 -> -2736 -> -1751; DII +3535 absorbing; retail pinned 1.49); VIX 18.99 (+8.76%, day high 20.16, rising, elevated p59); tonight's 23:03 scan: CALL side ITC +8.4 (conf 56, maxPain 265 ~ spot 264.35), ETERNAL +7.8 (conf 52, maxPain 320 vs spot 316.8, pin 53), BAJFINANCE +5.8, TITAN +4.9 (weak); PUT side TCS -6.9 (conf 53, spot 2191.5 BELOW zeroGamma 2220.24, ivSkew -8.7%)
+- max-pain-scan route returned mode:error (index-level chain unavailable post-session) — used per-stock maxPain/magnet/zeroGamma from recent-signals instead
+- Synthesis delivered: base case = flow-favored (gap-up fades, PUT side favored by Factor 12 + rising VIX + FII distribution); expiry overlay = Sensex Thursday gamma pin risk compresses both probabilities into NO EDGE/LEAN if index sits near max pain; flip conditions = spot reclaims zero-gamma + VIX pullback (PUT edge collapses) or FII cash selling accelerates with breakdown of put-written strikes (PUT probability 60+)
+- No code changes; analysis only
+
+Stage Summary:
+- Thursday read: structure lens still CALL-leaning (put-writing intact on 4 of 5 scanned names) but flow lens BEAR (Factor 12 -0.90, VIX rising) — exactly the disagreement regime where the dual max-probability panel earns its keep; expected panel state at open: best PUT mid-50s FLOW ALIGNED vs best CALL gated/mid-40s; Sensex expiry pinning is the wildcard that can neuter directional trades by afternoon
+- Watch items unchanged: first regular-session test of Task 34 force-backfill; tier-band calibration after first trending day
