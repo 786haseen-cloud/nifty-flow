@@ -843,3 +843,20 @@ Stage Summary:
 - Tomorrow morning's office test (paste token → Save & Test in Settings OR just open dashboard → useServerCredsSync auto-adopts server token) should now: clear stale trend arrays → scheduleBackfillTrigger({force:true}) → 3s later backfillHistoricalFlow + backfillHistoricalCashFire fire → ~2 min later all 3 flow cards show full 09:15→now session identical to the Nifty card. Console will log "[TrendStore] Scheduling historical backfills (open/post, FORCED)..."
 - Watch item: first live trending day (today, Wednesday Sep 16, with Factor 12 −1.50 BEAR) calibrates the max-probability tier bands AND is the first real-world test of this fix
 - Open follow-up (not requested): /api/kite/trends/route.ts:67 still uses getCandles(token,'5minute',1) instead of getTodayCandles; docblock at kite-api.ts:478-487 warns this corrupts time keys via yesterday's session tail — currently masked because Kite returns today's session for INDEX tokens, but if a F&O token were ever fed here it would break. Defense-in-depth switch pending.
+
+---
+Task ID: 35
+Agent: main (Super Z)
+Task: Daily 3-report verification — user said "3 reports uodated"; Sep 16 (Wednesday) NSE reports
+
+Work Log:
+- Queried production GET /api/participants/daily: 2026-09-16 cash landed FII -1751.18 / DII +3534.66 (saved 23:03:55 IST Sep 16, source manual) — fresh values != Sep 15 (-2736.13/+2297.27). Third straight FII cash-sell session (-979 -> -2736 -> -1751); DII absorption grew again (+2071 -> +2297 -> +3535, biggest yet)
+- Diagnostic ?positioning=2026-09-16: fao_oi (23:03:29 IST) Client 12.72M L / 8.55M S -> net +4.17M, L/S 1.49 (retail still heavily net long, ~unchanged from Sep 15's +4.11M); FII 5.85/5.36 (1.09, net +0.48M); Pro 4.84/4.93 (~flat 0.98, net -0.09M); DII 0.51/5.07 (net -4.56M hedges, unchanged). fao_vol (23:03:41 IST) all L/S ~1.00 two-way churn; Pro 50.1% share, Client 41.0%, FII 8.7%, DII 0.2%; total volume ~123M contracts (vs ~637M Sep 15 — much quieter day)
+- Factor 12 bias cache auto-refreshed: -1.50 -> -0.90 BEAR: "Smart money (FII+Prop) -1751 Cr selling -> market drops; Retail +0 Cr balanced; DII +3535 Cr (absorbing FII sells)"
+- Bonus check — first live day of the dual max-probability panel + Task 34 force-backfill fix: production /api/kite/recent-signals (mode live, 5 entries, scanned ~23:03 IST while user's dashboard was open in post phase) recorded 4 CALL-side scores (ITC +8.4, ETERNAL +7.8, BAJFINANCE +5.8, TITAN +4.9) AND a TCS PUT score -6.9 — the first PUT-side entry in recent-signals, confirming the engine now registers bearish structure alongside the always-on max-probability PUT card
+- No code changes; verification only
+
+Stage Summary:
+- Sep 16 (Wednesday) 3-report routine COMPLETE. Read: FII selling persists into a 3rd session while retail stays pinned net long (1.49) and DII keeps absorbing (+3535 Cr) — distribution pattern intact; Factor 12 -0.90 BEAR carries into Thursday's session
+- Signals: TCS PUT -6.9 is the first PUT-side scan entry — the "where is put buy signal" gap is closing from both sides (engine fires + dual max-probability card always shows best PUT)
+- Watch: Thursday — first regular-session test of Task 34's force-backfill (office token paste) and continued calibration of max-probability tier bands
