@@ -118,8 +118,11 @@ interface TrendState {
   clearTrendData: () => void;
   backfillHistoricalFlow: () => Promise<void>;
   backfillHistoricalCashFlow: () => Promise<void>;
-  /** Debounced scheduler for both backfills (60s stamp + open/post gate). */
-  scheduleBackfillTrigger: () => void;
+  /** Debounced scheduler for both backfills (60s stamp + open/post gate).
+   *  Pass { force: true } from notifyCredsRefreshed / demo→live transitions
+   *  to bypass the 60s debounce — those paths have just cleared stale data
+   *  and MUST re-run the backfill regardless of when the last one was. */
+  scheduleBackfillTrigger: (opts?: { force?: boolean }) => void;
   /** Called by Settings when the user saves fresh Kite creds — recovers
    *  the flow cards after a mid-session token paste (see implementation). */
   notifyCredsRefreshed: () => void;
@@ -305,23 +308,39 @@ export const useTrendStore = create<TrendState>()(
        * race on the merge, and risk 429s. The _lastBackfillTriggerAt stamp
        * guarantees only one schedule per minute across all sites.
        */
-      scheduleBackfillTrigger: () => {
+      scheduleBackfillTrigger: (opts?: { force?: boolean }) => {
         const phase = getMarketPhase();
         if (phase !== 'open' && phase !== 'post') return;
-        if (Date.now() - get()._lastBackfillTriggerAt < 60_000) return;
+        const force = !!opts?.force;
+        // Force (creds refresh / demo→live): bypass the 60s debounce. These
+        // paths have JUST cleared the trend arrays — the debounce exists to
+        // stop two overlapping BACKFILL RUNS, not to stop a deliberate
+        // re-trigger after a state clear. Without force, the boot-time
+        // startPolling() call (which stamps T0 even when its inner setTimeout
+        // no-ops because trendMode==='demo') would silently drop the
+        // notifyCredsRefreshed call that fires ~300ms later from
+        // useServerCredsSync — leaving the three flow cards to fill from
+        // live polls only (regression: cards start from paste time instead
+        // of reconstructing the full 09:15→now session like the NIFTY card).
+        if (!force && Date.now() - get()._lastBackfillTriggerAt < 60_000) return;
         set({ _lastBackfillTriggerAt: Date.now() });
-        console.log('[TrendStore] Scheduling historical backfills (open/post, debounced)...');
+        console.log(`[TrendStore] Scheduling historical backfills (open/post, ${force ? 'FORCED' : 'debounced'})...`);
         // 3s delay lets the triggering poll complete and set trendMode first.
         setTimeout(() => {
           const s = get();
           if (s.trendMode !== 'live') return;
-          if (!s._historicalBackfillDone && s.flowTrend.length === 0) {
+          // Force overrides the length===0 strict guard: notifyCredsRefreshed
+          // clears the arrays, but a 15s poll may land in this 3s window and
+          // append one live point before we fire. That live point is still
+          // valid (same session, will be merged/offset by backfillHistoricalFlow
+          // / backfillHistoricalCashFlow), so proceed anyway when forced.
+          if (!s._historicalBackfillDone && (force || s.flowTrend.length === 0)) {
             console.log('[TrendStore] Triggering options-flow backfill...');
             get().backfillHistoricalFlow().catch((e) =>
               console.error('[TrendStore] backfill error:', e)
             );
           }
-          if (!s._cashBackfillDone && s.cashFlowTrend.length === 0) {
+          if (!s._cashBackfillDone && (force || s.cashFlowTrend.length === 0)) {
             console.log('[TrendStore] Triggering cash-flow backfill...');
             get().backfillHistoricalCashFlow().catch((e) =>
               console.error('[TrendStore] cash backfill error:', e)
@@ -355,7 +374,7 @@ export const useTrendStore = create<TrendState>()(
           console.log('[TrendStore] Creds refreshed but feed healthy — keeping live data');
           return;
         }
-        console.log('[TrendStore] Creds refreshed mid-session — clearing stale trend + re-triggering backfills');
+        console.log('[TrendStore] Creds refreshed mid-session — clearing stale trend + re-triggering backfills (FORCE)');
         set({
           lastPollAt: 0,
           cashFlowTrend: [],
@@ -370,7 +389,12 @@ export const useTrendStore = create<TrendState>()(
           _historicalBackfillDone: false,
           _cashBackfillDone: false,
         });
-        get().scheduleBackfillTrigger();
+        // Force: bypass the 60s debounce. At app boot useServerCredsSync
+        // fires this ~300ms after startPolling() already stamped T0 (where
+        // the inner setTimeout no-ops because trendMode is still 'demo' at
+        // boot) — without force, this call is silently dropped and the flow
+        // cards never reconstruct the morning's 09:15→now history.
+        get().scheduleBackfillTrigger({ force: true });
       },
 
       /**
@@ -721,10 +745,13 @@ export const useTrendStore = create<TrendState>()(
               _cashBackfillDone: false,
             });
 
-            // Re-trigger both backfills — debounced inside
-            // scheduleBackfillTrigger so this and Settings'
-            // notifyCredsRefreshed never run two backfills concurrently.
-            get().scheduleBackfillTrigger();
+            // Re-trigger both backfills. Force: bypass the 60s debounce so
+            // this demo→live transition isn't blocked by startPolling()'s
+            // boot-time stamp (which no-ops because trendMode was 'demo').
+            // The server-side 60s in-memory cache + idempotent merge logic
+            // still protect against two concurrent fetches returning the
+            // same data.
+            get().scheduleBackfillTrigger({ force: true });
           }
 
           // Compute cumulative-since-market-open totals (these come directly
