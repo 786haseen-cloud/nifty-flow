@@ -57,11 +57,14 @@ function computeStrikeFlow(
     // Case 2: OI up + Price down → CE WRITE (writing at higher premium, price falling)
     ceWrite = (dceOI * curr.ceDelta * lotSize) / DIVISOR;
   } else if (dceOI < 0 && dceP < 0) {
-    // Case 3: OI down + Price down → CE WRITE (short covering at lower price = write)
+    // Case 3: OI down + Price down → CE WRITE (long unwinding — longs exiting = supply)
     ceWrite = (Math.abs(dceOI) * curr.ceDelta * lotSize * 0.3) / DIVISOR;
   } else if (dceOI < 0 && dceP >= 0) {
-    // Case 4: OI down + Price up → CE WRITE (long unwinding at higher price = write)
-    ceWrite = (Math.abs(dceOI) * curr.ceDelta * lotSize * 0.3) / DIVISOR;
+    // Case 4: OI down + Price up → CE BUY (short covering — writers buying
+    // back their shorts = bullish demand). Sep 17 2026 FIX: this case was
+    // bucketed as CE WRITE, inverting the bullish short-covering signal —
+    // the only copy that had puts right but calls wrong here.
+    ceBuy = (Math.abs(dceOI) * curr.ceDelta * lotSize * 0.3) / DIVISOR;
   }
 
   // Volume fallback when OI unchanged (from your script v5)

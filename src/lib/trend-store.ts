@@ -79,6 +79,12 @@ interface TrendState {
   flowTrend: FlowTrendPoint[];                  // appended each poll (max 600 pts)
   prevSnapshots: Record<string, StrikeData[]>;  // last OI snapshot per symbol (for delta computation)
   cumulativeFlow: Record<string, number>;       // running totals per index + stockAggregate
+  /** Running BULLISH half of the flow per symbol (Cr). Sep 17 2026 — feeds
+   *  the Stock Options Money Flow card's Bull/Bear split badge so the user
+   *  sees both halves fighting, not just the net. bull − bear == net. */
+  cumulativeBull: Record<string, number>;
+  /** Running BEARISH half of the flow per symbol (Cr). Same consumer. */
+  cumulativeBear: Record<string, number>;
   prevStockTotals: { nse: number; bse: number; weighted: number }; // for computing 15s interval delta
 
   // ─── Latest snapshot (always fresh, also persisted for snappy reload) ───
@@ -145,6 +151,10 @@ const INITIAL_FLOW: Record<string, number> = {
   ...Object.fromEntries(STOCK_SYMBOLS.map((s) => [s, 0])),
 };
 
+// Bull/Bear halves — same key shape as INITIAL_FLOW (net = bull − bear).
+const INITIAL_BULL_FLOW: Record<string, number> = { ...INITIAL_FLOW };
+const INITIAL_BEAR_FLOW: Record<string, number> = { ...INITIAL_FLOW };
+
 // ─── Store implementation ───
 
 export const useTrendStore = create<TrendState>()(
@@ -157,6 +167,8 @@ export const useTrendStore = create<TrendState>()(
       flowTrend: [],
       prevSnapshots: {},
       cumulativeFlow: { ...INITIAL_FLOW },
+      cumulativeBull: { ...INITIAL_BULL_FLOW },
+      cumulativeBear: { ...INITIAL_BEAR_FLOW },
       prevStockTotals: { nse: 0, bse: 0, weighted: 0 },
 
       niftyCandles: [],
@@ -284,6 +296,8 @@ export const useTrendStore = create<TrendState>()(
           flowTrend: [],
           prevSnapshots: {},
           cumulativeFlow: { ...INITIAL_FLOW },
+          cumulativeBull: { ...INITIAL_BULL_FLOW },
+          cumulativeBear: { ...INITIAL_BEAR_FLOW },
           prevStockTotals: { nse: 0, bse: 0, weighted: 0 },
           niftyCandles: [],
           stockCashFlow: [],
@@ -381,6 +395,8 @@ export const useTrendStore = create<TrendState>()(
           flowTrend: [],
           prevSnapshots: {},
           cumulativeFlow: { ...INITIAL_FLOW },
+          cumulativeBull: { ...INITIAL_BULL_FLOW },
+          cumulativeBear: { ...INITIAL_BEAR_FLOW },
           prevStockTotals: { nse: 0, bse: 0, weighted: 0 },
           currentIdxFlows: { NIFTY: 0, BANKNIFTY: 0, FINNIFTY: 0, SENSEX: 0 },
           currentStockFlow: 0,
@@ -528,6 +544,12 @@ export const useTrendStore = create<TrendState>()(
           set({
             flowTrend: trimmed,
             cumulativeFlow: mergedCumulative,
+            // Bull/Bear halves: the backfill response carries DAY TOTALS per
+            // symbol (recomputed from 09:15 candles — supersedes any live
+            // deltas accumulated during the ~2min fetch). Subsequent live
+            // polls add on top. Badge-only fields; chart untouched.
+            cumulativeBull: { ...INITIAL_BULL_FLOW, ...((data.bullFlow as Record<string, number>) || {}) },
+            cumulativeBear: { ...INITIAL_BEAR_FLOW, ...((data.bearFlow as Record<string, number>) || {}) },
             prevSnapshots: mergedPrevSnapshots,
             _historicalBackfillDone: true,
           });
@@ -824,6 +846,8 @@ export const useTrendStore = create<TrendState>()(
           if (data.symbols && data.symbols.length > 0) {
             const prevSnapshots = get().prevSnapshots;
             const cumulativeFlow = { ...get().cumulativeFlow };
+            const cumulativeBull = { ...get().cumulativeBull };
+            const cumulativeBear = { ...get().cumulativeBear };
             const newCurrentIdx: Record<string, number> = {
               NIFTY: 0, BANKNIFTY: 0, FINNIFTY: 0, SENSEX: 0,
             };
@@ -832,6 +856,8 @@ export const useTrendStore = create<TrendState>()(
             // stock selector dropdown on the Stock Options Money Flow card.
             const stockDeltaThisPoll: Record<string, number> = {};
             let stockAgg = 0;
+            let stockBullAgg = 0;
+            let stockBearAgg = 0;
 
             for (const sym of data.symbols) {
               if (sym.strikes.length === 0) continue;
@@ -847,14 +873,20 @@ export const useTrendStore = create<TrendState>()(
 
               if (sym.type === 'index' && (INDEX_SYMBOLS as readonly string[]).includes(sym.symbol)) {
                 cumulativeFlow[sym.symbol] = (cumulativeFlow[sym.symbol] || 0) + flow.net;
+                cumulativeBull[sym.symbol] = (cumulativeBull[sym.symbol] || 0) + flow.bullish;
+                cumulativeBear[sym.symbol] = (cumulativeBear[sym.symbol] || 0) + flow.bearish;
                 newCurrentIdx[sym.symbol] = flow.net;
               } else if (sym.type === 'stock') {
                 stockAgg += flow.net;
+                stockBullAgg += flow.bullish;
+                stockBearAgg += flow.bearish;
                 // Track per-stock cumulative so the dropdown can show one
                 // stock's flow at NIFTY-like scale (±10-500 Cr) instead of
                 // the ±14,000 Cr aggregate where live oscillations are
                 // 0.07% of the Y-axis = invisible.
                 cumulativeFlow[sym.symbol] = (cumulativeFlow[sym.symbol] || 0) + flow.net;
+                cumulativeBull[sym.symbol] = (cumulativeBull[sym.symbol] || 0) + flow.bullish;
+                cumulativeBear[sym.symbol] = (cumulativeBear[sym.symbol] || 0) + flow.bearish;
                 stockDeltaThisPoll[sym.symbol] = flow.net;
               }
 
@@ -862,6 +894,8 @@ export const useTrendStore = create<TrendState>()(
             }
 
             cumulativeFlow.stockAggregate = (cumulativeFlow.stockAggregate || 0) + stockAgg;
+            cumulativeBull.stockAggregate = (cumulativeBull.stockAggregate || 0) + stockBullAgg;
+            cumulativeBear.stockAggregate = (cumulativeBear.stockAggregate || 0) + stockBearAgg;
 
             const flowPoint: FlowTrendPoint = {
               time,
@@ -891,6 +925,8 @@ export const useTrendStore = create<TrendState>()(
               flowTrend: trimmedFlow,
               prevSnapshots: newPrevSnapshots,
               cumulativeFlow,
+              cumulativeBull,
+              cumulativeBear,
               currentIdxFlows: newCurrentIdx,
               currentStockFlow: stockAgg,
               // Expose per-stock delta this poll for the dropdown's "Int" value
@@ -929,6 +965,8 @@ export const useTrendStore = create<TrendState>()(
         flowTrend: state.flowTrend,
         // prevSnapshots: INTENTIONALLY NOT persisted (see comment above)
         cumulativeFlow: state.cumulativeFlow,
+        cumulativeBull: state.cumulativeBull,
+        cumulativeBear: state.cumulativeBear,
         prevStockTotals: state.prevStockTotals,
         niftyCandles: state.niftyCandles,
         stockCashFlow: state.stockCashFlow,

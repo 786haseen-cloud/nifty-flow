@@ -329,10 +329,11 @@ export default function OptionFlowTV() {
       // CE Write: OI increased + LTP down (writers adding at lower prices = selling)
       else if (ceOiChg > 0 && ceLtpChg < 0) ceWrite += ceOiChg * (cs.ceLTP || 0) * (spec.lotSize || 1);
 
-      // PE Write: OI increased + LTP up (writers writing PE as market rises)
-      if (peOiChg > 0 && peLtpChg >= 0) peWrite += peOiChg * (cs.peLTP || 0) * (spec.lotSize || 1);
-      // PE Buy: OI increased + LTP down (buyers aggressive on puts)
-      else if (peOiChg > 0 && peLtpChg < 0) peBuy += peOiChg * (cs.peLTP || 0) * (spec.lotSize || 1);
+      // PE Buy: OI increased + LTP up (put buyers lifting offers — bearish)
+      // Sep 17 2026 FIX: these two buckets were mirrored before.
+      if (peOiChg > 0 && peLtpChg > 0) peBuy += peOiChg * (cs.peLTP || 0) * (spec.lotSize || 1);
+      // PE Write: OI increased + LTP down (writers hitting bids — bullish)
+      else if (peOiChg > 0 && peLtpChg <= 0) peWrite += peOiChg * (cs.peLTP || 0) * (spec.lotSize || 1);
     }
 
     const bullish = ceBuy + peWrite;

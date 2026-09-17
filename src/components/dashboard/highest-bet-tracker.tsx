@@ -97,14 +97,16 @@ function computeStrikeFlow(
   const dpeP = curr.peLTP - prev.peLTP;
   let peBuy = 0, peWrite = 0;
 
-  if (dpeOI > 0 && dpeP <= 0) {
+  // Sep 17 2026 FIX: put side was mirrored. Canonical table — premium RISING
+  // on fresh OI = put BUYING (bearish); premium FALLING = put WRITING (bullish).
+  if (dpeOI > 0 && dpeP > 0) {
     peBuy = (dpeOI * curr.peDelta * lotSize) / DIVISOR;
-  } else if (dpeOI > 0 && dpeP > 0) {
+  } else if (dpeOI > 0 && dpeP <= 0) {
     peWrite = (dpeOI * curr.peDelta * lotSize) / DIVISOR;
   } else if (dpeOI < 0 && dpeP > 0) {
-    peWrite = (Math.abs(dpeOI) * curr.peDelta * lotSize * 0.3) / DIVISOR;
-  } else if (dpeOI < 0 && dpeP <= 0) {
     peBuy = (Math.abs(dpeOI) * curr.peDelta * lotSize * 0.3) / DIVISOR;
+  } else if (dpeOI < 0 && dpeP <= 0) {
+    peWrite = (Math.abs(dpeOI) * curr.peDelta * lotSize * 0.3) / DIVISOR;
   }
   if (dpeOI === 0 && (curr.peVol - prev.peVol) > 0) {
     peBuy = (curr.peVol * curr.peDelta * lotSize * 0.4) / DIVISOR;

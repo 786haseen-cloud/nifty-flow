@@ -82,12 +82,14 @@ function computeStrike4ColorFlow(
   }
 
   // PE flow: (dOI * delta * lotSize) / 1Cr
+  // Sep 17 2026 FIX: buckets were mirrored. Premium RISING on fresh OI =
+  // put BUYING (bearish); premium FALLING = put WRITING (bullish).
   if (dpeOI !== 0) {
     const peValue = Math.abs(dpeOI) * peDelta * lotSize;
-    if (dpeP <= 0) {
-      result.putBuy = peValue * peFactor;   // PE Buy: OI up + price down
+    if (dpeP > 0) {
+      result.putBuy = peValue * peFactor;   // PE Buy: OI up + price up (buyers lifting offers)
     } else {
-      result.putWrite = peValue * peFactor;  // PE Write: OI up + price up
+      result.putWrite = peValue * peFactor; // PE Write: OI up + price down (writers hitting bids)
     }
   }
 

@@ -47,6 +47,7 @@ import {
   type KiteQuote,
 } from '@/lib/kite-api';
 import { applyKiteCredsFromRequest } from '@/lib/kite-route-helper';
+import { classifyStrikeFlow } from '@/lib/option-flow-classify';
 import { istTodayISO, extractTimeSecFromKiteTS } from '@/lib/ist';
 
 // ─── Types ───
@@ -96,6 +97,11 @@ interface HistoricalFlowResponse {
   }>>;
   /** Cumulative flow totals per symbol (Cr) — client resumes from these */
   cumulativeFlow: Record<string, number>;
+  /** Cumulative BULLISH flow per symbol (Cr) since open — feeds the
+   *  Stock Options Money Flow card's Bull/Bear split badge. Sep 17 2026. */
+  bullFlow: Record<string, number>;
+  /** Cumulative BEARISH flow per symbol (Cr) since open — same consumer. */
+  bearFlow: Record<string, number>;
   error?: string;
 }
 
@@ -127,39 +133,20 @@ function bsDelta(isCall: boolean, S: number, K: number, T: number, r = 0.065, si
   return isCall ? normCDF(d1) : normCDF(d1) - 1;
 }
 
-// ─── 4-Color Flow Engine (server-side copy) ───
+// ─── Flow computation (SHARED classifier) ───
+// Sep 17 2026: the local copy of the 4-color engine had the put side
+// mirrored (PE OI↑ + premium↑ classified "PE Write"/bullish — physically
+// backwards: premium rising on fresh OI = put BUYING = bearish). It now
+// delegates to option-flow-classify.ts — the same code the client live
+// engine runs — so the backfilled curve and the live 15s engine can never
+// drift apart again. Returns both halves for the Bull/Bear split badge.
 
 function computeFlowBetweenCandles(
   prev: { ceOI: number; peOI: number; ceLTP: number; peLTP: number; ceDelta: number; peDelta: number },
   curr: { ceOI: number; peOI: number; ceLTP: number; peLTP: number; ceDelta: number; peDelta: number },
   lotSize: number,
-): number {
-  let bullish = 0;
-  let bearish = 0;
-  const CR = 10000000;
-
-  const ceDeltaOI = curr.ceOI - prev.ceOI;
-  const peDeltaOI = curr.peOI - prev.peOI;
-  const ceDeltaPrice = curr.ceLTP - prev.ceLTP;
-  const peDeltaPrice = curr.peLTP - prev.peLTP;
-
-  if (ceDeltaOI > 0) {
-    const val = (Math.abs(ceDeltaOI) * curr.ceDelta * lotSize) / CR;
-    if (ceDeltaPrice > 0) bullish += val; else bearish += val;
-  } else if (ceDeltaOI < 0) {
-    const val = (Math.abs(ceDeltaOI) * 0.3 * curr.ceDelta * lotSize) / CR;
-    if (ceDeltaPrice > 0) bullish += val; else bearish += val;
-  }
-
-  if (peDeltaOI > 0) {
-    const val = (Math.abs(peDeltaOI) * curr.peDelta * lotSize) / CR;
-    if (peDeltaPrice > 0) bullish += val; else bearish += val;
-  } else if (peDeltaOI < 0) {
-    const val = (Math.abs(peDeltaOI) * 0.3 * curr.peDelta * lotSize) / CR;
-    if (peDeltaPrice > 0) bullish += val; else bearish += val;
-  }
-
-  return bullish - bearish;
+): { bullish: number; bearish: number } {
+  return classifyStrikeFlow(prev, curr, lotSize);
 }
 
 // ─── Historical Flow Computation ───
@@ -219,10 +206,14 @@ async function fetchHistoricalFlow(): Promise<HistoricalFlowResponse> {
     flowPerTimestamp: Map<string, number>;
     lastSnapshot: Array<{ strike: number; ceLTP: number; peLTP: number; ceOI: number; peOI: number; ceVol: number; peVol: number; ceDelta: number; peDelta: number }>;
     totalFlow: number;
+    totalBull: number;
+    totalBear: number;
   }
 
   const results: SymbolFlowResult[] = [];
   let apiCallCount = 0;
+  const bullFlow: Record<string, number> = {};
+  const bearFlow: Record<string, number> = {};
 
   for (const { spec, cashToken } of specCashTokens) {
     const spotQ = cashQuotes[String(cashToken)] as KiteQuote | undefined;
@@ -328,6 +319,8 @@ async function fetchHistoricalFlow(): Promise<HistoricalFlowResponse> {
     // Step 3: Walk through 5-min candles, compute flow per timestamp
     const flowPerTimestamp = new Map<string, number>();
     let totalFlow = 0;
+    let totalBull = 0;
+    let totalBear = 0;
 
     const allTimestamps = new Set<string>();
     for (const [, candles] of ceCandlesByToken) {
@@ -342,7 +335,8 @@ async function fetchHistoricalFlow(): Promise<HistoricalFlowResponse> {
     for (let t = 1; t < sortedTimestamps.length; t++) {
       const prevTime = sortedTimestamps[t - 1];
       const currTime = sortedTimestamps[t];
-      let intervalFlow = 0;
+      let intervalBull = 0;
+      let intervalBear = 0;
 
       for (const strike of strikeList) {
         const ceCandles = ceCandlesByToken.get(strike);
@@ -360,14 +354,19 @@ async function fetchHistoricalFlow(): Promise<HistoricalFlowResponse> {
         const ceDelta = Math.abs(bsDelta(true, spotPrice, strike, T));
         const peDelta = Math.abs(bsDelta(false, spotPrice, strike, T));
 
-        intervalFlow += computeFlowBetweenCandles(
+        const leg = computeFlowBetweenCandles(
           { ceOI: cePrev.oi, peOI: pePrev.oi, ceLTP: cePrev.close, peLTP: pePrev.close, ceDelta, peDelta },
           { ceOI: ceCurr.oi, peOI: peCurr.oi, ceLTP: ceCurr.close, peLTP: peCurr.close, ceDelta, peDelta },
           lotSize,
         );
+        intervalBull += leg.bullish;
+        intervalBear += leg.bearish;
       }
 
+      const intervalFlow = intervalBull - intervalBear;
       totalFlow += intervalFlow;
+      totalBull += intervalBull;
+      totalBear += intervalBear;
       const timeStr = extractTimeSecFromKiteTS(currTime);
       flowPerTimestamp.set(timeStr, totalFlow);
     }
@@ -398,7 +397,7 @@ async function fetchHistoricalFlow(): Promise<HistoricalFlowResponse> {
       });
     }
 
-    results.push({ symbol: spec.symbol, type: isIndex ? 'index' : 'stock', flowPerTimestamp, lastSnapshot, totalFlow });
+    results.push({ symbol: spec.symbol, type: isIndex ? 'index' : 'stock', flowPerTimestamp, lastSnapshot, totalFlow, totalBull, totalBear });
   }
 
   // Step 4: Merge all symbols into unified FlowTrendPoint[]
@@ -468,12 +467,14 @@ async function fetchHistoricalFlow(): Promise<HistoricalFlowResponse> {
 
   for (const r of results) {
     cumulativeFlow[r.symbol] = Math.round(r.totalFlow * 10) / 10;
+    bullFlow[r.symbol] = Math.round(r.totalBull * 10) / 10;
+    bearFlow[r.symbol] = Math.round(r.totalBear * 10) / 10;
     if (r.lastSnapshot.length > 0) prevSnapshots[r.symbol] = r.lastSnapshot;
   }
 
   console.log(`[HistFlow] Done. ${apiCallCount} API calls, ${flowTrend.length} pts, ${results.length} symbols`);
 
-  return { mode: 'live', timestamp: new Date().toISOString(), flowTrend, prevSnapshots, cumulativeFlow };
+  return { mode: 'live', timestamp: new Date().toISOString(), flowTrend, prevSnapshots, cumulativeFlow, bullFlow, bearFlow };
 }
 
 // ─── GET Handler ───
@@ -490,7 +491,7 @@ export async function GET(request: NextRequest) {
     if (!configured) {
       return NextResponse.json({
         mode: 'demo', timestamp: new Date().toISOString(),
-        flowTrend: [], prevSnapshots: {}, cumulativeFlow: {},
+        flowTrend: [], prevSnapshots: {}, cumulativeFlow: {}, bullFlow: {}, bearFlow: {},
       });
     }
 
@@ -503,7 +504,7 @@ export async function GET(request: NextRequest) {
     console.error('[HistFlow] Error:', errMsg);
     return NextResponse.json({
       mode: 'error', timestamp: new Date().toISOString(),
-      flowTrend: [], prevSnapshots: {}, cumulativeFlow: {}, error: errMsg,
+      flowTrend: [], prevSnapshots: {}, cumulativeFlow: {}, bullFlow: {}, bearFlow: {}, error: errMsg,
     });
   }
 }

@@ -10,6 +10,8 @@
  * data contract between client and server explicit.
  */
 
+import { classifyStrikeFlow } from './option-flow-classify';
+
 export interface NiftyCandle {
   time: string;
   close: number;
@@ -148,11 +150,11 @@ export const IDX_NAMES: Record<string, string> = {
  *   - Δ OI > 0  → new positions opened, valued at full delta × lotSize
  *   - Δ OI < 0  → positions closed (short covering / unwinding), valued at 0.3× factor
  *
- * Direction (bullish/bearish) is decided by sign of Δ price:
- *   - CE ΔOI > 0 + Δ price > 0 → CE Buy (bullish)
- *   - CE ΔOI > 0 + Δ price < 0 → CE Write (bearish)
- *   - PE ΔOI > 0 + Δ price > 0 → PE Write (bullish)
- *   - PE ΔOI > 0 + Δ price < 0 → PE Buy (bearish)
+ * Direction = canonical OI×premium buildup table (see option-flow-classify.ts
+ * for the full table + the Sep 17 2026 put-side fix). Classification lives in
+ * the SHARED classifier — this wrapper and /api/kite/historical-flow must
+ * never drift apart again (the put-side inversion the user caught lived
+ * precisely in that drift).
  */
 export function computeSymbolFlow(
   prev: StrikeData[],
@@ -162,38 +164,31 @@ export function computeSymbolFlow(
   let bullish = 0;
   let bearish = 0;
 
-  const CR = 10000000; // 1 Crore
-
   for (const currStrike of curr) {
     const prevStrike = prev.find((s) => s.strike === currStrike.strike);
     if (!prevStrike) continue;
 
-    const ceDeltaOI = currStrike.ceOI - prevStrike.ceOI;
-    const peDeltaOI = currStrike.peOI - prevStrike.peOI;
-    const ceDeltaPrice = currStrike.ceLTP - prevStrike.ceLTP;
-    const peDeltaPrice = currStrike.peLTP - prevStrike.peLTP;
-
-    // CE Flow
-    if (ceDeltaOI > 0) {
-      const val = (Math.abs(ceDeltaOI) * currStrike.ceDelta * lotSize) / CR;
-      if (ceDeltaPrice > 0) bullish += val;
-      else bearish += val;
-    } else if (ceDeltaOI < 0) {
-      const val = (Math.abs(ceDeltaOI) * 0.3 * currStrike.ceDelta * lotSize) / CR;
-      if (ceDeltaPrice > 0) bullish += val;
-      else bearish += val;
-    }
-
-    // PE Flow
-    if (peDeltaOI > 0) {
-      const val = (Math.abs(peDeltaOI) * currStrike.peDelta * lotSize) / CR;
-      if (peDeltaPrice > 0) bullish += val;
-      else bearish += val;
-    } else if (peDeltaOI < 0) {
-      const val = (Math.abs(peDeltaOI) * 0.3 * currStrike.peDelta * lotSize) / CR;
-      if (peDeltaPrice > 0) bullish += val;
-      else bearish += val;
-    }
+    const leg = classifyStrikeFlow(
+      {
+        ceOI: prevStrike.ceOI,
+        peOI: prevStrike.peOI,
+        ceLTP: prevStrike.ceLTP,
+        peLTP: prevStrike.peLTP,
+        ceDelta: currStrike.ceDelta,
+        peDelta: currStrike.peDelta,
+      },
+      {
+        ceOI: currStrike.ceOI,
+        peOI: currStrike.peOI,
+        ceLTP: currStrike.ceLTP,
+        peLTP: currStrike.peLTP,
+        ceDelta: currStrike.ceDelta,
+        peDelta: currStrike.peDelta,
+      },
+      lotSize,
+    );
+    bullish += leg.bullish;
+    bearish += leg.bearish;
   }
 
   return { bullish, bearish, net: bullish - bearish };

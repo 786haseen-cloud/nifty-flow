@@ -356,6 +356,9 @@ export default function TrendAnalysisTab() {
   const cashFlowTrend = useTrendStore((s) => s.cashFlowTrend);
   const flowTrend = useTrendStore((s) => s.flowTrend);
   const cumulativeFlow = useTrendStore((s) => s.cumulativeFlow);
+  // Bull/Bear halves for the Stock Options Money Flow split badge (Sep 17 2026)
+  const cumulativeBull = useTrendStore((s) => s.cumulativeBull);
+  const cumulativeBear = useTrendStore((s) => s.cumulativeBear);
   const currentIdxFlows = useTrendStore((s) => s.currentIdxFlows);
   const currentStockFlow = useTrendStore((s) => s.currentStockFlow);
   // Per-stock 15s delta (Cr) for the most recent live poll. Used by the
@@ -815,6 +818,32 @@ export default function TrendAnalysisTab() {
                   ? currentStockFlow
                   : (currentStockPerSym[stockView] || 0))}
               </div>
+              {/* Bull/Bear split badge (Sep 17 2026) — shows BOTH halves of
+                  today's flow so a negative net reads as "bear side winning",
+                  not as a broken card. bull − bear == Cum. Aggregate view
+                  sums the 15 stocks; per-stock view shows that stock's own
+                  split. Hidden until the feed has produced some flow. */}
+              {(() => {
+                const bull = stockView === 'aggregate'
+                  ? (cumulativeBull.stockAggregate || 0)
+                  : (cumulativeBull[stockView] || 0);
+                const bear = stockView === 'aggregate'
+                  ? (cumulativeBear.stockAggregate || 0)
+                  : (cumulativeBear[stockView] || 0);
+                if (bull + bear <= 0) return null;
+                const bullPct = (bull / (bull + bear)) * 100;
+                return (
+                  <div className="mt-1 w-[130px]">
+                    <div className="flex items-center justify-between gap-2 text-[10px] font-mono">
+                      <span className="text-emerald-400">Bull {fmtCr(bull)}</span>
+                      <span className="text-red-400">Bear {fmtCr(bear)}</span>
+                    </div>
+                    <div className="mt-0.5 flex h-1 w-full overflow-hidden rounded bg-red-500/50">
+                      <div className="h-full bg-emerald-500" style={{ width: `${bullPct}%` }} />
+                    </div>
+                  </div>
+                );
+              })()}
             </div>
           </div>
           {/* Stock selector dropdown — 'aggregate' = single orange line
