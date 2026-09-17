@@ -19,7 +19,7 @@
 
 const KITE_BASE = 'https://api.kite.trade';
 
-import { toIST, istKiteDateFormat, istTodayISO } from './ist';
+import { toIST, istKiteDateFormat, istTodayISO, extractTimeSecFromKiteTS } from './ist';
 import { getStoredCredsSync } from './kite-creds-store';
 
 // ─── Config ───
@@ -491,7 +491,28 @@ export async function getTodayCandles(
 ): Promise<KiteHistoricalCandle[]> {
   if (!isKiteConfigured()) return [];
   const today = istTodayISO();
-  return fetchCandleRange(instrumentToken, interval, `${today} 09:15:00`, `${today} 15:30:00`);
+  const raw = await fetchCandleRange(instrumentToken, interval, `${today} 09:15:00`, `${today} 15:30:00`);
+  // DEFENSIVE FILTER — drop pre-open auction candles (Sep 17 2026 regression:
+  // user reported the three flow cards starting at 08:55 / 09:00 instead of
+  // 09:15). Kite's `from` parameter is supposed to bound the response, but
+  // in practice Kite returns:
+  //   - NSE EQ pre-open auction candles (09:00–09:15) despite from=09:15:00
+  //   - A stray 08:55 boundary candle for some BSE EQ instruments
+  //   - Pre-open candles on INDEX tokens when the call straddles the
+  //     session-open boundary
+  // The first candle of the regular session is 09:15. Any candle whose IST
+  // time-of-day is < 09:15:00 is pre-open noise that pollutes the
+  // reconstructed flow trend (chart X-axis starts at 08:55/09:00 instead of
+  // 09:15, misaligning the money-flow cards with the Nifty price line).
+  // String comparison on 'HH:MM:SS' works because the format is fixed-width
+  // 24-hour and Kite timestamps are always IST ISO with +0530 offset
+  // (verified — see extractTimeSecFromKiteTS docblock).
+  const SESSION_OPEN = '09:15:00';
+  const filtered = raw.filter(c => {
+    const t = extractTimeSecFromKiteTS(c.timestamp);
+    return t >= SESSION_OPEN;
+  });
+  return filtered;
 }
 
 // ─── Option Chain ───
