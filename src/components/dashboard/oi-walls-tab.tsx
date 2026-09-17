@@ -7,6 +7,7 @@ import { Target, Activity, BarChart3, Wifi, WifiOff, RefreshCw, TrendingUp, Tren
 import { INDEX_SPECS, STOCK_SPECS, getInstrumentSpec } from '@/lib/kite-api';
 import { useKiteSnapshot } from '@/hooks/use-kite-snapshot';
 import type { StrikeFlowSnapshot, StrikeFlowData } from '@/lib/kite-api';
+import CompositeMaxPainCard from './composite-max-pain-card';
 
 // ═══════════════════════════════════════════
 // TYPES
@@ -313,6 +314,7 @@ export default function OIWallsTab() {
   const [scanData, setScanData] = useState<MaxPainScanItem[]>([]);
   const [scanLoading, setScanLoading] = useState(false);
   const [scanError, setScanError] = useState<string | null>(null);
+  const [scanLastUpdated, setScanLastUpdated] = useState<string | null>(null);
   const [gravitySignal, setGravitySignal] = useState<GravitySignal | null>(null);
   // Pre-computed per-strike deltas (computed in fetchData, read during render)
   // Pre-computed per-strike deltas — 30s realtime
@@ -427,6 +429,7 @@ export default function OIWallsTab() {
       if (json.mode === 'live' && json.symbols?.length > 0) {
         const items: MaxPainScanItem[] = json.symbols;
         setScanData(items);
+        setScanLastUpdated(new Date().toISOString());
 
         // Compute gravity signal — works BOTH directions
         const indices = items.filter(s => s.type === 'index');
@@ -1232,6 +1235,18 @@ export default function OIWallsTab() {
           </div>
         ) : null}
       </div>
+
+      {/* ─── Composite Max Pain Magnet (Task 41) ───
+          Aggregates (maxPain − spot) × OI across all 19 symbols into a
+          single OI-weighted pull reading. Tier badge auto-detected from
+          IST expiry calendar — strongest on NSE super-monthly Tuesday. */}
+      <CompositeMaxPainCard
+        scanData={scanData}
+        loading={scanLoading}
+        error={scanError}
+        lastUpdated={scanLastUpdated}
+        onRefresh={fetchScan}
+      />
     </div>
   );
 }
