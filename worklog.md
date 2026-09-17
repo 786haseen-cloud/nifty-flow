@@ -929,3 +929,28 @@ Stage Summary:
 - The put side of every options-flow display in the app now follows the canonical buildup table; the card reads TRUE net directional flow (put writing at support = bullish, put buying on dips = bearish), and the Bull/Bear split badge makes both halves visible so a negative net reads as "bear side winning" instead of a suspected broken calculation
 - Shared classifier kills the copy-drift bug class permanently for Cards 3+4; bucket copies fixed in place (consolidation optional follow-up)
 - Tomorrow's session: first live day of corrected put-side flow + badge; expect historically negative sessions to possibly read less negative (put-writing-heavy days)
+
+---
+Task ID: 40
+Agent: main (Super Z)
+Task: User reported Sep 17 evening — three money-flow cards start at wrong time: Net Cash Flow — 15 Stocks at 08:55 IST (should be 09:15), Index Options Money Flow + Stock Options Money Flow at 09:00 IST (should be 09:15). Nifty 50 Intraday Price Trend card correctly starts at 09:15.
+
+Work Log:
+- Audited the candle-fetch pipeline. Nifty 50 card uses /api/kite/trends → getCandles(NIFTY50_TOKEN, '5minute', 1) (the OLD helper, fetches last 24h). NIFTY50 is an INDEX token — no pre-open auction — so Kite returns first candle at 09:15 IST cleanly. That's why Nifty 50 starts at 09:15.
+- The three flow cards use /api/kite/historical-flow and /api/kite/historical-cash-flow, both of which call getTodayCandles(token, '5minute'). getTodayCandles passes from="${today} 09:15:00" to Kite's /instruments/historical endpoint. Kite's `from` parameter is documented to bound the response, but in practice Kite RETURNS pre-open auction candles despite from=09:15:00:
+  * NSE EQ pre-open auction is 09:00–09:15 → Kite returns a 09:00 candle covering pre-open activity
+  * Some BSE EQ instruments get a stray 08:55 boundary candle (5-min candle that straddles the previous-session-close + pre-open boundary)
+  * INDEX option-contract tokens (when called near 09:15) sometimes get a 09:00 straddle candle
+- These pre-09:15 candles are added to the allTimestamps union in the route, walk loop starts at index 1 (prev=08:55, curr=09:00), the first flowPerTimestamp.set(timeStr, totalFlow) writes timeStr="09:00:00" → chart X-axis starts at 09:00. For card 1 (cash flow), extractTimeSecFromKiteTS is called per-candle and added to globalTimestamps, so the 08:55 candle appears directly → chart starts at 08:55.
+- ROOT CAUSE: Kite's `from` parameter is a request-time hint, not a hard server-side filter on the response. The first candle returned often straddles the boundary.
+- FIX: Defensive server-side filter inside getTodayCandles itself (lowest-level shared helper, so /api/kite/historical-flow, /api/kite/historical-cash-flow, and any future caller all benefit). After fetchCandleRange returns, drop any candle whose IST time-of-day string < '09:15:00'. String comparison on 'HH:MM:SS' works because the format is fixed-width 24-hour and Kite timestamps are always IST ISO with +0530 offset (see extractTimeSecFromKiteTS docblock in src/lib/ist.ts).
+- Live poll path verified unaffected: pollOnce has `if (phase !== 'open') { ... return; }` gate (trend-store.ts:693) using getMarketPhase which returns 'pre' for mins<09:15. So no live point can ever be written with a pre-09:15 timestamp — the bug is purely in the backfill path.
+- Inline sanity test (6/6 PASS): 08:55 → DROP, 09:00 → DROP, 09:14:59 → DROP, 09:15:00 → KEEP, 09:15:01 → KEEP, 15:30:00 → KEEP.
+- Regression suites still green: scripts/test-flow-classification.ts 21/21 PASS, scripts/test-max-probability.ts 34/34 PASS. tsc clean in kite-api.ts (pre-existing errors in unrelated files like highest-bet-tracker.tsx, option-flow-tv.tsx, historical-flow/route.ts:158 — missing bullFlow/bearFlow in error returns — are pre-existing from Task 39 commit, not introduced here).
+- Git: clean pull --ff-only origin main (no divergence this time), commit b133bdd pushed. Vercel auto-deploys.
+- USER-VISIBLE FIX TIMING: Fix is live on production NOW. But the user's dashboard localStorage still has today's Sep 17 data with 08:55/09:00 starting points (pollOnce appends, doesn't replace historical backfill-then-merge unless _historicalBackfillDone is reset). For the fix to be visible TODAY: user opens Settings → Save & Test → notifyCredsRefreshed clears state + force-triggers fresh backfill with new filter → chart replaces with 09:15-starting data. Otherwise the fix is naturally visible TOMORROW morning Sep 18 at market open: date-boundary check clears state, first poll fires demo→live transition, force backfill runs with the new filter, all 3 cards start at 09:15 cleanly.
+
+Stage Summary:
+- Single fix at the shared lowest-level helper covers all three cards. No change needed in the route logic, the merge logic, or the UI. Kite's pre-open candles are now dropped before they can pollute the reconstructed curve.
+- Tomorrow Sep 18 morning session is the first natural test: all three flow cards should start at 09:15 IST identical to the Nifty 50 card.
+- Watch item: if Kite later changes behavior and starts returning candles at, say, 09:30 (unlikely), the filter still works because it's a one-sided lower-bound check.
