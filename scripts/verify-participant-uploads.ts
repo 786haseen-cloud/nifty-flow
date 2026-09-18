@@ -11,8 +11,8 @@ import { parseParticipantCsv } from '../src/lib/participant-csv-parser';
 
 const FILES = [
   'fii-dii-nse-latest.csv',
-  'fao_participant_oi_07092026.csv',
-  'fao_participant_vol_07092026.csv',
+  'fao_participant_oi_18092026.csv',
+  'fao_participant_vol_18092026.csv',
 ];
 
 const UPLOAD_DIR = path.join(__dirname, '..', 'upload');

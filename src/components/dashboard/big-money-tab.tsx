@@ -10,6 +10,7 @@ import {
 } from 'lucide-react';
 import { useKiteSnapshot, type SnapshotSymbol } from '@/hooks/use-kite-snapshot';
 import { formatNum } from '@/lib/demo-data';
+import SmartMoneyOiFlowCard from './smart-money-oi-flow-card';
 
 const INDEX_KEYS = ['NIFTY', 'BANKNIFTY', 'SENSEX', 'FINNIFTY'] as const;
 const INDEX_NAMES: Record<string, string> = {
@@ -491,6 +492,13 @@ export default function BigMoneyTab() {
           </div>
         </CardContent>
       </Card>
+
+      {/* ═══ SECTION 4: Smart Money OI Flow (Task 42) ═══
+          EOD participant positioning across 3 days — 6 instrument-category
+          tables + 3-day carried positions + net execution summary + auto
+          prediction verdict. Reads /api/participants/positioning?days=3
+          (Upstash-backed, populated by the daily NSE CSV upload routine). */}
+      <SmartMoneyOiFlowCard />
 
       {/* ═══ FOOTER ═══ */}
       <div className="text-center text-[10px] text-muted-foreground py-2">

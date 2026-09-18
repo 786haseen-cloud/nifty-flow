@@ -59,13 +59,66 @@ export interface ParsedParticipantCsv {
     fii: { longContracts: number; shortContracts: number };
     pro: { longContracts: number; shortContracts: number };
   };
+  /**
+   * Per-instrument-category breakdown (Task 42) — only populated for
+   * fao_participant_oi / fao_participant_volume. Lets the Smart Money OI
+   * Flow card render the 6-table reference layout (Index Future / Index Call
+   * / Index Put / Stock Future / Stock Call / Stock Put) showing how each
+   * participant is positioned across instrument categories.
+   *
+   * NOTE: `longContracts`/`shortContracts` above remain the AGGREGATED totals
+   * (last two NSE columns); this `breakdown` field has the per-category split.
+   * Either can be used independently — the totals are kept for back-compat
+   * with existing Phase 2b reads.
+   */
+  breakdown?: {
+    client: ParticipantCategoryBreakdown;
+    dii: ParticipantCategoryBreakdown;
+    fii: ParticipantCategoryBreakdown;
+    pro: ParticipantCategoryBreakdown;
+  };
   /** Human-readable summary of what was parsed. */
   summary: string;
   /** Any warnings (e.g. partial data, format quirks). */
   warnings: string[];
 }
 
+/**
+ * Per-instrument-category long/short contract counts for one participant.
+ * Six categories matching the NSE F&O participant report columns.
+ */
+export interface ParticipantCategoryBreakdown {
+  /** Index Futures (NSE column: Future Index Long / Future Index Short). */
+  indexFutures:  { long: number; short: number };
+  /** Index Call options (NSE column: Option Index Call Long / Option Index Call Short). */
+  indexCalls:    { long: number; short: number };
+  /** Index Put options (NSE column: Option Index Put Long / Option Index Put Short). */
+  indexPuts:     { long: number; short: number };
+  /** Stock Futures (NSE column: Future Stock Long / Future Stock Short). */
+  stockFutures: { long: number; short: number };
+  /** Stock Call options (NSE column: Option Stock Call Long / Option Stock Call Short). */
+  stockCalls:    { long: number; short: number };
+  /** Stock Put options (NSE column: Option Stock Put Long / Option Stock Put Short). */
+  stockPuts:     { long: number; short: number };
+}
+
 // ─── Helpers ───
+
+/**
+ * Build a zeroed-out breakdown object for one participant.
+ * Used as the initial state before row data is filled in.
+ */
+function emptyBreakdown(): ParticipantCategoryBreakdown {
+  const zero = { long: 0, short: 0 };
+  return {
+    indexFutures: { ...zero },
+    indexCalls: { ...zero },
+    indexPuts: { ...zero },
+    stockFutures: { ...zero },
+    stockCalls: { ...zero },
+    stockPuts: { ...zero },
+  };
+}
 
 /**
  * Parse a number that may be:
@@ -350,11 +403,57 @@ function parseFaoParticipantOi(rows: string[][]): Omit<ParsedParticipantCsv, 'fo
     if (h.includes('total short contracts')) totalShortIdx = i;
   }
 
+  // ─── Per-category column detection (Task 42) ───
+  // NSE standard column order (indices are positional fallbacks):
+  //   0: Client Type
+  //   1: Future Index Long     2: Future Index Short
+  //   3: Future Stock Long    4: Future Stock Short
+  //   5: Option Index Call Long   6: Option Index Put Long
+  //   7: Option Index Call Short   8: Option Index Put Short
+  //   9: Option Stock Call Long    10: Option Stock Put Long
+  //   11: Option Stock Call Short  12: Option Stock Put Short
+  //   13: Total Long Contracts     14: Total Short Contracts
+  //
+  // We look up by name (lowercase substring match) with positional defaults.
+  // Positional defaults assume the 15-column layout above; if NSE adds/removes
+  // columns the name match will override the positional default.
+  const colIdx = {
+    futIdxLong: 1, futIdxShort: 2,
+    futStkLong: 3, futStkShort: 4,
+    optIdxCallLong: 5, optIdxPutLong: 6,
+    optIdxCallShort: 7, optIdxPutShort: 8,
+    optStkCallLong: 9, optStkPutLong: 10,
+    optStkCallShort: 11, optStkPutShort: 12,
+  };
+  for (let i = 0; i < header.length; i++) {
+    const h = header[i].toLowerCase().replace(/\s+/g, ' ').trim();
+    if (h === 'future index long') colIdx.futIdxLong = i;
+    else if (h === 'future index short') colIdx.futIdxShort = i;
+    else if (h === 'future stock long') colIdx.futStkLong = i;
+    else if (h === 'future stock short') colIdx.futStkShort = i;
+    else if (h === 'option index call long') colIdx.optIdxCallLong = i;
+    else if (h === 'option index put long') colIdx.optIdxPutLong = i;
+    else if (h === 'option index call short') colIdx.optIdxCallShort = i;
+    else if (h === 'option index put short') colIdx.optIdxPutShort = i;
+    else if (h === 'option stock call long') colIdx.optStkCallLong = i;
+    else if (h === 'option stock put long') colIdx.optStkPutLong = i;
+    else if (h === 'option stock call short') colIdx.optStkCallShort = i;
+    else if (h === 'option stock put short') colIdx.optStkPutShort = i;
+  }
+
   const positioning: ParsedParticipantCsv['positioning'] = {
     client: { longContracts: 0, shortContracts: 0 },
     dii: { longContracts: 0, shortContracts: 0 },
     fii: { longContracts: 0, shortContracts: 0 },
     pro: { longContracts: 0, shortContracts: 0 },
+  };
+
+  // Per-category breakdown — same 4 participants, 6 instrument categories each.
+  const breakdown: ParsedParticipantCsv['breakdown'] = {
+    client: emptyBreakdown(),
+    dii: emptyBreakdown(),
+    fii: emptyBreakdown(),
+    pro: emptyBreakdown(),
   };
 
   for (let i = headerIdx + 1; i < rows.length; i++) {
@@ -364,10 +463,30 @@ function parseFaoParticipantOi(rows: string[][]): Omit<ParsedParticipantCsv, 'fo
     const long = parseNumber(row[totalLongIdx]);
     const short = parseNumber(row[totalShortIdx]);
 
-    if (cat === 'client') positioning.client = { longContracts: long, shortContracts: short };
-    else if (cat === 'dii') positioning.dii = { longContracts: long, shortContracts: short };
-    else if (cat === 'fii') positioning.fii = { longContracts: long, shortContracts: short };
-    else if (cat === 'pro') positioning.pro = { longContracts: long, shortContracts: short };
+    // Per-category extraction — read directly from the named columns.
+    // Safe even if positional defaults are wrong (parseNumber returns 0 on bad input).
+    const catBd: ParticipantCategoryBreakdown = {
+      indexFutures:  { long: parseNumber(row[colIdx.futIdxLong]),    short: parseNumber(row[colIdx.futIdxShort]) },
+      indexCalls:    { long: parseNumber(row[colIdx.optIdxCallLong]), short: parseNumber(row[colIdx.optIdxCallShort]) },
+      indexPuts:     { long: parseNumber(row[colIdx.optIdxPutLong]),  short: parseNumber(row[colIdx.optIdxPutShort]) },
+      stockFutures: { long: parseNumber(row[colIdx.futStkLong]),    short: parseNumber(row[colIdx.futStkShort]) },
+      stockCalls:    { long: parseNumber(row[colIdx.optStkCallLong]), short: parseNumber(row[colIdx.optStkCallShort]) },
+      stockPuts:     { long: parseNumber(row[colIdx.optStkPutLong]),  short: parseNumber(row[colIdx.optStkPutShort]) },
+    };
+
+    if (cat === 'client') {
+      positioning.client = { longContracts: long, shortContracts: short };
+      breakdown.client = catBd;
+    } else if (cat === 'dii') {
+      positioning.dii = { longContracts: long, shortContracts: short };
+      breakdown.dii = catBd;
+    } else if (cat === 'fii') {
+      positioning.fii = { longContracts: long, shortContracts: short };
+      breakdown.fii = catBd;
+    } else if (cat === 'pro') {
+      positioning.pro = { longContracts: long, shortContracts: short };
+      breakdown.pro = catBd;
+    }
   }
 
   // Note: contracts ≠ ₹ Cr. We do NOT populate fii/dii/client/propdesk with
@@ -394,6 +513,7 @@ function parseFaoParticipantOi(rows: string[][]): Omit<ParsedParticipantCsv, 'fo
     client: 0,
     propdesk: 0,
     positioning,
+    breakdown,
     summary,
     warnings,
   };

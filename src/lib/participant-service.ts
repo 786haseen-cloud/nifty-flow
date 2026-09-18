@@ -466,17 +466,46 @@ export async function getCachedParticipantBias(): Promise<ParticipantBiasResult>
 
 export type PositioningReportType = 'fao_oi' | 'fao_vol';
 
+/**
+ * Per-instrument-category long/short contract counts for one participant.
+ * Mirrors the same shape from the CSV parser — six categories matching the
+ * NSE F&O participant report columns. Persisted alongside the aggregated
+ * totals so the Smart Money OI Flow card can render the 6-table reference
+ * layout (Task 42).
+ */
+export interface ParticipantCategoryBreakdown {
+  indexFutures:  { long: number; short: number };
+  indexCalls:    { long: number; short: number };
+  indexPuts:     { long: number; short: number };
+  stockFutures: { long: number; short: number };
+  stockCalls:    { long: number; short: number };
+  stockPuts:     { long: number; short: number };
+}
+
 export interface ParticipantPositioning {
   /** IST trading-day date (YYYY-MM-DD). */
   date: string;
   /** Which NSE report — 'fao_oi' (snapshot) or 'fao_vol' (today's trades). */
   reportType: PositioningReportType;
-  /** Per-participant long/short contract counts. */
+  /** Per-participant long/short contract counts (aggregated totals). */
   positioning: {
     client: { longContracts: number; shortContracts: number };
     dii: { longContracts: number; shortContracts: number };
     fii: { longContracts: number; shortContracts: number };
     pro: { longContracts: number; shortContracts: number };
+  };
+  /**
+   * Per-participant per-instrument-category breakdown (Task 42).
+   * May be absent on entries saved before Task 42 shipped — readers must
+   * treat as optional. The aggregated `positioning` totals remain the
+   * canonical aggregate and continue to be saved even when breakdown is
+   * present.
+   */
+  breakdown?: {
+    client: ParticipantCategoryBreakdown;
+    dii: ParticipantCategoryBreakdown;
+    fii: ParticipantCategoryBreakdown;
+    pro: ParticipantCategoryBreakdown;
   };
   /** Unix ms when stored. */
   ts: number;
@@ -517,6 +546,10 @@ export async function saveParticipantPositioning(
     date: entry.date,
     reportType: entry.reportType,
     positioning: entry.positioning,
+    // Persist breakdown if caller provided it. Old callers (Phase 2b) don't
+    // set this field and the resulting payload simply omits it — readers
+    // treat it as optional so back-compat is preserved.
+    ...(entry.breakdown ? { breakdown: entry.breakdown } : {}),
     ts: now,
   };
 

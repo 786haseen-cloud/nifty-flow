@@ -79,6 +79,10 @@ export async function POST(request: NextRequest) {
           date: parsed.date,
           reportType,
           positioning: parsed.positioning,
+          // Forward per-category breakdown (Task 42) when available — older
+          // saves (before this fix) simply lack the field; readers treat
+          // it as optional.
+          breakdown: parsed.breakdown,
         });
         if (saved) {
           positioningSaved = { reportType, date: parsed.date };
