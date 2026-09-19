@@ -157,6 +157,37 @@ function computeDeltas(
  * Score scale: -1.5 (max bear) to +1.5 (max bull). Each category contributes
  * a weighted vote; index categories weigh heavier than stock categories
  * because index flow moves the broader market more directly.
+ *
+ * ─── SIGN CONVENTION (Task 43 fix) ─────────────────────────────────────
+ *
+ * The `net` field = longDelta - shortDelta has OPPOSITE directional meaning
+ * depending on instrument category:
+ *
+ *   For CALLS  (Index Calls, Stock Calls):
+ *     longDelta > 0 = bought calls = BULLISH
+ *     shortDelta > 0 = wrote calls = BEARISH
+ *     → net > 0 = bullish ✓ (positive = bull)
+ *
+ *   For PUTS (Index Puts, Stock Puts):
+ *     longDelta > 0 = bought puts = BEARISH
+ *     shortDelta > 0 = wrote puts = BULLISH
+ *     → net > 0 = bearish ✗ (positive = bear — sign must FLIP)
+ *
+ *   For FUTURES (Index/Stock Futures):
+ *     longDelta > 0 = long futures = BULLISH
+ *     shortDelta > 0 = short futures = BEARISH
+ *     → net > 0 = bullish ✓ (positive = bull)
+ *
+ * We define `directionSign` per category: +1 for calls/futures, −1 for puts.
+ * Then `directionalImpact = net × directionSign` (positive = bullish for
+ * market). Smart money (FII/Pro/DII) scores by directionalImpact directly;
+ * Client (contrarian) scores by `-directionalImpact` (fade = invert).
+ *
+ * This bug was caught after the user asked to re-check all PUT logic — the
+ * uncorrected algorithm scored the Sep 18 straddle pattern (FII + Pro both
+ * bought calls AND puts heavily) as +1.45 STRONG BULL, when the corrected
+ * algorithm reads ~0.0 NEUTRAL with a "straddle / volatility expansion"
+ * headline — the right answer for a non-directional long-straddle setup.
  */
 function computePrediction(deltas: ParticipantDelta | null): Prediction {
   if (!deltas) {
@@ -170,7 +201,6 @@ function computePrediction(deltas: ParticipantDelta | null): Prediction {
 
   // Per-participant per-category weighted score.
   // Weights: index categories ×2 (they move the broader market), stock ×1.
-  // Sign of each contribution = sign of `net` (positive net = bullish stance).
   let score = 0;
   const weights: Record<CategoryKey, number> = {
     indexFutures: 2,
@@ -181,6 +211,19 @@ function computePrediction(deltas: ParticipantDelta | null): Prediction {
     stockPuts: 1,
   };
 
+  // directionSign per category — +1 for calls/futures, −1 for puts.
+  // Puts have INVERTED directional meaning vs calls: long put = bearish,
+  // short put = bullish. So net (longDelta - shortDelta) needs a sign flip
+  // before being interpreted as "bullish for market".
+  const directionSign: Record<CategoryKey, number> = {
+    indexFutures: +1,
+    indexCalls: +1,
+    indexPuts: -1,
+    stockFutures: +1,
+    stockCalls: +1,
+    stockPuts: -1,
+  };
+
   // Normalize raw Δ by typical magnitude (~100k contracts is meaningful).
   // Cap at ±1 per (participant × category) to avoid one cell dominating.
   const clamp = (v: number) => Math.max(-1, Math.min(1, v / 100_000));
@@ -188,32 +231,55 @@ function computePrediction(deltas: ParticipantDelta | null): Prediction {
   let fiiBull = 0, fiiBear = 0;
   let proBull = 0, proBear = 0;
   let clientBull = 0, clientBear = 0;
+  // Straddle detection: smart money (FII + Pro) long on BOTH calls AND puts
+  // (a volatility-expansion bet, not a directional one). Track the call-side
+  // and put-side "long pressure" from smart money separately.
+  let smartMoneyCallLongPressure = 0;
+  let smartMoneyPutLongPressure = 0;
 
   for (const c of CATEGORY_LABELS) {
     const w = weights[c.key];
+    const sign = directionSign[c.key];
 
-    // FII — moves the market
+    // FII — moves the market. directionalImpact > 0 = bullish for market.
     const fiiNet = deltas.fii[c.key].net;
-    score += clamp(fiiNet) * w * 0.5; // FII weight = 0.5 per unit
-    if (fiiNet > 0) fiiBull += w;
-    else if (fiiNet < 0) fiiBear += w;
+    const fiiImpact = fiiNet * sign;
+    score += clamp(fiiImpact) * w * 0.5;
+    if (fiiImpact > 0) fiiBull += w;
+    else if (fiiImpact < 0) fiiBear += w;
 
-    // Pro — also smart money
+    // Pro — also smart money.
     const proNet = deltas.pro[c.key].net;
-    score += clamp(proNet) * w * 0.3; // Pro weight = 0.3
-    if (proNet > 0) proBull += w;
-    else if (proNet < 0) proBear += w;
+    const proImpact = proNet * sign;
+    score += clamp(proImpact) * w * 0.3;
+    if (proImpact > 0) proBull += w;
+    else if (proImpact < 0) proBear += w;
 
-    // Client — CONTRARIAN. If client is short (selling), that's bullish.
-    // If client is long (buying), that's bearish (retail trapped).
+    // Track smart-money long-pressure for straddle detection.
+    // "Long pressure" on a category = participant is buying that side.
+    // For CALLS: positive net = buying calls = call long pressure.
+    // For PUTS: positive net = buying puts = put long pressure.
+    // (We use the raw `net` here — not `directionalImpact` — because we
+    // want to know what side the participant BOUGHT, not the market impact.)
+    if (c.key === 'indexCalls' || c.key === 'stockCalls') {
+      smartMoneyCallLongPressure += (fiiNet + proNet);
+    } else if (c.key === 'indexPuts' || c.key === 'stockPuts') {
+      smartMoneyPutLongPressure += (fiiNet + proNet);
+    }
+
+    // Client — CONTRARIAN. If Client's directionalImpact is positive
+    // (Client is bullish), fade → bearish. If negative (Client bearish),
+    // fade → bullish. So we negate Client's directionalImpact before scoring.
     const clientNet = deltas.client[c.key].net;
-    score += clamp(-clientNet) * w * 0.2; // Client weight = 0.2 (inverted)
-    if (clientNet < 0) clientBull += w;
-    else if (clientNet > 0) clientBear += w;
+    const clientImpact = clientNet * sign;
+    score += clamp(-clientImpact) * w * 0.2; // Client weight = 0.2 (inverted)
+    if (clientImpact < 0) clientBull += w;       // Client bearish → fade → bullish vote
+    else if (clientImpact > 0) clientBear += w;   // Client bullish → fade → bearish vote
 
-    // DII — neutral support, light weight
+    // DII — neutral support, light weight.
     const diiNet = deltas.dii[c.key].net;
-    score += clamp(diiNet) * w * 0.1;
+    const diiImpact = diiNet * sign;
+    score += clamp(diiImpact) * w * 0.1;
   }
 
   // Cap score at ±1.5
@@ -223,9 +289,22 @@ function computePrediction(deltas: ParticipantDelta | null): Prediction {
   if (score > 0.3) direction = 'BULL';
   else if (score < -0.3) direction = 'BEAR';
 
+  // ─── Straddle detection (Task 43) ───
+  // Smart money bought BOTH calls AND puts heavily = volatility expansion
+  // bet (long straddle). The net score cancels out (bullish calls + bearish
+  // puts ≈ 0), but the absolute positioning is HIGH. Detect this case and
+  // override the headline to call out the volatility setup explicitly.
+  const STRADDLE_THRESHOLD = 50_000; // contracts — meaningful smart-money long-pressure
+  const straddleDetected =
+    smartMoneyCallLongPressure > STRADDLE_THRESHOLD &&
+    smartMoneyPutLongPressure > STRADDLE_THRESHOLD;
+
   // Headline — describe the dominant signal
   let headline: string;
-  if (direction === 'BULL') {
+  if (straddleDetected && Math.abs(score) < 0.5) {
+    // Straddle pattern with near-neutral score — call it out explicitly.
+    headline = `⚠ Long straddle detected — smart money (FII + Pro) bought BOTH calls + puts heavily. Volatility-expansion bet, NOT directional. Expect a big move either direction (typical near weekly/monthly expiry).`;
+  } else if (direction === 'BULL') {
     if (fiiBull > fiiBear && clientBull > clientBear) {
       headline = `FII buying + Client selling = contrarian BULL (smart money accumulating, retail capitulating)`;
     } else if (fiiBull > fiiBear) {
@@ -246,8 +325,10 @@ function computePrediction(deltas: ParticipantDelta | null): Prediction {
   }
 
   const rationale =
-    `Score = 0.5×FII + 0.3×Pro + 0.2×(-Client) + 0.1×DII, normalized per category, weighted ×2 for index categories and ×1 for stock. ` +
-    `Threshold ±0.3 for directional verdict. Per "FII & prop move market, fade retail" rule.`;
+    `Score = 0.5×FII + 0.3×Pro + 0.2×(-Client) + 0.1×DII, each × directionSign (+1 calls/futures, −1 puts), ` +
+    `normalized per category, weighted ×2 for index and ×1 for stock. ` +
+    `Threshold ±0.3 for directional verdict. Straddle override fires when smart money long-pressure on calls AND puts both > ${STRADDLE_THRESHOLD.toLocaleString('en-IN')} contracts AND |score| < 0.5. ` +
+    `Per "FII & prop move market, fade retail" rule.`;
 
   return { direction, score, headline, rationale };
 }
