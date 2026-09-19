@@ -45,6 +45,12 @@
 
 // ─── Types ───
 
+// Task 44: import the canonical 4-quadrant options flow classifier
+// (option-flow-classify.ts, the Task 39 single source of truth) so that
+// computeOIBuildup can disambiguate put buying vs put writing using
+// premium direction (ΔLTP), not OI direction alone.
+import { classifyStrikeFlow } from './option-flow-classify';
+
 export interface StrikeOption {
   strike: number;
   ceOI: number;
@@ -696,89 +702,146 @@ export function computeIVSkew(
 /**
  * Compute OI buildup direction from two consecutive snapshots.
  *
- * Classifies the net change in CE OI and PE OI into one of 5 patterns:
+ * ─── Task 44 fix: premium-aware classification ─────────────────────────
  *
- *   Pattern            CE ΔOI      PE ΔOI     Signal
- *   ─────────────────────────────────────────────────────
- *   long_buildup       negative    positive   STRONG BULL (put writing + call covering)
- *   short_buildup      positive    negative   STRONG BEAR (call writing + put covering)
- *   long_unwinding     negative    negative   mild bull  (both sides covering, caution)
- *   short_covering     positive    positive   mild bear  (both sides writing, chop)
- *   neutral            ~0          ~0         no signal
+ * Previously this function used ΔCE_OI and ΔPE_OI ALONE to classify the
+ * pattern — assuming rising put OI = put writing (bullish) and rising
+ * call OI = call writing (bearish). That heuristic is wrong whenever
+ * price action disagrees (e.g. market FALLING + put OI rising is put
+ * BUYING, not put writing — that's bearish, not bullish).
  *
- * The strength score in [-1, +1] is computed from the net ratio:
+ * The fix delegates to `classifyStrikeFlow` (Task 39 single source of
+ * truth) per-strike, which uses OI Δ × premium Δ to disambiguate the
+ * 4 quads (Buy / Write / Short Covering / Long Unwinding) for both CE
+ * and PE — exactly the canonical Varsity buildup table.
  *
- *   strength = (ΔPE_OI - ΔCE_OI) / (|ΔPE_OI| + |ΔCE_OI| + 1)
+ * The per-strike bullish/bearish ₹ Cr flows are summed, then the
+ * pattern is derived from the net flow sign + magnitude:
  *
- * This naturally gives:
- *   long_buildup    → strength ≈ +1.0
- *   short_buildup   → strength ≈ -1.0
- *   long_unwinding  → strength ≈ 0   (both negative cancels out)
- *   short_covering  → strength ≈ 0   (both positive cancels out)
+ *   bullish >> bearish  → long_buildup   (STRONG BULL)
+ *   bearish >> bullish  → short_buildup  (STRONG BEAR)
+ *   bullish ≈ bearish, both small → neutral
+ *   bullish ≈ bearish, both large → long_unwinding (chop, both sides covering)
+ *                                      — historical name kept; really means "mixed"
+ *
+ * The `deltaCEOI` and `deltaPEOI` raw sums are preserved for back-compat
+ * with downstream callers, but the pattern/strength verdict now reflects
+ * the premium-aware truth.
  *
  * @param current    current per-strike OI snapshot
  * @param previous   previous per-strike OI snapshot (null on first poll)
+ * @param lotSize    contract lot size (defaults to 1 if absent)
  */
 export function computeOIBuildup(
   current: StrikeOption[],
   previous: StrikeOption[] | null,
+  lotSize: number = 1,
 ): {
   pattern: 'long_buildup' | 'short_buildup' | 'long_unwinding' | 'short_covering' | 'neutral';
   strength: number;
   deltaCEOI: number;
   deltaPEOI: number;
+  /** ₹ Cr bullish flow summed across all strikes (Task 44). */
+  bullishFlowCr: number;
+  /** ₹ Cr bearish flow summed across all strikes (Task 44). */
+  bearishFlowCr: number;
 } {
   if (!previous || previous.length === 0) {
-    return { pattern: 'neutral', strength: 0, deltaCEOI: 0, deltaPEOI: 0 };
+    return {
+      pattern: 'neutral', strength: 0,
+      deltaCEOI: 0, deltaPEOI: 0,
+      bullishFlowCr: 0, bearishFlowCr: 0,
+    };
   }
 
-  // Build lookup of previous OI by strike
-  const prevMap = new Map<number, { ceOI: number; peOI: number }>();
+  // Build lookup of previous per-strike snapshot (OI + LTP + delta)
+  const prevMap = new Map<number, StrikeOption>();
   for (const s of previous) {
-    prevMap.set(s.strike, { ceOI: s.ceOI, peOI: s.peOI });
+    prevMap.set(s.strike, s);
   }
 
-  // Sum ΔOI across all matching strikes
+  // Sum ΔOI (kept for back-compat callers) + per-strike classifyStrikeFlow
   let deltaCEOI = 0;
   let deltaPEOI = 0;
+  let bullishCr = 0;
+  let bearishCr = 0;
+
   for (const s of current) {
     const prev = prevMap.get(s.strike);
     if (!prev) continue;
     deltaCEOI += (s.ceOI - prev.ceOI);
     deltaPEOI += (s.peOI - prev.peOI);
+
+    // Classify this strike's flow using OI × premium (canonical 4-quadrant
+    // table from option-flow-classify.ts — Task 39). classifyStrikeFlow
+    // expects StrikeFlowLeg with abs-positive deltas; StrikeOption.peDelta
+    // is signed -1..0, so we Math.abs() it on the way in.
+    const flow = classifyStrikeFlow(
+      {
+        ceOI: prev.ceOI, peOI: prev.peOI,
+        ceLTP: prev.ceLTP, peLTP: prev.peLTP,
+        ceDelta: prev.ceDelta,
+        peDelta: Math.abs(prev.peDelta),
+      },
+      {
+        ceOI: s.ceOI, peOI: s.peOI,
+        ceLTP: s.ceLTP, peLTP: s.peLTP,
+        ceDelta: s.ceDelta,
+        peDelta: Math.abs(s.peDelta),
+      },
+      lotSize,
+    );
+    bullishCr += flow.bullish;
+    bearishCr += flow.bearish;
   }
 
-  // Noise threshold: ignore tiny ΔOI (< 0.5% of total OI)
+  // Noise threshold on raw ΔOI — preserved from the old implementation
+  // so that genuinely quiet snapshots still return neutral.
   const totalOI = current.reduce((sum, s) => sum + s.ceOI + s.peOI, 0);
   const noiseThreshold = totalOI * 0.005;
   const ceSignificant = Math.abs(deltaCEOI) > noiseThreshold;
   const peSignificant = Math.abs(deltaPEOI) > noiseThreshold;
+  const flowSignificant = (bullishCr + bearishCr) > 0.01; // ₹ Cr — tiny = no real flow
 
-  if (!ceSignificant && !peSignificant) {
-    return { pattern: 'neutral', strength: 0, deltaCEOI, deltaPEOI };
+  if (!ceSignificant && !peSignificant && !flowSignificant) {
+    return {
+      pattern: 'neutral', strength: 0,
+      deltaCEOI, deltaPEOI,
+      bullishFlowCr: bullishCr, bearishFlowCr: bearishCr,
+    };
   }
 
-  // Classify pattern
+  // Derive pattern from the premium-aware flow sums (Task 44 fix).
+  //   net = bullish - bearish  (in ₹ Cr)
+  //   total = bullish + bearish (in ₹ Cr)
+  //   strength = net / (total + 1)   clamped to [-1, +1]
+  const netFlow = bullishCr - bearishCr;
+  const totalFlow = bullishCr + bearishCr;
+  const denom = totalFlow + 1;
+  const strength = Math.max(-1, Math.min(1, netFlow / denom));
+
   let pattern: 'long_buildup' | 'short_buildup' | 'long_unwinding' | 'short_covering' | 'neutral';
-  const ceUp = deltaCEOI > 0;
-  const peUp = deltaPEOI > 0;
+  const STRENGTH_THRESHOLD = 0.25;  // |strength| > 0.25 → directional verdict
+  const FLOW_CHOP_THRESHOLD = 0.5;  // |strength| < 0.5 with meaningful totalFlow → "mixed"
 
-  if (!ceUp && peUp) {
-    pattern = 'long_buildup';        // call covering + put writing → BULL
-  } else if (ceUp && !peUp) {
-    pattern = 'short_buildup';       // call writing + put covering → BEAR
-  } else if (!ceUp && !peUp) {
-    pattern = 'long_unwinding';      // both covering → neutral-cautious
+  if (strength > STRENGTH_THRESHOLD) {
+    pattern = 'long_buildup';        // net bullish flow → BULL
+  } else if (strength < -STRENGTH_THRESHOLD) {
+    pattern = 'short_buildup';       // net bearish flow → BEAR
+  } else if (totalFlow > FLOW_CHOP_THRESHOLD && Math.abs(strength) < STRENGTH_THRESHOLD) {
+    pattern = 'long_unwinding';      // sizeable flow both ways → mixed/chop
+  } else if (totalFlow > 0.05 && Math.abs(strength) < 0.05) {
+    pattern = 'short_covering';      // legacy label — both sides adding OI heavily with no net direction
   } else {
-    pattern = 'short_covering';      // both writing → neutral-heavy
+    pattern = 'neutral';
   }
 
-  // Strength = net ratio in [-1, +1]
-  // Positive = bull (put writing > call writing)
-  const denom = Math.abs(deltaCEOI) + Math.abs(deltaPEOI) + 1;
-  const strength = (deltaPEOI - deltaCEOI) / denom;
-
-  return { pattern, strength, deltaCEOI, deltaPEOI };
+  return {
+    pattern, strength,
+    deltaCEOI, deltaPEOI,
+    bullishFlowCr: bullishCr,
+    bearishFlowCr: bearishCr,
+  };
 }
 
 /**
@@ -946,7 +1009,7 @@ export function computeMagnet(
   // 6-9. Phase 1 enhancement factors (each is independent of the OI snapshot)
   const { basisPct } = computeBasis(spot, enhancements?.futurePrice ?? null);
   const { skewPct: ivSkewPct } = computeIVSkew(strikes, spot, T);
-  const oiBuildupResult = computeOIBuildup(strikes, enhancements?.prevStrikes ?? null);
+  const oiBuildupResult = computeOIBuildup(strikes, enhancements?.prevStrikes ?? null, lotSize);
   const vixVal = enhancements?.vix ?? null;
   const vixChangePct = enhancements?.vixChangePct ?? null;
 

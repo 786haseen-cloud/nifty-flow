@@ -4,6 +4,7 @@ import {
   type SignalMode,
   type SignalReasoning,
   type InstrumentData,
+  type OptionStrike,
   type VIXData,
   type DayComparison,
   type GlobalIndex,
@@ -11,6 +12,7 @@ import {
   type MarketDataContext,
   SIGNAL_WEIGHTS,
 } from './types';
+import { classifyStrikeFlow } from './option-flow-classify';
 
 interface SignalContext {
   instrument: InstrumentData;
@@ -20,6 +22,15 @@ interface SignalContext {
   daysToExpiry: number;
   stockSentiment: number; // -1 to 1
   marketDataContext?: MarketDataContext; // NEW: Live vs after-market awareness
+  /**
+   * Previous-poll per-strike snapshot (Task 44). When provided, the OI-flow
+   * scoring uses classifyStrikeFlow (premium-aware 4-quadrant classification)
+   * instead of the PCR-level heuristic. PCR alone can't distinguish put
+   * writing (bullish) from put buying (bearish) — premium direction resolves
+   * the ambiguity. Optional; current demo callers don't provide it so the
+   * PCR-level fallback is preserved for back-compat.
+   */
+  prevStrikes?: OptionStrike[] | null;
 }
 
 export function generateHolisticSignal(
@@ -76,8 +87,9 @@ export function generateHolisticSignal(
     clientContrarianScore = calcClientContrarianScore(context.dayComparison);
   }
 
-  // 4. 3-Day OI Trend (15%)
-  const threeDayOITrendScore = calc3DayOITrendScore(instrument, context.dayComparison);
+  // 4. 3-Day OI Trend (15%) — uses prevStrikes if available (premium-aware
+  // classification per Task 44), else falls back to PCR-level heuristic.
+  const threeDayOITrendScore = calc3DayOITrendScore(instrument, context.dayComparison, context.prevStrikes ?? null);
 
   // 5. Cash+Fut Alignment (10%)
   const cashFutAlignScore = calcCashFutAlignScore(context.dayComparison);
@@ -231,25 +243,86 @@ function calcClientContrarianScore(dayComp: DayComparison[]): number {
   return Math.max(-100, Math.min(100, -(total / 10000) * 50));
 }
 
-// 3-Day OI Trend: Consistent call writing = bullish support
-function calc3DayOITrendScore(instrument: InstrumentData, dayComp: DayComparison[]): number {
-  // Use current OI data from instrument
+// 3-Day OI Trend — premium-aware per-strike classification when prevStrikes
+// available (Task 44 fix); falls back to PCR-level heuristic otherwise.
+//
+// The PCR-level heuristic assumes PCR > 1 = "put writing = bullish" — but
+// PCR alone can't tell put writing (bullish) from put buying (bearish).
+// When market is falling + PCR rising = put BUYING = bearish (heuristic
+// wrongly says bullish). The premium-aware path uses ΔLTP to disambiguate
+// via the canonical 4-quadrant table (option-flow-classify.ts, Task 39).
+function calc3DayOITrendScore(
+  instrument: InstrumentData,
+  dayComp: DayComparison[],
+  prevStrikes: OptionStrike[] | null,
+): number {
+  // ─── Preferred path: per-strike premium-aware classification (Task 44) ───
+  if (prevStrikes && prevStrikes.length > 0) {
+    const currStrikes = instrument.strikes;
+    const prevMap = new Map<number, OptionStrike>();
+    for (const s of prevStrikes) prevMap.set(s.strike, s);
+
+    let bullishCr = 0;
+    let bearishCr = 0;
+    let lotSize = 1; // instrument.lotSize if present — most callers don't set it
+    // For options, NSE lot size varies by underlying (NIFTY=75, BANKNIFTY=30,
+    // stocks=1). Without a lotSize field on InstrumentData we use 1 — the
+    // RELATIVE bullish/bearish ratio is still correct, only the absolute
+    // ₹ Cr magnitude is understated for index options.
+
+    for (const curr of currStrikes) {
+      const prev = prevMap.get(curr.strike);
+      if (!prev) continue;
+      // Map OptionStrike → StrikeFlowLeg (option-flow-classify.ts).
+      // putDelta is signed (-1..0); StrikeFlowLeg.peDelta is abs-positive.
+      const flow = classifyStrikeFlow(
+        {
+          ceOI: prev.callOI, peOI: prev.putOI,
+          ceLTP: prev.callLTP, peLTP: prev.putLTP,
+          ceDelta: prev.callDelta,
+          peDelta: Math.abs(prev.putDelta),
+        },
+        {
+          ceOI: curr.callOI, peOI: curr.putOI,
+          ceLTP: curr.callLTP, peLTP: curr.putLTP,
+          ceDelta: curr.callDelta,
+          peDelta: Math.abs(curr.putDelta),
+        },
+        lotSize,
+      );
+      bullishCr += flow.bullish;
+      bearishCr += flow.bearish;
+    }
+
+    // Convert ₹ Cr net flow to ±60 score (matching the old PCR scale).
+    // 50 Cr of directional flow = saturated ±60 (matches old PCR=±1.5 case).
+    // Below 50 Cr scales linearly.
+    const netFlow = bullishCr - bearishCr;
+    const scaled = Math.max(-60, Math.min(60, (netFlow / 50) * 60));
+
+    // 3-day trend consistency multiplier (unchanged from old impl).
+    if (dayComp.length >= 3) {
+      return Math.max(-100, Math.min(100, scaled * 1.2));
+    }
+    return Math.max(-100, Math.min(100, scaled));
+  }
+
+  // ─── Fallback path: PCR-level heuristic (back-compat for demo callers) ───
+  // Note: this heuristic has the known limitation — PCR rising on a falling
+  // market reads as bullish when it's actually put buying (bearish). The
+  // preferred path above resolves this via premium direction.
   const totalCallOI = instrument.totalCallOI;
   const totalPutOI = instrument.totalPutOI;
   const pcr = totalPutOI / totalCallOI;
 
-  // PCR > 1 = more put writing = bullish support
-  // PCR < 1 = more call writing = bearish
   let score = 0;
-  if (pcr > 1.2) score = 60; // Strong put writing = bullish
+  if (pcr > 1.2) score = 60; // Strong put writing = bullish (heuristic)
   else if (pcr > 1.0) score = 30;
   else if (pcr > 0.8) score = -30;
-  else score = -60; // Heavy call writing = bearish
+  else score = -60; // Heavy call writing = bearish (heuristic)
 
-  // Check 3-day trend consistency
   if (dayComp.length >= 3) {
-    const oiTrendConsistent = true; // simplified
-    if (oiTrendConsistent) score *= 1.2;
+    score *= 1.2;
   }
 
   return Math.max(-100, Math.min(100, score));

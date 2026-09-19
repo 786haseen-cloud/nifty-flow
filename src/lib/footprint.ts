@@ -261,15 +261,38 @@ export function computeFreshWalls(
  * Composite live verdict — combines the four footprints into one label
  * + one plain-English sentence the trader can read in two seconds.
  *
- * Scoring: buildup ±2/±1, PCR velocity ±1, near-spot wall dominance ±1.
+ * Scoring: buildup ±2/±1, PCR velocity ±1 (price-disambiguated per Task 44),
+ * near-spot wall dominance ±1.
  * Retail-churn override: heavy churn + no directional desk evidence
  * → 'RETAIL CHURN' (the crowd is the story, not the desks).
+ *
+ * ─── Task 44 fix: PCR velocity is now price-disambiguated ──────────────
+ *
+ * Previously PCR rising was treated as "put writing = bullish" unconditionally
+ * — but PCR alone can't tell put writing (bullish) from put buying (bearish).
+ * The disambiguation uses futures price direction (already captured by the
+ * buildup classification):
+ *
+ *   PCR rising + price UP   → put WRITING (dealers selling premium at support) → BULLISH +1
+ *   PCR rising + price DOWN → put BUYING  (bears buying protection)             → BEARISH -1
+ *   PCR falling + price UP  → call BUYING (bulls paying premium for upside)   → BULLISH +1
+ *   PCR falling + price DOWN → call WRITING (dealers selling calls into weakness) → BEARISH -1
+ *   PCR flat                → no PCR signal
+ *
+ * This brings the PCR velocity contribution in line with the canonical
+ * 4-quadrant table (option-flow-classify.ts Task 39) — without the heavier
+ * schema change of adding per-strike LTP fields to StrikeFoot/Baseline/Input.
+ *
+ * @param priceDirection 'up' | 'down' | 'flat' — derived from futures.priceChgPct
+ *                       (or spot change as fallback when futures unavailable).
+ *                       Null when no price baseline available.
  */
 export function composeVerdict(
   buildup: { buildup: BuildupLabel; tone: BuildupTone } | null,
   pcr: { direction: PcrDirection; delta: number | null },
   walls: { ceAdds: FreshWall[]; peAdds: FreshWall[] },
   churn: ChurnLabel,
+  priceDirection: 'up' | 'down' | 'flat' | null = null,
 ): { label: string; tone: VerdictTone; score: number; sentence: string } {
   let score = 0;
   const parts: string[] = [];
@@ -297,12 +320,40 @@ export function composeVerdict(
     }
   }
 
+  // ─── Task 44: price-disambiguated PCR velocity ───────────────────────
+  // PCR direction alone is ambiguous — combine with price direction to
+  // distinguish writing (premium-supplying) from buying (premium-demanding).
   if (pcr.direction === 'rising') {
-    score += 1;
-    parts.push('put writing active');
+    // Put OI growing faster than call OI.
+    if (priceDirection === 'up') {
+      // Price up + put OI growing = dealers WRITING puts at support → BULLISH
+      score += 1;
+      parts.push('put writing active');
+    } else if (priceDirection === 'down') {
+      // Price down + put OI growing = bears BUYING puts for protection → BEARISH
+      score -= 1;
+      parts.push('put buying active (bearish protection)');
+    } else {
+      // Price flat → can't disambiguate, fall back to conventional read.
+      // NOTE: this is the original heuristic with its known limitation.
+      score += 1;
+      parts.push('put writing active (price-flat heuristic)');
+    }
   } else if (pcr.direction === 'falling') {
-    score -= 1;
-    parts.push('call writing active');
+    // Call OI growing faster than put OI.
+    if (priceDirection === 'up') {
+      // Price up + call OI growing = bulls BUYING calls → BULLISH
+      score += 1;
+      parts.push('call buying active');
+    } else if (priceDirection === 'down') {
+      // Price down + call OI growing = dealers WRITING calls into weakness → BEARISH
+      score -= 1;
+      parts.push('call writing active');
+    } else {
+      // Price flat → fall back to conventional read.
+      score -= 1;
+      parts.push('call writing active (price-flat heuristic)');
+    }
   }
 
   // Near-spot wall dominance — fresh OI adds that actually defend price
@@ -464,7 +515,22 @@ export function computeSymbolFootprint(input: FootprintInput): SymbolFootprint {
     ? 'UNKNOWN' as ChurnLabel
     : shell.churn.label;
 
-  const verdict = composeVerdict(verdictBuildup, verdictPcr, verdictWalls, verdictChurn);
+  // ── Task 44: price direction to disambiguate PCR velocity ──
+  // PCR rising + price up = put WRITING (bullish); PCR rising + price down
+  // = put BUYING (bearish). We need futures priceChgPct (already computed
+  // in shell.futures above when futures are available). Fall back to null
+  // (price-flat heuristic) when futures data is missing.
+  let priceDirection: 'up' | 'down' | 'flat' | null = null;
+  if (shell.futures && shell.futures.priceChgPct != null) {
+    const chg = shell.futures.priceChgPct;
+    if (Math.abs(chg) < 0.05) priceDirection = 'flat';       // <5 bps = noise
+    else if (chg > 0) priceDirection = 'up';
+    else priceDirection = 'down';
+  }
+
+  const verdict = composeVerdict(
+    verdictBuildup, verdictPcr, verdictWalls, verdictChurn, priceDirection,
+  );
 
   if (optionExpiryDay || futureExpiryDay) {
     if (verdict.score === 0) {
