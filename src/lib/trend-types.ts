@@ -18,6 +18,10 @@ export interface NiftyCandle {
   high: number;
   low: number;
   volume: number;
+  /** IST trading date 'YYYY-MM-DD' (Task 46 FIFO). Server stamps it from
+   *  the Kite candle timestamp; the store evicts any candle not dated
+   *  today — "yesterday out, new data in". Optional for demo/legacy data. */
+  d?: string;
 }
 
 export interface StockCashFlow {
@@ -77,10 +81,14 @@ export interface CashFlowTrendPoint {
   net: number;      // cumulative combined net (Cr) since market open
   weighted: number; // cumulative Nifty-weighted net (Cr) since market open
   interval: number; // this 15s interval's net flow (Cr)
+  /** IST trading date 'YYYY-MM-DD' (Task 46 FIFO — evict non-today pts). */
+  d?: string;
 }
 
 export interface FlowTrendPoint {
   time: string;
+  /** IST trading date 'YYYY-MM-DD' (Task 46 FIFO — evict non-today pts). */
+  d?: string;
   NIFTY: number;
   BANKNIFTY: number;
   FINNIFTY: number;

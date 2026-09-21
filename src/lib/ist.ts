@@ -91,6 +91,21 @@ export function extractTimeSecFromKiteTS(ts: string | number): string {
 }
 
 /**
+ * Extract the IST DATE part ('YYYY-MM-DD') from a Kite timestamp string.
+ * Kite always returns IST timestamps like '2026-09-21T09:15:00+0530' — the
+ * date prefix IS the IST date, so no Date parsing / no timezone math needed.
+ *
+ * Used by the trend FIFO (Task 46): every trend point carries its IST
+ * trading date so yesterday's points can be evicted the moment today's
+ * data arrives ("yesterday out, new data in").
+ */
+export function extractDateFromKiteTS(ts: string | number): string {
+  const s = String(ts);
+  const m = s.match(/^(\d{4}-\d{2}-\d{2})T/);
+  return m ? m[1] : '';
+}
+
+/**
  * Get today's date as an ISO date string in IST for comparison purposes.
  * Returns 'YYYY-MM-DD' which can be compared directly with Kite expiry
  * strings (also 'YYYY-MM-DD').

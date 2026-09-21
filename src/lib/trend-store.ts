@@ -31,6 +31,7 @@ import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
 import { withCreds } from './kite-creds';
 import { getMarketPhase } from './market-hours';
+import { evictStaleDayPoints, fifoIngest } from './trend-fifo';
 import {
   INDEX_SYMBOLS,
   STOCK_SYMBOLS,
@@ -220,6 +221,31 @@ export const useTrendStore = create<TrendState>()(
           get().clearTrendData();
         }
 
+        // ─── Task 46: FIFO day-eviction on boot ───
+        // Second layer behind the istDate check above: evict any persisted
+        // point whose IST date tag (`d`) is NOT today — "yesterday out, new
+        // data in" BEFORE a single new point is appended. Covers rehydrated
+        // localStorage tails, pre-Task-46 untagged legacy data (kept, but
+        // cleared by the istDate check on the real rollover), and any
+        // server path that ever returns another session's candles.
+        const fifoToday = getISTDate();
+        const cur = get();
+        const fFlow = evictStaleDayPoints(cur.flowTrend, fifoToday);
+        const fCash = evictStaleDayPoints(cur.cashFlowTrend, fifoToday);
+        const fCandles = evictStaleDayPoints(cur.niftyCandles, fifoToday);
+        if (
+          fFlow.length !== cur.flowTrend.length ||
+          fCash.length !== cur.cashFlowTrend.length ||
+          fCandles.length !== cur.niftyCandles.length
+        ) {
+          console.log(
+            `[TrendStore] FIFO: evicted ${cur.flowTrend.length - fFlow.length} flow + ` +
+            `${cur.cashFlowTrend.length - fCash.length} cash + ` +
+            `${cur.niftyCandles.length - fCandles.length} candle point(s) from a previous trading day`
+          );
+          set({ flowTrend: fFlow, cashFlowTrend: fCash, niftyCandles: fCandles });
+        }
+
         set({ _pollingStarted: true });
         console.log('[TrendStore] Starting singleton poller');
 
@@ -307,6 +333,12 @@ export const useTrendStore = create<TrendState>()(
           niftyCandles: [],
           stockCashFlow: [],
           trendMode: 'demo',
+          // Task 46: a full "yesterday out" wipe also resets the feed-health
+          // surface — the new day must start as 'loading', not inherit the
+          // old day's last known flow-feed mode or backfill banner state.
+          flowFeedMode: 'loading',
+          lastLiveFlowAt: 0,
+          backfillStatus: 'idle',
           currentIdxFlows: { NIFTY: 0, BANKNIFTY: 0, FINNIFTY: 0, SENSEX: 0 },
           currentStockFlow: 0,
           currentStockPerSym: {},
@@ -568,6 +600,13 @@ export const useTrendStore = create<TrendState>()(
             };
           }
 
+          // ─── Task 46: FIFO day-eviction before the arrays land ───
+          // The historical route fetches TODAY-only candles, so every
+          // historical point is today's — stamp untagged points (the server
+          // doesn't send `d`) and evict anything dated otherwise. Live
+          // points already carry `d` from creation.
+          mergedFlow = fifoIngest(mergedFlow, getISTDate());
+
           // Trim to max points
           const trimmed = mergedFlow.length > MAX_TREND_POINTS
             ? mergedFlow.slice(mergedFlow.length - MAX_TREND_POINTS)
@@ -696,9 +735,13 @@ export const useTrendStore = create<TrendState>()(
             }
           }
 
-          const trimmed = mergedCash.length > MAX_TREND_POINTS
-            ? mergedCash.slice(mergedCash.length - MAX_TREND_POINTS)
-            : mergedCash;
+          // Task 46: FIFO — stamp untagged historical points as today and
+          // evict anything dated otherwise before the array lands.
+          const mergedCashFifo = fifoIngest(mergedCash, getISTDate());
+
+          const trimmed = mergedCashFifo.length > MAX_TREND_POINTS
+            ? mergedCashFifo.slice(mergedCashFifo.length - MAX_TREND_POINTS)
+            : mergedCashFifo;
 
           set({
             cashFlowTrend: trimmed,
@@ -792,7 +835,16 @@ export const useTrendStore = create<TrendState>()(
           const data = trendsRes.value;
           const mode = (data.mode || 'demo') as 'live' | 'demo' | 'error';
 
-          const niftyCandles: NiftyCandle[] = data.niftyCandles || [];
+          // ─── Task 46: FIFO ingest — "yesterday out, new data in" ───
+          // Live candles carry `d` (IST date from the Kite timestamp, stamped
+          // server-side); demo candles arrive untagged → stamped as today.
+          // Anything dated before today is dropped HERE, before it can paint
+          // over today's curve — the old getCandles('5minute', 1) leak put
+          // yesterday's full session tail on Card 1 every Tue–Fri.
+          const niftyCandles: NiftyCandle[] = fifoIngest(
+            (data.niftyCandles || []) as NiftyCandle[],
+            todayDate
+          );
           const stockCashFlow: StockCashFlow[] = data.stockCashFlow || [];
 
           // DEMO → LIVE TRANSITION: If we were in demo mode (e.g. user had no
@@ -856,6 +908,7 @@ export const useTrendStore = create<TrendState>()(
 
             const point: CashFlowTrendPoint = {
               time,
+              d: todayDate, // Task 46 FIFO date tag
               nse: Math.round((nseTotal / CR) * 10) / 10,
               bse: Math.round((bseTotal / CR) * 10) / 10,
               net: Math.round((netTotal / CR) * 10) / 10,
@@ -863,7 +916,10 @@ export const useTrendStore = create<TrendState>()(
               interval: Math.round((intervalDelta / CR) * 10) / 10,
             };
 
-            const prevTrend = get().cashFlowTrend;
+            // Task 46 FIFO: drop any stale-day point still sitting in the
+            // array before appending today's new point (first in, first out
+            // at the day boundary — order-preserving).
+            const prevTrend = evictStaleDayPoints(get().cashFlowTrend, todayDate);
             const newTrend = [...prevTrend, point];
             const trimmed = newTrend.length > MAX_TREND_POINTS
               ? newTrend.slice(newTrend.length - MAX_TREND_POINTS)
@@ -963,6 +1019,7 @@ export const useTrendStore = create<TrendState>()(
 
             const flowPoint: FlowTrendPoint = {
               time,
+              d: todayDate, // Task 46 FIFO date tag
               NIFTY: Math.round((cumulativeFlow.NIFTY || 0) * 10) / 10,
               BANKNIFTY: Math.round((cumulativeFlow.BANKNIFTY || 0) * 10) / 10,
               FINNIFTY: Math.round((cumulativeFlow.FINNIFTY || 0) * 10) / 10,
@@ -979,7 +1036,8 @@ export const useTrendStore = create<TrendState>()(
               ),
             } as FlowTrendPoint;
 
-            const prevFlowTrend = get().flowTrend;
+            // Task 46 FIFO: evict stale-day points before appending.
+            const prevFlowTrend = evictStaleDayPoints(get().flowTrend, todayDate);
             const newFlowTrend = [...prevFlowTrend, flowPoint];
             const trimmedFlow = newFlowTrend.length > MAX_TREND_POINTS
               ? newFlowTrend.slice(newFlowTrend.length - MAX_TREND_POINTS)

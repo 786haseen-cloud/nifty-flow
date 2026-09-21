@@ -8,18 +8,31 @@
  *
  * Used by the Trend Analysis tab for price + cash flow visualization.
  * Options flow is computed client-side from /api/kite/highest-bet snapshots.
+ *
+ * TASK 46 FIFO — "yesterday out, new data in": the Nifty candle fetch is
+ * TODAY-ONLY (getTodayCandles, 09:15→15:30 IST) and every candle carries
+ * its IST date (`d`, parsed straight from the Kite timestamp) so the client
+ * can FIFO-evict any non-today point. The previous getCandles('5minute', 1)
+ * set from = (now − 24h), which on Tue–Fri pulled YESTERDAY's session tail
+ * into the response — those candles, keyed by time-of-day only, painted
+ * yesterday's full curve over today's chart on Card 1.
  */
 import { NextRequest, NextResponse } from 'next/server';
 import {
   getInstruments,
   getQuotes,
-  getCandles,
+  getTodayCandles,
   NIFTY50_TOKEN,
   STOCK_SPECS,
   type KiteQuote,
 } from '@/lib/kite-api';
 import { applyKiteCredsFromRequest } from '@/lib/kite-route-helper';
-import { extractTimeFromKiteTS, istTimeShort } from '@/lib/ist';
+import {
+  extractTimeFromKiteTS,
+  extractDateFromKiteTS,
+  istTimeShort,
+  istTodayISO,
+} from '@/lib/ist';
 
 // ─── Types ───
 
@@ -29,6 +42,9 @@ export interface NiftyCandle {
   high: number;
   low: number;
   volume: number;
+  /** IST trading date 'YYYY-MM-DD' (Task 46 FIFO — parsed from the Kite
+   *  timestamp; clients FIFO-evict candles not dated today). */
+  d?: string;
 }
 
 export interface StockCashFlow {
@@ -63,8 +79,10 @@ export interface TrendResponse {
 // ─── LIVE MODE ───
 
 async function fetchTrendData(): Promise<TrendResponse> {
-  // Step 1: Fetch Nifty 50 candles (5-min, today)
-  const candles = await getCandles(NIFTY50_TOKEN, '5minute', 1);
+  // Step 1: Fetch Nifty 50 candles — TODAY ONLY (09:15 IST session open →
+  // now, pre-open auction candles filtered). NEVER a multi-day window:
+  // see the Task 46 FIFO note in the file docblock.
+  const candles = await getTodayCandles(NIFTY50_TOKEN, '5minute');
 
   // Step 2: Get all instruments (cached) to find BSE tokens
   const allInstruments = await getInstruments();
@@ -211,16 +229,30 @@ async function fetchTrendData(): Promise<TrendResponse> {
   // We must extract HH:MM directly from the string — using toLocaleTimeString
   // on Vercel (UTC) would shift times by -5:30, pushing all data outside
   // the chart domain [555, 940] and making the chart appear empty.
-  let niftyCandles: NiftyCandle[] = candles.map((c) => {
-    const time = extractTimeFromKiteTS(c.timestamp);
-    return {
-      time,
-      close: c.close,
-      high: c.high,
-      low: c.low,
-      volume: c.volume,
-    };
-  });
+  //
+  // TASK 46 FIFO: each candle also carries its IST date (`d`), and any
+  // candle NOT dated today is dropped here at the source. getTodayCandles
+  // already bounds the request window to today, so this filter is purely
+  // defensive — but it makes "yesterday out" a server-side guarantee, not
+  // just a client assumption.
+  const todayIST = istTodayISO();
+  let niftyCandles: NiftyCandle[] = candles
+    .map((c) => {
+      const time = extractTimeFromKiteTS(c.timestamp);
+      return {
+        time,
+        close: c.close,
+        high: c.high,
+        low: c.low,
+        volume: c.volume,
+        d: extractDateFromKiteTS(c.timestamp),
+      };
+    })
+    .filter((c) => c.d === todayIST);
+  const droppedStale = candles.length - niftyCandles.length;
+  if (droppedStale > 0) {
+    console.warn(`[Trends] FIFO: dropped ${droppedStale} candle(s) not dated ${todayIST}`);
+  }
 
   // FALLBACK: If historical candles failed (e.g. expired token gets 403 on
   // /instruments/historical but still works on /quote), use the Nifty quote
@@ -235,8 +267,8 @@ async function fetchTrendData(): Promise<TrendResponse> {
           const open = q.open || q.lastPrice;
           const now = istTimeShort();
           niftyCandles = [
-            { time: '09:15', close: open, high: open, low: open, volume: 0 },
-            { time: now, close: q.lastPrice, high: q.high || q.lastPrice, low: q.low || q.lastPrice, volume: q.volume || 0 },
+            { time: '09:15', close: open, high: open, low: open, volume: 0, d: todayIST },
+            { time: now, close: q.lastPrice, high: q.high || q.lastPrice, low: q.low || q.lastPrice, volume: q.volume || 0, d: todayIST },
           ];
           console.log(`[Trends] Candles fallback: using quote LTP ${q.lastPrice} (open ${open})`);
         }
