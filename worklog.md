@@ -1088,3 +1088,25 @@ Stage Summary:
 - The device-dependent options-cards-empty failure is fixed at every layer: truncated instrument dumps are now detected and never cached (fresh download on next call), error responses no longer poison the 60s route cache across devices, the client retries fast (45s×3) and auto-re-runs sparse backfills, and the cards show a live status banner instead of a silent blank.
 - User-visible behavior change: after this deploy, a laptop paste that hits a truncated instruments download will self-heal within seconds-to-minutes (45s retries + validation-gated cache) — no more all-day empty options cards, no more dependence on which device pasted the token.
 - The 'Instruments empty' root cause (Kite 40MB CSV truncation on Vercel egress) cannot be fully eliminated, but it can now only ever cost ONE retry cycle, never an hour of poisoned cache.
+
+---
+Task ID: 46
+Agent: main (Super Z)
+Task: User request — "can we add fifo logic in our 4 card? yesterday out and new data come?" — the four Trend Analysis cards (Nifty 50 Intraday Price Trend, Net Cash Flow — 15 Stocks, Index Options Money Flow, Stock Options Money Flow) must show ONLY today's IST points, evicting previous-trading-day data the moment new data arrives.
+
+Work Log:
+- ROOT CAUSE FOUND (Card 1 real leak): /api/kite/trends fetched NIFTY candles via getCandles('5minute', 1) = from (now − 24h). On Tue–Fri that window includes YESTERDAY's session tail (up to 66 candles). All candles keyed by time-of-day only ('HH:MM') → yesterday's full curve painted over today's chart on the shared 09:15→15:40 x-domain. Monday polls were immune (from = Sunday, no session), which is why the symptom appeared "some days".
+- Cards 2/3/4 had NO per-point date guard — cross-day eviction relied solely on the store's istDate rollover clear; any stale-day point slipping in via backfill merges or rehydrated localStorage would be indistinguishable from today's data.
+- NEW src/lib/trend-fifo.ts — pure, unit-testable FIFO helpers: evictStaleDayPoints (order-preserving filter, keeps untagged legacy/demo points for backward compat), stampDay (stamps untagged points; NEVER overwrites an existing authoritative server date), fifoIngest (stamp-then-evict, the canonical ingest pipeline), isTodayKiteCandle.
+- src/lib/ist.ts: added extractDateFromKiteTS — parses the 'YYYY-MM-DD' prefix from Kite IST timestamps ('2026-09-21T09:15:00+0530'), no Date parsing / timezone math.
+- trend-types.ts + trends route local type: NiftyCandle / CashFlowTrendPoint / FlowTrendPoint now carry optional `d` (IST date).
+- trends/route.ts: switched to getTodayCandles (today-only 09:15→15:30 + pre-open filter); stamps `d` per candle from the Kite ts; defensive server-side filter drops any candle not dated today (logs '[Trends] FIFO: dropped N candle(s)'); quote-fallback synth candles stamped today.
+- trend-store.ts: (a) pollOnce — candle arrays pass through fifoIngest, cash/flow points stamped d=today at creation, prev arrays evicted before append; (b) startPolling — belt-and-suspenders boot eviction of rehydrated stale-day points (logged with per-array counts); (c) both backfill merges pass through fifoIngest before the arrays land; (d) clearTrendData also resets flowFeedMode:'loading', lastLiveFlowAt:0, backfillStatus:'idle' — a full "yesterday out" wipe includes the feed-health surface.
+- Compat policy: points WITHOUT `d` (pre-Task-46 localStorage 'trend-store-v2' entries, demo data) are KEPT and stamped at ingest — the missing-tag case self-extinguishes after one trading day via the existing istDate rollover; store version NOT bumped (a v3 bump mid-session would wipe the user's live today trend on deploy).
+- Tests: NEW scripts/test-fifo-eviction.ts — 24/24 PASS (date parsing, eviction order-preservation, stamp immutability/authoritativeness, Card-1 regression with old payload shape, live append path, backfill merge path). Regression: composite-max-pain 46, smart-money-oi-flow 41, put-sign-fix 15, pcr-price-disambiguation 23, max-probability 34, flow-classification ALL PASS. tsc: zero errors in touched files (pre-existing unrelated errors unchanged). eslint clean. npx next build clean.
+- Git: git pull --ff-only first (clean), commit df37b48 pushed origin/main → Vercel auto-deploy. Deployed Monday 18:22 IST post-market — live for Tuesday's session, exactly when the Tue–Fri leak would have manifested.
+
+Stage Summary:
+- All four trend cards now run explicit FIFO at the DAY boundary: yesterday OUT, new data IN — guaranteed at three layers (server candle filter → store ingest filter → boot eviction), each independently testable.
+- Card 1's cross-day curve-overlap bug (Tue–Fri) is fixed at the source; the other three cards gained a per-point date guarantee they previously lacked.
+- First real validation window: Tuesday Sep 22 session (the first Tue–Fri trading day after deploy).
