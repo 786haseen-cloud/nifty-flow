@@ -180,6 +180,29 @@ export function invalidateInstrumentsCache(): void {
  * Kite returns a single CSV with all exchanges: NSE, BSE, NFO, BFO, CDS, MCX
  * We filter by exchange after caching
  *
+ * ─── Task 45: truncation guard + retry ─────────────────────────────────
+ *
+ * The instruments dump is a ~40 MB CSV. If the download truncates mid-stream
+ * (Vercel egress hiccup, Kite edge cut, proxy timeout), the HTTP status may
+ * still be 200 and the parse produces a PARTIAL instrument list. Because the
+ * CSV is grouped by exchange (NSE cash rows first, NFO option rows later),
+ * a truncation that lands mid-NFO yields a dump where:
+ *   - NSE EQ + INDEX tokens are all present (trend + cash cards work)
+ *   - NFO option rows are missing → options token resolution finds nothing
+ *     → Index/Stock Options Money Flow cards silently go EMPTY
+ * and the partial garbage is cached for 1 HOUR on that server instance,
+ * poisoning every options-card request until TTL expiry. Devices hitting
+ * different Vercel instances see different health (laptop vs computer paste
+ * correlation the user reported Sep 21).
+ *
+ * Guards added:
+ *   1. Validate the parsed dump BEFORE caching: every exchange we depend on
+ *      (NSE, BSE, NFO, BFO) must be present AND total count must exceed a
+ *      floor. A truncated dump fails validation → NOT cached → callers'
+ *      retry paths self-heal on the next call.
+ *   2. One automatic retry (1.5s delay) when the download or validation
+ *      fails, before returning [].
+ *
  * @param exchange Optional exchange filter (e.g. 'NFO' returns only NFO F&O instruments)
  * @param forceRefresh Bypass the 1-hour cache and re-download. Useful when creds change.
  */
@@ -189,12 +212,11 @@ export async function getInstruments(exchange?: string, forceRefresh?: boolean):
     return exchange ? instrumentsCache.filter(i => i.exchange === exchange) : instrumentsCache;
   }
 
-  try {
+  const attemptDownload = async (): Promise<KiteInstrument[]> => {
     const res = await fetch(`${KITE_BASE}/instruments`, { headers: kiteHeaders() });
     if (!res.ok) {
       const errText = await res.text();
-      console.error(`[Kite] instruments API ${res.status}: ${errText}`);
-      return [];
+      throw new Error(`instruments API ${res.status}: ${errText.slice(0, 200)}`);
     }
     const text = await res.text();
 
@@ -281,15 +303,61 @@ export async function getInstruments(exchange?: string, forceRefresh?: boolean):
       });
     }
 
-    instrumentsCache = instruments;
-    instrumentsCacheTime = Date.now();
-    return exchange ? instruments.filter(i => i.exchange === exchange) : instruments;
-  } catch (err) {
-    const errMsg = err instanceof Error ? err.message : String(err);
-    console.error('[Kite] instruments fetch failed:', errMsg);
-    // Return empty but set error flag for callers to detect
-    return [];
+    return instruments;
+  };
+
+  // Validate a parsed dump BEFORE caching (Task 45 truncation guard).
+  // A complete Kite combined dump has 65k-100k+ instruments across ALL
+  // exchanges. A truncated download misses whole exchange groups — and the
+  // NFO/BFO (options) rows are what the options cards depend on.
+  const validateDump = (instruments: KiteInstrument[]): string | null => {
+    if (instruments.length < 10_000) {
+      return `instrument count ${instruments.length} < 10,000 floor (truncated download?)`;
+    }
+    const required = ['NSE', 'BSE', 'NFO', 'BFO'];
+    const present = new Set(instruments.map(i => i.exchange));
+    const missing = required.filter(e => !present.has(e));
+    if (missing.length > 0) {
+      return `missing exchange groups: ${missing.join(', ')} (truncated download?)`;
+    }
+    return null;
+  };
+
+  // Attempt 1, then one retry after 1.5s (Task 45).
+  let lastError = '';
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      const instruments = await attemptDownload();
+      const validationError = validateDump(instruments);
+      if (validationError) {
+        lastError = validationError;
+        console.error(`[Kite] instruments validation FAILED (attempt ${attempt}/2): ${validationError}`);
+        if (attempt < 2) {
+          await new Promise(r => setTimeout(r, 1500));
+          continue;
+        }
+        // Both attempts produced invalid dumps — return [] WITHOUT caching
+        // so the next caller (client retry loop, other routes) triggers a
+        // fresh download instead of being served 1h of poisoned cache.
+        return [];
+      }
+
+      instrumentsCache = instruments;
+      instrumentsCacheTime = Date.now();
+      return exchange ? instruments.filter(i => i.exchange === exchange) : instruments;
+    } catch (err) {
+      lastError = err instanceof Error ? err.message : String(err);
+      console.error(`[Kite] instruments fetch failed (attempt ${attempt}/2):`, lastError);
+      if (attempt < 2) {
+        await new Promise(r => setTimeout(r, 1500));
+        continue;
+      }
+      // Return empty but do NOT cache — the next call retries the download.
+      return [];
+    }
   }
+  console.error(`[Kite] instruments unavailable after retry: ${lastError}`);
+  return [];
 }
 
 // ─── Quotes (Real-time) ───

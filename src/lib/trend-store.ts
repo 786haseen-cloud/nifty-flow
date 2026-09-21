@@ -116,6 +116,10 @@ interface TrendState {
   _historicalBackfillDone: boolean;  // true after first successful options-flow backfill today
   _cashBackfillDone: boolean;        // true after first successful cash-flow backfill today
   _lastBackfillTriggerAt: number;    // Date.now() when backfills were last scheduled (60s debounce)
+  /** Task 45: options-backfill health for UI surfacing. 'idle' = not yet run,
+   *  'pending' = running, 'retrying' = failed and retry scheduled, 'sparse' =
+   *  succeeded but suspiciously thin (re-run scheduled), 'done' = healthy. */
+  backfillStatus: 'idle' | 'pending' | 'retrying' | 'sparse' | 'done';
 
   // ─── Actions ───
   startPolling: () => void;
@@ -187,6 +191,7 @@ export const useTrendStore = create<TrendState>()(
       _historicalBackfillDone: false,
       _cashBackfillDone: false,
       _lastBackfillTriggerAt: 0,
+      backfillStatus: 'idle',
 
       // ─── Actions ───
 
@@ -404,7 +409,9 @@ export const useTrendStore = create<TrendState>()(
           currentIntervalCashFlow: 0,
           _historicalBackfillDone: false,
           _cashBackfillDone: false,
-        });
+          _backfillRetryCount: 0,
+          backfillStatus: 'idle',
+        } as any);
         // Force: bypass the 60s debounce. At app boot useServerCredsSync
         // fires this ~300ms after startPolling() already stamped T0 (where
         // the inner setTimeout no-ops because trendMode is still 'demo' at
@@ -430,19 +437,41 @@ export const useTrendStore = create<TrendState>()(
        * the background. Live polls continue appending 15s points. When the
        * backfill completes, it merges — keeping any live points that arrived
        * during the backfill, but replacing the cumulative totals to match.
+       *
+       * ─── Task 45: adaptive retry + sparse re-run ────────────────────────
+       *
+       * USER'S REPORTED FAILURE (Sep 21): laptop paste → options cards empty
+       * all day; computer paste → data appears. Root cause chain: the Kite
+       * instruments CSV (40 MB) truncated mid-NFO on the laptop's Vercel
+       * instance → options tokens unresolvable → backfill returned empty →
+       * and the old fixed 5-minute retry was too slow to recover within the
+       * user's attention window, while the sparse-success case (backfill ran
+       * at 09:20 with 1 candle → marked done → never re-ran) permanently
+       * locked in a thin curve.
+       *
+       * Fixes:
+       *   1. Adaptive retry: first 3 attempts at 45s intervals (fast recovery
+       *      from transient instrument-master failures), then 5 min steady-state.
+       *   2. Sparse re-run: when a backfill SUCCEEDS but returns suspiciously
+       *      few points relative to session elapsed time (< 50% of the 5-min
+       *      grid since 09:15 IST, with > 30 min elapsed), schedule ONE force
+       *      re-backfill in 10 minutes. The merge logic below already handles
+       *      live-point offsets, so a re-run is safe.
+       *   3. backfillStatus tracking so the UI can show WHY a card is empty.
        */
       backfillHistoricalFlow: async () => {
+        set({ backfillStatus: 'pending' });
         try {
           const res = await fetch(withCreds('/api/kite/historical-flow'));
           const data = await res.json();
 
           if (data.mode !== 'live' || !data.flowTrend || data.flowTrend.length === 0) {
-            console.log('[TrendStore] Backfill returned no data, will retry later if creds are refreshed');
-            // Do NOT set _historicalBackfillDone = true here. This allows retry
-            // when the user refreshes their Kite credentials in the Settings tab
-            // mid-session. The backfill is rate-limited by the in-memory 60s
-            // server-side cache anyway, so this won't hammer the API.
-            // Instead, schedule a single retry after 5 minutes.
+            const stage = data.errorStage ? ` (${data.errorStage})` : '';
+            console.log(`[TrendStore] Backfill returned no data${stage}, retrying with adaptive backoff`);
+            // Task 45: adaptive retry — 45s for the first 3 attempts, then 5 min.
+            const retryCount = (get() as any)._backfillRetryCount || 0;
+            const delayMs = retryCount < 3 ? 45_000 : 5 * 60_000;
+            set({ backfillStatus: 'retrying', _backfillRetryCount: retryCount + 1 } as any);
             setTimeout(() => {
               const s = get();
               if (!s._historicalBackfillDone && s.trendMode === 'live') {
@@ -451,9 +480,12 @@ export const useTrendStore = create<TrendState>()(
                   console.error('[TrendStore] backfill retry error:', e)
                 );
               }
-            }, 5 * 60 * 1000);
+            }, delayMs);
             return;
           }
+
+          // Reset retry counter on success
+          set({ _backfillRetryCount: 0 } as any);
 
           const state = get();
           const histFlow = data.flowTrend as FlowTrendPoint[];
@@ -558,10 +590,40 @@ export const useTrendStore = create<TrendState>()(
             `[TrendStore] Backfill complete: ${histFlow.length} historical + ${liveFlowTrend.length} live points, ` +
             `${Object.keys(mergedPrevSnapshots).length} symbols with snapshots`
           );
+
+          // ─── Task 45: sparse-backfill detection ───
+          // If the session has been running > 30 min but the backfill produced
+          // < 50% of the expected 5-min-grid points, the instrument master was
+          // probably stale/truncated when this ran (or it ran near open). One
+          // force re-run in 10 minutes supersedes it — the merge above already
+          // handles live-point offsets, so this is safe.
+          const expectedPoints = (() => {
+            // Session minutes elapsed since 09:15 IST → 5-min grid
+            const nowIst = new Date(Date.now() + 5.5 * 60 * 60 * 1000);
+            const mins = nowIst.getUTCHours() * 60 + nowIst.getUTCMinutes() - (9 * 60 + 15);
+            return Math.max(0, Math.floor(mins / 5));
+          })();
+          if (expectedPoints >= 6 && histFlow.length < expectedPoints * 0.5) {
+            console.warn(`[TrendStore] Sparse backfill detected: ${histFlow.length} pts vs ${expectedPoints} expected — scheduling one force re-run in 10 min`);
+            set({ backfillStatus: 'sparse' });
+            setTimeout(() => {
+              const s = get();
+              if (s.trendMode === 'live') {
+                // Clear the done flag so scheduleBackfillTrigger's force path re-runs.
+                set({ _historicalBackfillDone: false });
+                get().scheduleBackfillTrigger({ force: true });
+              }
+            }, 10 * 60 * 1000);
+          } else {
+            set({ backfillStatus: 'done' });
+          }
         } catch (err) {
           console.error('[TrendStore] backfillHistoricalFlow error:', err);
           // Don't set _historicalBackfillDone on error — allow retry.
-          // Schedule a single retry in 5 minutes (same as empty-response case).
+          // Task 45: adaptive retry — 45s for the first 3 attempts, then 5 min.
+          const retryCount = (get() as any)._backfillRetryCount || 0;
+          const delayMs = retryCount < 3 ? 45_000 : 5 * 60_000;
+          set({ backfillStatus: 'retrying', _backfillRetryCount: retryCount + 1 } as any);
           setTimeout(() => {
             const s = get();
             if (!s._historicalBackfillDone && s.trendMode === 'live') {
@@ -570,7 +632,7 @@ export const useTrendStore = create<TrendState>()(
                 console.error('[TrendStore] backfill retry error:', e)
               );
             }
-          }, 5 * 60 * 1000);
+          }, delayMs);
         }
       },
 
@@ -765,7 +827,9 @@ export const useTrendStore = create<TrendState>()(
               currentIntervalCashFlow: 0,
               _historicalBackfillDone: false,
               _cashBackfillDone: false,
-            });
+              _backfillRetryCount: 0,
+              backfillStatus: 'idle',
+            } as any);
 
             // Re-trigger both backfills. Force: bypass the 60s debounce so
             // this demo→live transition isn't blocked by startPolling()'s

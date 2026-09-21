@@ -381,10 +381,20 @@ export default function TrendAnalysisTab() {
   // which shows as a flat line. Surface it loudly on the cards.
   const flowFeedMode = useTrendStore((s) => s.flowFeedMode);
   const lastLiveFlowAt = useTrendStore((s) => s.lastLiveFlowAt);
+  // Task 45: backfill health for the two Options Money Flow cards — shows
+  // WHY a card is empty (retrying / sparse re-run pending) instead of a
+  // silent blank.
+  const backfillStatus = useTrendStore((s) => s.backfillStatus);
   const flowFeedLabel =
     flowFeedMode === 'live' ? null
     : flowFeedMode === 'demo' ? 'DEMO FEED — token expired? Flow chart frozen at last live point'
     : flowFeedMode === 'error' ? 'FEED ERROR — flow chart frozen at last live point'
+    : null;
+  // Task 45: options-backfill status → banner text for Cards 3+4
+  const backfillLabel =
+    backfillStatus === 'retrying' ? 'BACKFILL RETRYING — instruments download hiccup; auto-retry every 45s-5min'
+    : backfillStatus === 'sparse' ? 'BACKFILL SPARSE — thin history detected; full re-run in ~10 min'
+    : backfillStatus === 'pending' ? 'BACKFILL RUNNING — reconstructing 09:15→now history (~2 min)'
     : null;
   const lastPollAt = useTrendStore((s) => s.lastPollAt);
 
@@ -697,6 +707,11 @@ export default function TrendAnalysisTab() {
               ⚠ {flowFeedLabel}{lastLiveFlowAt > 0 && ` · last live ${new Date(lastLiveFlowAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata' })} IST`}
             </div>
           )}
+          {backfillLabel && (
+            <div className="mb-2 rounded-md border border-sky-500/40 bg-sky-500/10 px-2 py-1 text-[10px] font-semibold text-sky-300">
+              ⟳ {backfillLabel}
+            </div>
+          )}
           <div className="flex items-start justify-between gap-2 mb-2 min-h-[52px] flex-wrap">
             <div className="min-w-0">
               <div className="flex items-center gap-2">
@@ -774,6 +789,11 @@ export default function TrendAnalysisTab() {
           {flowFeedLabel && (
             <div className="mb-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-[10px] font-semibold text-amber-300">
               ⚠ {flowFeedLabel}{lastLiveFlowAt > 0 && ` · last live ${new Date(lastLiveFlowAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata' })} IST`}
+            </div>
+          )}
+          {backfillLabel && (
+            <div className="mb-2 rounded-md border border-sky-500/40 bg-sky-500/10 px-2 py-1 text-[10px] font-semibold text-sky-300">
+              ⟳ {backfillLabel}
             </div>
           )}
           <div className="flex items-start justify-between gap-2 mb-2 min-h-[52px] flex-wrap">

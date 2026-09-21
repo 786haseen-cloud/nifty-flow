@@ -292,7 +292,9 @@ async function fetchHistoricalCashFlow(): Promise<HistCashFlowResponse> {
 
 export async function GET(request: NextRequest) {
   try {
-    // Check cache
+    // Check cache — Task 45: only 'live' responses are cached (same fix as
+    // historical-flow). Error responses must not poison the 60s window for
+    // other devices hitting this instance.
     if (cachedResponse && Date.now() - cachedAt < CACHE_TTL_MS) {
       console.log('[HistCashFlow] Returning cached response');
       return NextResponse.json(cachedResponse);
@@ -307,8 +309,10 @@ export async function GET(request: NextRequest) {
     }
 
     const data = await fetchHistoricalCashFlow();
-    cachedResponse = data;
-    cachedAt = Date.now();
+    if (data.mode === 'live') {
+      cachedResponse = data;
+      cachedAt = Date.now();
+    }
     return NextResponse.json(data);
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);

@@ -102,6 +102,9 @@ interface HistoricalFlowResponse {
   bullFlow: Record<string, number>;
   /** Cumulative BEARISH flow per symbol (Cr) since open — same consumer. */
   bearFlow: Record<string, number>;
+  /** Task 45: which stage failed (diagnosability — the UI can show WHY the
+   *  options cards are empty instead of a silent blank). 'none' on success. */
+  errorStage?: 'instruments' | 'quotes' | 'no-options' | 'none';
   error?: string;
 }
 
@@ -153,9 +156,16 @@ function computeFlowBetweenCandles(
 
 async function fetchHistoricalFlow(): Promise<HistoricalFlowResponse> {
   const allSpecs = [...INDEX_SPECS, ...STOCK_SPECS];
-  const allInstruments = await getInstruments();
+  let allInstruments = await getInstruments();
+  // Task 45: if the instruments download failed/truncated (returns []), retry
+  // once with forceRefresh before giving up — a transient egress hiccup
+  // should not blank the options cards for a whole retry cycle.
   if (allInstruments.length === 0) {
-    return { mode: 'error', timestamp: new Date().toISOString(), flowTrend: [], prevSnapshots: {}, cumulativeFlow: {}, error: 'Instruments empty' };
+    console.warn('[HistFlow] instruments empty on first attempt — force-refresh retry...');
+    allInstruments = await getInstruments(undefined, true);
+  }
+  if (allInstruments.length === 0) {
+    return { mode: 'error', timestamp: new Date().toISOString(), flowTrend: [], prevSnapshots: {}, cumulativeFlow: {}, bullFlow: {}, bearFlow: {}, errorStage: 'instruments', error: 'Instruments empty' } as HistoricalFlowResponse;
   }
 
   // Step 1: Get spot prices for all symbols to determine ATM
@@ -191,12 +201,12 @@ async function fetchHistoricalFlow(): Promise<HistoricalFlowResponse> {
   }
 
   if (cashTokenList.length === 0) {
-    return { mode: 'error', timestamp: new Date().toISOString(), flowTrend: [], prevSnapshots: {}, cumulativeFlow: {}, error: 'No cash tokens' };
+    return { mode: 'error', timestamp: new Date().toISOString(), flowTrend: [], prevSnapshots: {}, cumulativeFlow: {}, bullFlow: {}, bearFlow: {}, errorStage: 'instruments', error: 'No cash tokens' } as HistoricalFlowResponse;
   }
 
   const cashQuotes = await getQuotes(cashTokenList);
   if ('_error' in cashQuotes) {
-    return { mode: 'error', timestamp: new Date().toISOString(), flowTrend: [], prevSnapshots: {}, cumulativeFlow: {}, error: 'Quote error' };
+    return { mode: 'error', timestamp: new Date().toISOString(), flowTrend: [], prevSnapshots: {}, cumulativeFlow: {}, bullFlow: {}, bearFlow: {}, errorStage: 'quotes', error: 'Quote error' } as HistoricalFlowResponse;
   }
 
   // Step 2: For each symbol, find option strike tokens + compute historical flow
@@ -474,14 +484,17 @@ async function fetchHistoricalFlow(): Promise<HistoricalFlowResponse> {
 
   console.log(`[HistFlow] Done. ${apiCallCount} API calls, ${flowTrend.length} pts, ${results.length} symbols`);
 
-  return { mode: 'live', timestamp: new Date().toISOString(), flowTrend, prevSnapshots, cumulativeFlow, bullFlow, bearFlow };
+  return { mode: 'live', timestamp: new Date().toISOString(), flowTrend, prevSnapshots, cumulativeFlow, bullFlow, bearFlow, errorStage: results.length === 0 ? 'no-options' : 'none' };
 }
 
 // ─── GET Handler ───
 
 export async function GET(request: NextRequest) {
   try {
-    // Check cache
+    // Check cache — Task 45: only 'live' responses are cached. Previously
+    // ERROR responses were cached for 60s too, poisoning every device that
+    // hit this instance during the window (one device's failure became
+    // another device's blank cards).
     if (cachedResponse && Date.now() - cachedAt < CACHE_TTL_MS) {
       console.log('[HistFlow] Returning cached response');
       return NextResponse.json(cachedResponse);
@@ -491,20 +504,22 @@ export async function GET(request: NextRequest) {
     if (!configured) {
       return NextResponse.json({
         mode: 'demo', timestamp: new Date().toISOString(),
-        flowTrend: [], prevSnapshots: {}, cumulativeFlow: {}, bullFlow: {}, bearFlow: {},
+        flowTrend: [], prevSnapshots: {}, cumulativeFlow: {}, bullFlow: {}, bearFlow: {}, errorStage: 'none',
       });
     }
 
     const data = await fetchHistoricalFlow();
-    cachedResponse = data;
-    cachedAt = Date.now();
+    if (data.mode === 'live') {
+      cachedResponse = data;
+      cachedAt = Date.now();
+    }
     return NextResponse.json(data);
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
     console.error('[HistFlow] Error:', errMsg);
     return NextResponse.json({
       mode: 'error', timestamp: new Date().toISOString(),
-      flowTrend: [], prevSnapshots: {}, cumulativeFlow: {}, bullFlow: {}, bearFlow: {}, error: errMsg,
+      flowTrend: [], prevSnapshots: {}, cumulativeFlow: {}, bullFlow: {}, bearFlow: {}, errorStage: 'instruments', error: errMsg,
     });
   }
 }
