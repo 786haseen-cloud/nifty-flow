@@ -302,5 +302,88 @@ console.log('\n[9] Pattern history + pinning modifiers');
 }
 
 // ══════════════════════════════════════════════════════════════════
+console.log('\n[10] Task 47 — direction-consistent targets/stops (live bug: INFY PUT tgt 1042 > spot 1030; TITAN CALL tgt 4899 < spot 4910)');
+{
+  // A) INFY PUT — magnet ABOVE spot (bullish magnet) but flow/structure put
+  //    candidate wins the PUT ranking. Old code copied magnetCenter →
+  //    "target" 1042 ABOVE entry 1030 with stop 1080: hitting target = losing.
+  const infy = mk({
+    symbol: 'INFY', name: 'Infosys', type: 'stock',
+    spot: 1030, strikeStep: 20,
+    zeroGamma: 1075,            // above spot → PUT stop rule = zeroΓ + half step
+    magnetCenter: 1042,         // ABOVE spot → wrong side for a PUT
+    magnetZone: [1040, 1060],
+    signal: mkSignal('WAIT', 'NONE', 1.8),
+    footprintTone: 'bearish', footprintScore: -2,
+  });
+  const infyRes = computeMaxProbabilitySignals([infy]);
+  const infyPut = infyRes.put;
+  console.log(`      INFY PUT plan: spot=1030 strike=${infyPut?.strike} target=${infyPut?.target} stop=${infyPut?.stop}`);
+  check('A) PUT target BELOW spot (profit side)', (infyPut?.target ?? Infinity) < 1030, `got ${infyPut?.target}`);
+  check('A) PUT target = spot − mirrored distance (1010)', infyPut?.target === 1010, `got ${infyPut?.target}`);
+  check('A) PUT stop ABOVE spot (loss side)', (infyPut?.stop ?? 0) > 1030, `got ${infyPut?.stop}`);
+  check('A) plan ordering stop > spot > target', (infyPut?.stop ?? 0) > 1030 && 1030 > (infyPut?.target ?? 0));
+
+  // B) TITAN CALL — magnet BELOW spot (bearish magnet), call candidate wins.
+  //    Old code: "target" 4899 BELOW entry 4910, stop 4832 below it.
+  const titan = mk({
+    symbol: 'TITAN', name: 'Titan Company', type: 'stock',
+    spot: 4910, strikeStep: 20,
+    zeroGamma: 4838,            // below spot → CALL stop rule = zeroΓ − half step
+    magnetCenter: 4899,         // BELOW spot → wrong side for a CALL
+    magnetZone: [4850, 4899],
+    signal: mkSignal('CALL', 'STRONG', 8.8),
+    footprintTone: 'bullish', footprintScore: 3,
+  });
+  const titanRes = computeMaxProbabilitySignals([titan]);
+  const titanCall = titanRes.call;
+  console.log(`      TITAN CALL plan: spot=4910 strike=${titanCall?.strike} target=${titanCall?.target} stop=${titanCall?.stop}`);
+  check('B) CALL target ABOVE spot (profit side)', (titanCall?.target ?? 0) > 4910, `got ${titanCall?.target}`);
+  check('B) CALL target = spot + mirrored distance (4930)', titanCall?.target === 4930, `got ${titanCall?.target}`);
+  check('B) CALL stop BELOW spot (loss side)', (titanCall?.stop ?? Infinity) < 4910, `got ${titanCall?.stop}`);
+  check('B) plan ordering stop < spot < target', (titanCall?.stop ?? 0) < 4910 && 4910 < (titanCall?.target ?? 0));
+
+  // C) Aligned plan unchanged — magnet already ≥1 step on the profit side
+  //    keeps the pure structural target (legacy behavior preserved).
+  const alignedCall = computeMaxProbabilitySignals([mk({
+    spot: 25000, strikeStep: 50, zeroGamma: 24800,
+    magnetCenter: 25100, magnetZone: [25050, 25100],
+    signal: mkSignal('CALL', 'MODERATE', 6.0),
+  })]);
+  check('C) aligned CALL keeps magnet target (25100)', alignedCall.call?.target === 25100, `got ${alignedCall.call?.target}`);
+
+  // D) Stop side guard — CALL with zone fully ABOVE spot and zeroΓ also
+  //    above spot (unusable for a CALL stop): zone-edge stop would land
+  //    at/beyond entry → 2-step fallback.
+  //    (mk() coerces null zeroΓ to 24800 via ??, so pass 25200 to force
+  //    the magnetZone branch — 25200 > spot skips the zeroΓ rule.)
+  const guardCall = computeMaxProbabilitySignals([mk({
+    spot: 25000, strikeStep: 50,
+    zeroGamma: 25200, magnetZone: [25100, 25150], magnetCenter: 25125,
+    signal: mkSignal('CALL', 'MODERATE', 6.0),
+  })]);
+  console.log(`      guard CALL stop=${guardCall.call?.stop}`);
+  check('D) CALL zone stop above spot → fallback 2-step below (24900)', guardCall.call?.stop === 24900, `got ${guardCall.call?.stop}`);
+
+  // E) Stop side guard — PUT with zone fully BELOW spot → 2-step fallback.
+  const guardPut = computeMaxProbabilitySignals([mk({
+    spot: 25000, strikeStep: 50,
+    zeroGamma: null, magnetZone: [24800, 24850], magnetCenter: 24825,
+    signal: mkSignal('PUT', 'MODERATE', -5.0),
+  })]);
+  console.log(`      guard PUT stop=${guardPut.put?.stop}`);
+  check('E) PUT zone stop below spot → fallback 2-step above (25100)', guardPut.put?.stop === 25100, `got ${guardPut.put?.stop}`);
+
+  // F) Thin magnet (right side but < 1 step) → floored to 1 step, never
+  //    a target at/inside entry.
+  const thinPut = computeMaxProbabilitySignals([mk({
+    spot: 25000, strikeStep: 50, zeroGamma: 25200,
+    magnetCenter: 24990, magnetZone: [24950, 24990],
+    signal: mkSignal('PUT', 'MODERATE', -5.0),
+  })]);
+  check('F) thin magnet PUT target floored to spot − 1 step (24950)', thinPut.put?.target === 24950, `got ${thinPut.put?.target}`);
+}
+
+// ══════════════════════════════════════════════════════════════════
 console.log(`\n════════════ RESULT: ${pass} passed, ${fail} failed ════════════`);
 if (fail > 0) process.exit(1);

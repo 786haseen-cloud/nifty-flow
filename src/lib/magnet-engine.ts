@@ -1167,8 +1167,8 @@ export interface SignalResult {
   confidence: number;       // 0-100
   reasons: SignalReason[];
   suggestedStrike: number;  // option strike for entry
-  suggestedTarget: number;  // magnet zone center
-  suggestedStop: number;    // beyond zero-Γ or magnet edge
+  suggestedTarget: number;  // profit-side level: magnet center if ≥1 step beyond spot, else mirrored structural distance (Task 47)
+  suggestedStop: number;    // loss-side level: beyond zero-Γ or magnet edge, side-guarded (Task 47)
   timing: 'NOW' | 'AFTERNOON' | 'EOD' | 'WAIT';
   notes: string;
 }
@@ -1975,31 +1975,15 @@ export function computeSignal(m: MagnetResult): SignalResult {
     suggestedStrike = atmStrike; // neutral
   }
 
-  // ── Suggested target = magnet zone center ──
-  const suggestedTarget = m.magnetCenter > 0 ? Math.round(m.magnetCenter) : atmStrike;
+  // ── Suggested target = magnet zone center, direction-guarded (Task 47) ──
+  // A CALL target must sit ABOVE spot, a PUT target BELOW. directionalTarget
+  // uses the magnet center when it already sits on the profit side, and
+  // mirrors its structural distance when the fired direction opposes the
+  // magnet pull (flow-driven fires). WAIT keeps the atmStrike placeholder.
+  const suggestedTarget = directionalTarget(m, direction, atmStrike);
 
-  // ── Suggested stop = beyond zero-Γ or magnet edge ──
-  let suggestedStop: number;
-  if (direction === 'CALL') {
-    // Stop below zero-Γ (if exists) or below magnet zone low
-    if (m.zeroGamma !== null && m.zeroGamma > 0 && m.zeroGamma < m.spot) {
-      suggestedStop = Math.round(m.zeroGamma - m.strikeStep * 0.5);
-    } else if (m.magnetZone.length > 0) {
-      suggestedStop = Math.min(...m.magnetZone) - m.strikeStep;
-    } else {
-      suggestedStop = atmStrike - m.strikeStep * 2;
-    }
-  } else if (direction === 'PUT') {
-    if (m.zeroGamma !== null && m.zeroGamma > 0 && m.zeroGamma > m.spot) {
-      suggestedStop = Math.round(m.zeroGamma + m.strikeStep * 0.5);
-    } else if (m.magnetZone.length > 0) {
-      suggestedStop = Math.max(...m.magnetZone) + m.strikeStep;
-    } else {
-      suggestedStop = atmStrike + m.strikeStep * 2;
-    }
-  } else {
-    suggestedStop = atmStrike;
-  }
+  // ── Suggested stop = beyond zero-Γ or magnet edge, side-guarded (Task 47) ──
+  const suggestedStop = directionalStop(m, direction, atmStrike);
 
   // ── Timing ──
   // If charm aligned with direction → AFTERNOON (charm flow kicks in 1:30-3:30)
@@ -2293,32 +2277,85 @@ function interpTierProb(absScore: number, weak: number, moderate: number, strong
 
 const clamp1 = (v: number) => Math.max(-1, Math.min(1, v));
 
+/** ── Task 47: direction-consistent trade-plan levels ──────────────────────
+ *  Root cause of the "PUT target above spot / CALL target below spot" bug
+ *  (user report, Sep 22 2026: INFY PUT showed target 1042 vs spot 1030;
+ *  TITAN CALL showed target 4899 vs spot 4910): both computeSignal and
+ *  buildMaxProbPlan emitted `magnetCenter` as the target regardless of the
+ *  traded direction. The magnet center is where OI structure pulls price —
+ *  it can sit on EITHER side of spot. A flow-driven candidate (the whole
+ *  point of the max-probability panel) routinely fires the opposite way of
+ *  the magnet pull, so the naive copy produced plans whose target sat
+ *  BETWEEN entry and stop on the LOSS side: spot 1030 → "target" 1042 →
+ *  stop 1080 for a PUT — hitting the target meant losing.
+ *
+ *  Rule: a CALL target must sit ABOVE spot (profit side), a PUT target
+ *  BELOW. When the magnet already sits on the profit side at least one
+ *  strikeStep away, use it as-is (pure structural target — preserves the
+ *  old behavior for aligned plans). Otherwise mirror the magnet's
+ *  structural distance to the profit side, floored at one strikeStep so
+ *  the plan never shows a target at/inside entry. No magnet data → one
+ *  strikeStep measured move. WAIT keeps the atmStrike placeholder. */
+function directionalTarget(
+  m: Pick<MagnetResult, 'magnetCenter' | 'spot' | 'strikeStep'>,
+  dir: SignalResult['direction'],
+  atmStrike: number,
+): number {
+  const minReward = m.strikeStep;
+  if (dir === 'WAIT') return atmStrike; // placeholder — no trade planned
+  if (m.magnetCenter > 0) {
+    const magnetReward = dir === 'CALL' ? m.magnetCenter - m.spot : m.spot - m.magnetCenter;
+    if (magnetReward >= minReward) return Math.round(m.magnetCenter);
+    // Magnet on the wrong side (or inside entry) — mirror its distance to
+    // the profit side, floored at one strikeStep.
+    const dist = Math.max(minReward, Math.abs(magnetReward));
+    return Math.round(dir === 'CALL' ? m.spot + dist : m.spot - dist);
+  }
+  return Math.round(dir === 'CALL' ? m.spot + minReward : m.spot - minReward);
+}
+
+/** ── Task 47: stop-side guard ──────────────────────────────────────────────
+ *  A CALL stop must sit BELOW spot, a PUT stop ABOVE. The zero-Γ rule was
+ *  already side-guarded (zeroΓ < spot for CALL, > spot for PUT), but the
+ *  magnetZone-edge rule could land the stop at/beyond entry when the whole
+ *  zone sits on the entry side of spot (instant stop-out). That branch now
+ *  falls back to the 2-step ATM rule. WAIT keeps the atmStrike placeholder.
+ *  Shared by computeSignal and buildMaxProbPlan so both panels agree. */
+function directionalStop(
+  m: Pick<MagnetResult, 'zeroGamma' | 'magnetZone' | 'spot' | 'strikeStep'>,
+  dir: SignalResult['direction'],
+  atmStrike: number,
+): number {
+  if (dir === 'WAIT') return atmStrike; // placeholder — no trade planned
+  if (dir === 'CALL') {
+    if (m.zeroGamma !== null && m.zeroGamma > 0 && m.zeroGamma < m.spot) {
+      return Math.round(m.zeroGamma - m.strikeStep * 0.5);
+    }
+    if (m.magnetZone.length > 0) {
+      const zoneStop = Math.min(...m.magnetZone) - m.strikeStep;
+      if (zoneStop < m.spot) return Math.round(zoneStop); // side guard
+    }
+    return atmStrike - m.strikeStep * 2;
+  }
+  // PUT
+  if (m.zeroGamma !== null && m.zeroGamma > 0 && m.zeroGamma > m.spot) {
+    return Math.round(m.zeroGamma + m.strikeStep * 0.5);
+  }
+  if (m.magnetZone.length > 0) {
+    const zoneStop = Math.max(...m.magnetZone) + m.strikeStep;
+    if (zoneStop > m.spot) return Math.round(zoneStop); // side guard
+  }
+  return atmStrike + m.strikeStep * 2;
+}
+
 /** Trade plan for an ARBITRARY direction (computeSignal only plans for its
  *  fired direction — WAIT plans are placeholders). Mirrors the exact
  *  strike/target/stop rules of computeSignal so both panels agree. */
 function buildMaxProbPlan(m: MagnetResult, dir: 'CALL' | 'PUT') {
   const atmStrike = Math.round(m.spot / m.strikeStep) * m.strikeStep;
   const strike = dir === 'CALL' ? atmStrike + m.strikeStep : atmStrike - m.strikeStep;
-  const target = m.magnetCenter > 0 ? Math.round(m.magnetCenter) : atmStrike;
-
-  let stop: number;
-  if (dir === 'CALL') {
-    if (m.zeroGamma !== null && m.zeroGamma > 0 && m.zeroGamma < m.spot) {
-      stop = Math.round(m.zeroGamma - m.strikeStep * 0.5);
-    } else if (m.magnetZone.length > 0) {
-      stop = Math.min(...m.magnetZone) - m.strikeStep;
-    } else {
-      stop = atmStrike - m.strikeStep * 2;
-    }
-  } else {
-    if (m.zeroGamma !== null && m.zeroGamma > 0 && m.zeroGamma > m.spot) {
-      stop = Math.round(m.zeroGamma + m.strikeStep * 0.5);
-    } else if (m.magnetZone.length > 0) {
-      stop = Math.max(...m.magnetZone) + m.strikeStep;
-    } else {
-      stop = atmStrike + m.strikeStep * 2;
-    }
-  }
+  const target = directionalTarget(m, dir, atmStrike);
+  const stop = directionalStop(m, dir, atmStrike);
 
   // Timing mirrors computeSignal: charm-aligned window = afternoon session
   let timing: SignalResult['timing'] = 'NOW';
