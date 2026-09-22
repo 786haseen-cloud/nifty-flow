@@ -56,7 +56,7 @@ function makeBaseMagnet(overrides: Partial<MagnetResult> = {}): MagnetResult {
     magnetScore: 0,
     pinningProbability: 50,
     charmDirection: 'flat',
-    charmMagnitudeCr: 0,
+    charmMagnitudeCr: 0.00,
     charmStrikes: [],
     totalCEOI: 0,
     totalPEOI: 0,
@@ -122,9 +122,9 @@ check(
 console.log('\n=== Test 2: IV Skew ===');
 
 const skewStrikes: StrikeOption[] = [
-  { strike: 24450, ceOI: 50000, peOI: 50000, ceLTP: 90, peLTP: 90, ceDelta: 0, peDelta: 0 },
+  { strike: 24450, ceOI: 5000000, peOI: 5000000, ceLTP: 90, peLTP: 90, ceDelta: 0, peDelta: 0 },
   { strike: 24500, ceOI: 60000, peOI: 60000, ceLTP: 85, peLTP: 95, ceDelta: 0, peDelta: 0 },  // ATM, calls cheaper
-  { strike: 24550, ceOI: 50000, peOI: 50000, ceLTP: 95, peLTP: 85, ceDelta: 0, peDelta: 0 },
+  { strike: 24550, ceOI: 5000000, peOI: 5000000, ceLTP: 95, peLTP: 85, ceDelta: 0, peDelta: 0 },
 ];
 const skewResult = computeIVSkew(skewStrikes, 24500, 3 / 365);
 check('IV skew computed', skewResult.skewPct !== null, `got ${skewResult.skewPct}`);
@@ -153,16 +153,19 @@ check(
 console.log('\n=== Test 3: OI Buildup ===');
 
 const prevStrikes: StrikeOption[] = [
-  { strike: 24450, ceOI: 50000, peOI: 50000, ceLTP: 80, peLTP: 80, ceDelta: 0, peDelta: 0 },
-  { strike: 24500, ceOI: 60000, peOI: 60000, ceLTP: 80, peLTP: 80, ceDelta: 0, peDelta: 0 },
-  { strike: 24550, ceOI: 50000, peOI: 50000, ceLTP: 80, peLTP: 80, ceDelta: 0, peDelta: 0 },
+  { strike: 24450, ceOI: 5000000, peOI: 5000000, ceLTP: 80, peLTP: 80, ceDelta: 0.4, peDelta: 0.5 },
+  { strike: 24500, ceOI: 60000, peOI: 60000, ceLTP: 80, peLTP: 80, ceDelta: 0.4, peDelta: 0.5 },
+  { strike: 24550, ceOI: 5000000, peOI: 5000000, ceLTP: 80, peLTP: 80, ceDelta: 0.4, peDelta: 0.5 },
 ];
 
-// Long buildup: PE OI up (put writing), CE OI down (call covering)
+// Long buildup: PE OI up + PE px down (put WRITING, bullish), CE OI down +
+// CE px up (short covering, bullish). FULL-AUDIT: premiums now carry real
+// direction — the classifier's zero-price dead zone books nothing on flat
+// LTPs (fabricated direction from no information).
 const longBuildupCurrent: StrikeOption[] = [
-  { strike: 24450, ceOI: 47000, peOI: 53000, ceLTP: 80, peLTP: 80, ceDelta: 0, peDelta: 0 },
-  { strike: 24500, ceOI: 56000, peOI: 64000, ceLTP: 80, peLTP: 80, ceDelta: 0, peDelta: 0 },
-  { strike: 24550, ceOI: 47000, peOI: 53000, ceLTP: 80, peLTP: 80, ceDelta: 0, peDelta: 0 },
+  { strike: 24450, ceOI: 4700000, peOI: 5300000, ceLTP: 82, peLTP: 78, ceDelta: 0.4, peDelta: 0.5 },
+  { strike: 24500, ceOI: 5600000, peOI: 6400000, ceLTP: 82, peLTP: 78, ceDelta: 0.4, peDelta: 0.5 },
+  { strike: 24550, ceOI: 4700000, peOI: 5300000, ceLTP: 82, peLTP: 78, ceDelta: 0.4, peDelta: 0.5 },
 ];
 const lbu = computeOIBuildup(longBuildupCurrent, prevStrikes);
 check('Long buildup pattern detected', lbu.pattern === 'long_buildup', `got ${lbu.pattern}`);
@@ -170,9 +173,9 @@ check('Long buildup strength positive', lbu.strength > 0, `got ${lbu.strength.to
 
 // Short buildup: CE OI up (call writing), PE OI down (put covering)
 const shortBuildupCurrent: StrikeOption[] = [
-  { strike: 24450, ceOI: 53000, peOI: 47000, ceLTP: 80, peLTP: 80, ceDelta: 0, peDelta: 0 },
-  { strike: 24500, ceOI: 64000, peOI: 56000, ceLTP: 80, peLTP: 80, ceDelta: 0, peDelta: 0 },
-  { strike: 24550, ceOI: 53000, peOI: 47000, ceLTP: 80, peLTP: 80, ceDelta: 0, peDelta: 0 },
+  { strike: 24450, ceOI: 5300000, peOI: 4700000, ceLTP: 78, peLTP: 82, ceDelta: 0.4, peDelta: 0.5 },
+  { strike: 24500, ceOI: 6400000, peOI: 5600000, ceLTP: 78, peLTP: 82, ceDelta: 0.4, peDelta: 0.5 },
+  { strike: 24550, ceOI: 5300000, peOI: 4700000, ceLTP: 78, peLTP: 82, ceDelta: 0.4, peDelta: 0.5 },
 ];
 const sbu = computeOIBuildup(shortBuildupCurrent, prevStrikes);
 check('Short buildup pattern detected', sbu.pattern === 'short_buildup', `got ${sbu.pattern}`);
@@ -235,7 +238,7 @@ const bullMagnet = makeBaseMagnet({
   zeroGamma: 24300,           // spot above 0Γ → positive regime
   gammaRegime: 'positive',
   charmDirection: 'up',       // dealers buy (+3.0)
-  charmMagnitudeCr: 520,
+  charmMagnitudeCr: 5.20,
   magnetZone: [24450, 24500, 24550],  // zone above spot → pull UP (+1.5)
   magnetCenter: 24500,
   pcr: 1.45,                  // > 1.2 → put writers (+1.0)
@@ -274,7 +277,7 @@ const bearMagnet = makeBaseMagnet({
   zeroGamma: 24750,           // spot below 0Γ → negative regime
   gammaRegime: 'negative',
   charmDirection: 'down',     // dealers sell (-3.0)
-  charmMagnitudeCr: 520,
+  charmMagnitudeCr: 5.20,
   magnetZone: [24350, 24400, 24450],  // zone below spot → pull DOWN (-1.5)
   magnetCenter: 24400,
   pcr: 0.65,                  // < 0.8 → call writers (-1.0)
@@ -420,7 +423,7 @@ console.log('\n=== Test 9: India Trend Gates (PUT on falling days) ===');
 // 9a: Typical falling day — charm up (India norm), negative regime, discount
 const fallingDay = makeBaseMagnet({
   charmDirection: 'up',
-  charmMagnitudeCr: 420,
+  charmMagnitudeCr: 4.20,
   zeroGamma: 24620,
   gammaRegime: 'negative',
   magnetCenter: 24650,
@@ -443,7 +446,7 @@ check('Charm detail mentions neutralization', (charmReason?.detail ?? '').includ
 // 9b: Strong trend-down day — everything bearish aligned
 const trendDownDay = makeBaseMagnet({
   charmDirection: 'up',
-  charmMagnitudeCr: 510,
+  charmMagnitudeCr: 5.10,
   zeroGamma: 24700,
   gammaRegime: 'negative',
   magnetCenter: 24720,
@@ -464,7 +467,7 @@ check('Magnet pull dampened (×0.3) against trend', magnetReason !== undefined &
 // 9c: CONTROL — genuine up day keeps full charm strength
 const upDay = makeBaseMagnet({
   charmDirection: 'up',
-  charmMagnitudeCr: 450,
+  charmMagnitudeCr: 4.50,
   zeroGamma: 24400,
   gammaRegime: 'positive',
   pcr: 1.35,
@@ -484,7 +487,7 @@ check('Up day charm stays full +3.0 (gate inactive)', upCharm?.weight === 3.0, `
 // 9d: Zero-Γ trigger fixes — magnitude floor + flow-confirmed bear trigger
 const weakCharmRange = makeBaseMagnet({
   charmDirection: 'up',
-  charmMagnitudeCr: 200,     // weak drift
+  charmMagnitudeCr: 2.00,     // weak drift
   zeroGamma: 24510,          // spot 0.04% below flip
   pinningProbability: 50,
 });
@@ -496,7 +499,7 @@ check('Charm trigger needs >= 300 Cr magnitude', weakCharmZeroG?.weight === 0, `
 const flowBearTrigger = makeBaseMagnet({
   spot: 24510,
   charmDirection: 'up',      // charm bullish (India norm)
-  charmMagnitudeCr: 400,
+  charmMagnitudeCr: 4.00,
   zeroGamma: 24500,          // spot 0.04% ABOVE flip
   basisPct: -0.15,           // deep discount → flow-confirmed bear trigger
 });
@@ -509,7 +512,7 @@ check('Bear trigger detail mentions discount', (flowBearZeroG?.detail ?? '').inc
 // 9e: CONTROL — symmetric bull charm trigger still works with strong charm
 const bullTrigger = makeBaseMagnet({
   charmDirection: 'up',
-  charmMagnitudeCr: 450,     // strong
+  charmMagnitudeCr: 4.50,     // strong
   zeroGamma: 24510,          // spot 0.04% below flip
   pinningProbability: 50,
 });
@@ -528,7 +531,7 @@ console.log('\n=== Test 9f: STRONG PUT reachability ===');
 
 const crashDay = makeBaseMagnet({
   charmDirection: 'up',      // structural India charm
-  charmMagnitudeCr: 510,
+  charmMagnitudeCr: 5.10,
   zeroGamma: 24700,
   gammaRegime: 'negative',
   magnetCenter: 24720,
@@ -560,7 +563,7 @@ check('FII selling pushes crash day deep into PUT STRONG', crashFiiSig.direction
 // Mild-bearish day must NOT over-fire: score between -1.5 and -4.4 → WEAK only
 const mildBear = makeBaseMagnet({
   charmDirection: 'up',
-  charmMagnitudeCr: 380,
+  charmMagnitudeCr: 3.80,
   zeroGamma: 24580,
   gammaRegime: 'negative',
   magnetCenter: 24640,

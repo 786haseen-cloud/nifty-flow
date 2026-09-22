@@ -155,8 +155,10 @@ export const IDX_NAMES: Record<string, string> = {
  * Computes net options flow (in ₹ Cr) from two consecutive OI snapshots.
  *
  * For each strike:
- *   - Δ OI > 0  → new positions opened, valued at full delta × lotSize
+ *   - Δ OI > 0  → new positions opened, valued at full delta
  *   - Δ OI < 0  → positions closed (short covering / unwinding), valued at 0.3× factor
+ * (OI is unit-denominated — contracts × lot — so the valuation is lot-free;
+ * see option-flow-classify.ts full-audit unit fix.)
  *
  * Direction = canonical OI×premium buildup table (see option-flow-classify.ts
  * for the full table + the Sep 17 2026 put-side fix). Classification lives in
@@ -167,7 +169,6 @@ export const IDX_NAMES: Record<string, string> = {
 export function computeSymbolFlow(
   prev: StrikeData[],
   curr: StrikeData[],
-  lotSize: number
 ): { bullish: number; bearish: number; net: number } {
   let bullish = 0;
   let bearish = 0;
@@ -176,6 +177,9 @@ export function computeSymbolFlow(
     const prevStrike = prev.find((s) => s.strike === currStrike.strike);
     if (!prevStrike) continue;
 
+    // FULL-AUDIT UNIT FIX: OI is Kite-unit denominated (contracts × lot).
+    // classifyStrikeFlow no longer takes a lotSize — valuing unit-OI with
+    // the lot again double-counted (NIFTY flows overstated 75×).
     const leg = classifyStrikeFlow(
       {
         ceOI: prevStrike.ceOI,
@@ -193,7 +197,6 @@ export function computeSymbolFlow(
         ceDelta: currStrike.ceDelta,
         peDelta: currStrike.peDelta,
       },
-      lotSize,
     );
     bullish += leg.bullish;
     bearish += leg.bearish;

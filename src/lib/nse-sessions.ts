@@ -14,15 +14,16 @@ import { NSESessionInfo, NSESessionType, NSE_SESSIONS } from './types';
  *   - Equity Derivatives segment open till 3:40 PM
  */
 export function getNSESession(istTime: Date = new Date()): NSESessionInfo {
-  // Convert to IST if not already
+  // Convert to IST — FULL-AUDIT FIX (DST): UTC getters on the shifted epoch
+  // (the old local getters drifted ±60 min when a DST transition fell inside
+  // the shift window on non-IST hosts).
   const istOffset = 5.5 * 60 * 60 * 1000; // +5:30
-  const utc = istTime.getTime() + istTime.getTimezoneOffset() * 60 * 1000;
-  const ist = new Date(utc + istOffset);
+  const ist = new Date(istTime.getTime() + istOffset);
   
-  const hours = ist.getHours();
-  const minutes = ist.getMinutes();
+  const hours = ist.getUTCHours();
+  const minutes = ist.getUTCMinutes();
   const timeInMinutes = hours * 60 + minutes;
-  const day = ist.getDay(); // 0=Sun, 6=Sat
+  const day = ist.getUTCDay(); // 0=Sun, 6=Sat
   
   const currentTimeIST = `${String(hours).padStart(2,'0')}:${String(minutes).padStart(2,'0')}`;
   

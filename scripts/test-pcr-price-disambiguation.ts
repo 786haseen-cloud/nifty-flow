@@ -53,7 +53,7 @@ const prev1A: StrikeOption[] = [
 const curr1A: StrikeOption[] = [
   makeStrike(100, 100000, 200000, 50, 90, 0.5, -0.5),  // peOI↑ (100k→200k), peLTP↓ (100→90)
 ];
-const result1A = computeOIBuildup(curr1A, prev1A, LOT_SIZE);
+const result1A = computeOIBuildup(curr1A, prev1A);
 console.log(`    pattern = ${result1A.pattern}, strength = ${result1A.strength.toFixed(3)}`);
 console.log(`    bullishFlowCr = ${result1A.bullishFlowCr.toFixed(3)}, bearishFlowCr = ${result1A.bearishFlowCr.toFixed(3)}`);
 assert(result1A.pattern === 'long_buildup',
@@ -70,7 +70,7 @@ const prev1B: StrikeOption[] = [
 const curr1B: StrikeOption[] = [
   makeStrike(100, 100000, 200000, 50, 110, 0.5, -0.5),  // peOI↑ (100k→200k), peLTP↑ (100→110)
 ];
-const result1B = computeOIBuildup(curr1B, prev1B, LOT_SIZE);
+const result1B = computeOIBuildup(curr1B, prev1B);
 console.log(`    pattern = ${result1B.pattern}, strength = ${result1B.strength.toFixed(3)}`);
 console.log(`    bullishFlowCr = ${result1B.bullishFlowCr.toFixed(3)}, bearishFlowCr = ${result1B.bearishFlowCr.toFixed(3)}`);
 assert(result1B.pattern === 'short_buildup',
@@ -81,7 +81,7 @@ assert(result1B.bearishFlowCr > 0,
 console.log('\n  Scenario 1C: Call OI rising + call LTP RISING (call buying) → should be BULLISH');
 const prev1C: StrikeOption[] = [makeStrike(100, 100000, 50000, 50, 100, 0.5, -0.5)];
 const curr1C: StrikeOption[] = [makeStrike(100, 200000, 50000, 60, 100, 0.5, -0.5)];  // ceOI↑, ceLTP↑
-const result1C = computeOIBuildup(curr1C, prev1C, LOT_SIZE);
+const result1C = computeOIBuildup(curr1C, prev1C);
 console.log(`    pattern = ${result1C.pattern}, strength = ${result1C.strength.toFixed(3)}`);
 assert(result1C.pattern === 'long_buildup',
   `Call buying (OI↑ + LTP↑) → long_buildup (BULL) (got ${result1C.pattern})`);
@@ -89,7 +89,7 @@ assert(result1C.pattern === 'long_buildup',
 console.log('\n  Scenario 1D: Call OI rising + call LTP FALLING (call writing) → should be BEARISH');
 const prev1D: StrikeOption[] = [makeStrike(100, 100000, 50000, 50, 100, 0.5, -0.5)];
 const curr1D: StrikeOption[] = [makeStrike(100, 200000, 50000, 40, 100, 0.5, -0.5)];  // ceOI↑, ceLTP↓
-const result1D = computeOIBuildup(curr1D, prev1D, LOT_SIZE);
+const result1D = computeOIBuildup(curr1D, prev1D);
 console.log(`    pattern = ${result1D.pattern}, strength = ${result1D.strength.toFixed(3)}`);
 assert(result1D.pattern === 'short_buildup',
   `Call writing (OI↑ + LTP↓) → short_buildup (BEAR) (got ${result1D.pattern})`);

@@ -76,6 +76,18 @@ export function impliedVolatility(
   marketPrice: number, S: number, K: number, T: number, r: number, optionType: 'CE' | 'PE',
   maxIter: number = 100, precision: number = 0.0001
 ): number {
+  // FULL-AUDIT FIX: guard degenerate inputs. A marketPrice ≤ 0 (stale/illiquid
+  // quote) or below intrinsic value makes Newton-Raphson unbounded — the old
+  // code silently returned the clamp floor 0.001 (IV = 0.1%) or ceiling 5
+  // (500%) and calculateGreeks then emitted garbage Greeks from it. NaN is
+  // the honest answer; consumers already guard null-ish Greeks downstream.
+  const intrinsic = optionType === 'CE'
+    ? Math.max(0, S - K * Math.exp(-r * T))
+    : Math.max(0, K * Math.exp(-r * T) - S);
+  if (!(marketPrice > 0) || S <= 0 || K <= 0 || T <= 0 || marketPrice < intrinsic * 0.999) {
+    return NaN;
+  }
+
   let sigma = 0.3;
   const priceFunc = optionType === 'CE' ? callPrice : putPrice;
 
@@ -86,14 +98,16 @@ export function impliedVolatility(
     if (Math.abs(diff) < precision) return sigma;
 
     const vega = calcVega(S, K, T, r, sigma) * 100;
-    if (Math.abs(vega) < 0.0001) return sigma;
+    if (Math.abs(vega) < 0.0001) return NaN; // no convergence possible
 
     sigma = sigma - diff / vega;
     if (sigma <= 0.001) sigma = 0.001;
     if (sigma > 5) sigma = 5;
   }
 
-  return sigma;
+  // Exhausted iterations without converging — do NOT return the last clamp
+  // value as if it were a solved IV.
+  return NaN;
 }
 
 export function calculateGreeks(

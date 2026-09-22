@@ -26,7 +26,9 @@ function assert(name: string, cond: boolean, detail?: string) {
   }
 }
 
-const LOT = 250;
+// FULL-AUDIT UNIT FIX: OI is unit-denominated (Kite = contracts × lot), so
+// the valuation is lot-free. The old LOT=250 multiplication double-counted.
+// Deltas in this suite are 100 UNITS (1000 → 1100).
 const DELTA = 0.5; // |delta| for both legs
 
 function leg(opts: {
@@ -42,9 +44,9 @@ function leg(opts: {
   };
 }
 
-/** Expected value for a fresh (1.0×) or closing (0.3×) 100-contract add: */
+/** Expected value for a fresh (1.0×) or closing (0.3×) 100-unit add: */
 function val(factor: number): number {
-  return (100 * DELTA * LOT * factor) / 10000000;
+  return (100 * DELTA * factor) / 10000000;
 }
 const EPS = 1e-9;
 
@@ -52,42 +54,42 @@ console.log('\n── Shared classifier: classifyStrikeFlow ──');
 
 // ── CALL side (unchanged — regression guard) ──
 {
-  const r = classifyStrikeFlow(leg({}), leg({ ceOI: 1100, ceLTP: 52 }), LOT);
+  const r = classifyStrikeFlow(leg({}), leg({ ceOI: 1100, ceLTP: 52 }));
   assert('CE OI↑ px↑ → CE Buy → bullish', r.bullish > 0 && r.bearish === 0, JSON.stringify(r));
   assert('  magnitude = 1.0× fresh', Math.abs(r.bullish - val(1)) < EPS);
 }
 {
-  const r = classifyStrikeFlow(leg({}), leg({ ceOI: 1100, ceLTP: 48 }), LOT);
+  const r = classifyStrikeFlow(leg({}), leg({ ceOI: 1100, ceLTP: 48 }));
   assert('CE OI↑ px↓ → CE Write → bearish', r.bearish > 0 && r.bullish === 0, JSON.stringify(r));
 }
 {
-  const r = classifyStrikeFlow(leg({}), leg({ ceOI: 900, ceLTP: 52 }), LOT);
+  const r = classifyStrikeFlow(leg({}), leg({ ceOI: 900, ceLTP: 52 }));
   assert('CE OI↓ px↑ → short covering → bullish (0.3×)', r.bullish > 0 && r.bearish === 0, JSON.stringify(r));
   assert('  magnitude = 0.3× closing', Math.abs(r.bullish - val(0.3)) < EPS);
 }
 {
-  const r = classifyStrikeFlow(leg({}), leg({ ceOI: 900, ceLTP: 48 }), LOT);
+  const r = classifyStrikeFlow(leg({}), leg({ ceOI: 900, ceLTP: 48 }));
   assert('CE OI↓ px↓ → long unwinding → bearish (0.3×)', r.bearish > 0 && r.bullish === 0, JSON.stringify(r));
 }
 
 // ── PUT side (THE FIX — user caught it) ──
 {
-  const r = classifyStrikeFlow(leg({}), leg({ peOI: 1100, peLTP: 52 }), LOT);
+  const r = classifyStrikeFlow(leg({}), leg({ peOI: 1100, peLTP: 52 }));
   assert('PE OI↑ px↑ → PE BUY → BEARISH (was wrongly bullish)', r.bearish > 0 && r.bullish === 0, JSON.stringify(r));
   assert('  magnitude = 1.0× fresh', Math.abs(r.bearish - val(1)) < EPS);
 }
 {
-  const r = classifyStrikeFlow(leg({}), leg({ peOI: 1100, peLTP: 48 }), LOT);
+  const r = classifyStrikeFlow(leg({}), leg({ peOI: 1100, peLTP: 48 }));
   assert('PE OI↑ px↓ → PE WRITE → BULLISH (was wrongly bearish)', r.bullish > 0 && r.bearish === 0, JSON.stringify(r));
   assert('  magnitude = 1.0× fresh', Math.abs(r.bullish - val(1)) < EPS);
 }
 {
-  const r = classifyStrikeFlow(leg({}), leg({ peOI: 900, peLTP: 52 }), LOT);
+  const r = classifyStrikeFlow(leg({}), leg({ peOI: 900, peLTP: 52 }));
   assert('PE OI↓ px↑ → put short covering → BEARISH (0.3×)', r.bearish > 0 && r.bullish === 0, JSON.stringify(r));
   assert('  magnitude = 0.3× closing', Math.abs(r.bearish - val(0.3)) < EPS);
 }
 {
-  const r = classifyStrikeFlow(leg({}), leg({ peOI: 900, peLTP: 48 }), LOT);
+  const r = classifyStrikeFlow(leg({}), leg({ peOI: 900, peLTP: 48 }));
   assert('PE OI↓ px↓ → put long unwinding → BULLISH (0.3×)', r.bullish > 0 && r.bearish === 0, JSON.stringify(r));
 }
 
@@ -96,7 +98,7 @@ console.log('\n── Shared classifier: classifyStrikeFlow ──');
   // Call writing (bearish, 1.0×) + put writing (bullish, 1.0×), equal size → net 0
   const prev = [sd(26000, 1000, 1000, 50, 50)];
   const curr = [sd(26000, 1100, 1100, 48, 48)];
-  const r = computeSymbolFlow(prev, curr, LOT);
+  const r = computeSymbolFlow(prev, curr);
   assert('CE Write + PE Write equal size → net ≈ 0', Math.abs(r.net) < 1e-9, JSON.stringify(r));
   assert('  bull + bear halves recorded', r.bullish > 0 && r.bearish > 0);
 }
@@ -107,21 +109,21 @@ console.log('\n── Shared classifier: classifyStrikeFlow ──');
 {
   const prev = [sd(26000, 1000, 1000, 50, 50)];
   const curr = [sd(26000, 1000, 1200, 50, 58)];
-  const r = computeSymbolFlow(prev, curr, LOT);
+  const r = computeSymbolFlow(prev, curr);
   assert('Put buying on a dip (PE OI↑ px↑) → net BEARISH', r.net < 0, JSON.stringify(r));
 }
 // And the mirror: desks writing calls into a bounce (CE OI↑ px↓) stays bearish.
 {
   const prev = [sd(26000, 1000, 1000, 50, 50)];
   const curr = [sd(26000, 1200, 1000, 46, 50)];
-  const r = computeSymbolFlow(prev, curr, LOT);
+  const r = computeSymbolFlow(prev, curr);
   assert('Call writing into a bounce (CE OI↑ px↓) → net BEARISH', r.net < 0, JSON.stringify(r));
 }
 // Bullish day: put writing at support (PE OI↑ px↓) now counts BULLISH.
 {
   const prev = [sd(26000, 1000, 1000, 50, 50)];
   const curr = [sd(26000, 1000, 1200, 50, 44)];
-  const r = computeSymbolFlow(prev, curr, LOT);
+  const r = computeSymbolFlow(prev, curr);
   assert('Put writing at support (PE OI↑ px↓) → net BULLISH', r.net > 0, JSON.stringify(r));
 }
 
@@ -133,7 +135,7 @@ console.log('\n── Shared classifier: classifyStrikeFlow ──');
     sd(26000, 1000, 1000, 50, 50),  // unchanged → nothing
     sd(26100, 1100, 1000, 48, 50),  // CE write → bearish
   ];
-  const r = computeSymbolFlow(prev, curr, LOT);
+  const r = computeSymbolFlow(prev, curr);
   assert('Multi-strike: unchanged strike contributes 0',
     Math.abs((r.bullish + r.bearish) - 2 * val(1)) < 1e-9, JSON.stringify(r));
   assert('Multi-strike: bull == bear on symmetric writes → net 0', Math.abs(r.net) < 1e-9);
@@ -143,8 +145,25 @@ console.log('\n── Shared classifier: classifyStrikeFlow ──');
 {
   const prev = [sd(26000, 1000, 1000, 50, 50)];
   const curr = [sd(26000, 1000, 1000, 50, 50), sd(26200, 5000, 5000, 80, 80)];
-  const r = computeSymbolFlow(prev, curr, LOT);
+  const r = computeSymbolFlow(prev, curr);
   assert('New strike without previous snapshot → no flow', r.bullish === 0 && r.bearish === 0);
+}
+
+// ── FULL-AUDIT: zero-premium-change dead zone ──
+// Stale/illiquid strikes (ΔLTP exactly 0 across snapshots) with OI movement
+// must book NO flow — the old else-fall-through fabricated Write direction.
+{
+  const r = classifyStrikeFlow(leg({}), leg({ ceOI: 1100, ceLTP: 50 }));  // CE OI↑, ΔLTP = 0
+  assert('CE OI↑ px-flat → NO flow (dead zone)', r.bullish === 0 && r.bearish === 0, JSON.stringify(r));
+}
+{
+  const r = classifyStrikeFlow(leg({}), leg({ peOI: 1100, peLTP: 50 }));  // PE OI↑, ΔLTP = 0
+  assert('PE OI↑ px-flat → NO flow (dead zone)', r.bullish === 0 && r.bearish === 0, JSON.stringify(r));
+}
+{
+  // Sub-tick price move (≤ 0.05 ε) also counts as flat
+  const r = classifyStrikeFlow(leg({}), leg({ ceOI: 1100, ceLTP: 50.03 }));
+  assert('CE OI↑ px-move ≤ ε → NO flow', r.bullish === 0 && r.bearish === 0, JSON.stringify(r));
 }
 
 function sd(

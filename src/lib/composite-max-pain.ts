@@ -1,6 +1,9 @@
 /**
- * Composite Max Pain magnet — aggregates (spot − maxPain) across all
+ * Composite Max Pain magnet — aggregates (maxPain − spot) across all
  * 4 indices + 15 F&O stocks into a single OI-weighted pull number.
+ * (FULL-AUDIT doc fix: the header previously said "(spot − maxPain)" while
+ * the implementation — correctly — computes maxPain − spot as the UP pull;
+ * a positive composite = magnet above spot = price pulled UP.)
  *
  * Concept (per user spec):
  *   For each symbol, if spot is ABOVE max pain → option writers (dealers)

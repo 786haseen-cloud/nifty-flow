@@ -160,6 +160,20 @@ const INITIAL_FLOW: Record<string, number> = {
 const INITIAL_BULL_FLOW: Record<string, number> = { ...INITIAL_FLOW };
 const INITIAL_BEAR_FLOW: Record<string, number> = { ...INITIAL_FLOW };
 
+// ─── FULL-AUDIT FIX (races) — module-scoped in-flight mutexes ──────────
+// pollOnce's interval-delta math reads prev* baselines then writes them back;
+// two overlapping runs (slow fetch, watchdog restart, manual call) both read
+// the SAME baseline before either writes → interval deltas double-count and
+// cumulative flow spikes. Module scope (not store state): never persisted,
+// survives across calls, client-singleton safe.
+let _pollInFlight = false;
+// Backfill runs ~2 min of rate-limited Kite calls; the 45s/5min retry timers
+// + the 10-min sparse-re-run timer + forced creds-refresh triggers can all
+// fire while one is in flight — two concurrent runs would double the ~358-call
+// load (429 risk) and race the merge. Both backfill entries check-and-set.
+let _flowBackfillRunning = false;
+let _cashBackfillRunning = false;
+
 // ─── Store implementation ───
 
 export const useTrendStore = create<TrendState>()(
@@ -492,6 +506,16 @@ export const useTrendStore = create<TrendState>()(
        *   3. backfillStatus tracking so the UI can show WHY a card is empty.
        */
       backfillHistoricalFlow: async () => {
+        // FULL-AUDIT FIX (race): retry timers, the sparse-re-run timer and
+        // forced creds-refresh triggers can all land while a run is in
+        // flight — two concurrent runs double the ~358-call Kite load (429
+        // risk) and race the merge. Check-and-set at entry, cleared in finally.
+        if (_flowBackfillRunning) {
+          console.log('[TrendStore] options backfill skipped — already running');
+          return;
+        }
+        _flowBackfillRunning = true;
+        try {
         set({ backfillStatus: 'pending' });
         try {
           const res = await fetch(withCreds('/api/kite/historical-flow'));
@@ -605,7 +629,15 @@ export const useTrendStore = create<TrendState>()(
           // historical point is today's — stamp untagged points (the server
           // doesn't send `d`) and evict anything dated otherwise. Live
           // points already carry `d` from creation.
-          mergedFlow = fifoIngest(mergedFlow, getISTDate());
+          // FULL-AUDIT FIX (B6): the stamp date comes from the SERVER's
+          // generation-side IST date (route now sends `date`), not the client
+          // wall-clock at merge time — a backfill completing just after IST
+          // midnight (60s server cache + sparse/retry timers) can no longer
+          // re-label yesterday's reconstructed curve as "today". The trailing
+          // evict then drops anything the client considers stale.
+          const serverDate = (data as { date?: string }).date;
+          mergedFlow = fifoIngest(mergedFlow, serverDate || getISTDate());
+          mergedFlow = evictStaleDayPoints(mergedFlow, getISTDate());
 
           // Trim to max points
           const trimmed = mergedFlow.length > MAX_TREND_POINTS
@@ -673,6 +705,9 @@ export const useTrendStore = create<TrendState>()(
             }
           }, delayMs);
         }
+        } finally {
+          _flowBackfillRunning = false;
+        }
       },
 
       /**
@@ -699,6 +734,12 @@ export const useTrendStore = create<TrendState>()(
        * as the options-flow backfill.
        */
       backfillHistoricalCashFlow: async () => {
+        // FULL-AUDIT FIX (race): see backfillHistoricalFlow — same mutex.
+        if (_cashBackfillRunning) {
+          console.log('[TrendStore] cash backfill skipped — already running');
+          return;
+        }
+        _cashBackfillRunning = true;
         try {
           const res = await fetch(withCreds('/api/kite/historical-cash-flow'));
           const data = await res.json();
@@ -737,7 +778,13 @@ export const useTrendStore = create<TrendState>()(
 
           // Task 46: FIFO — stamp untagged historical points as today and
           // evict anything dated otherwise before the array lands.
-          const mergedCashFifo = fifoIngest(mergedCash, getISTDate());
+          // FULL-AUDIT FIX (B6): server generation date, not client clock —
+          // see the flow-backfill merge note above.
+          const cashServerDate = (data as { date?: string }).date;
+          const mergedCashFifo = evictStaleDayPoints(
+            fifoIngest(mergedCash, cashServerDate || getISTDate()),
+            getISTDate(),
+          );
 
           const trimmed = mergedCashFifo.length > MAX_TREND_POINTS
             ? mergedCashFifo.slice(mergedCashFifo.length - MAX_TREND_POINTS)
@@ -766,6 +813,8 @@ export const useTrendStore = create<TrendState>()(
               );
             }
           }, 5 * 60 * 1000);
+        } finally {
+          _cashBackfillRunning = false;
         }
       },
 
@@ -784,6 +833,12 @@ export const useTrendStore = create<TrendState>()(
        * flow is wiped automatically the moment the new IST day begins.
        */
       pollOnce: async () => {
+        // FULL-AUDIT FIX (race): skip if a previous poll is still awaiting
+        // its fetches — the delta math is not re-entrant (see _pollInFlight).
+        if (_pollInFlight) {
+          console.log('[TrendStore] poll skipped — previous poll still in flight');
+          return;
+        }
         // ─── MARKET HOURS GATE (API quota saver) ───
         // Outside the trading session we STOP live polling:
         //   'pre'/'closed' (weekend)  → skip always
@@ -819,6 +874,13 @@ export const useTrendStore = create<TrendState>()(
           get().clearTrendData();
         }
 
+        // FULL-AUDIT FIX (race): from here on the body awaits fetches and
+        // mutates prev*/cumulative* baselines — hold the in-flight mutex for
+        // the remainder (finally covers the two mid-body early returns and
+        // any thrown fetch error). The body below is intentionally NOT
+        // re-indented (240-line block; the try/finally brackets it).
+        _pollInFlight = true;
+        try {
         // Run both fetches in parallel
         const [trendsRes, betRes] = await Promise.allSettled([
           fetch(withCreds('/api/kite/trends')).then((r) => r.json()),
@@ -989,7 +1051,9 @@ export const useTrendStore = create<TrendState>()(
                 continue;
               }
 
-              const flow = computeSymbolFlow(prevStrikes, sym.strikes, sym.lotSize);
+              // FULL-AUDIT UNIT FIX: computeSymbolFlow is lot-free now —
+              // Kite OI arrives unit-denominated (contracts × lot).
+              const flow = computeSymbolFlow(prevStrikes, sym.strikes);
 
               if (sym.type === 'index' && (INDEX_SYMBOLS as readonly string[]).includes(sym.symbol)) {
                 cumulativeFlow[sym.symbol] = (cumulativeFlow[sym.symbol] || 0) + flow.net;
@@ -1058,6 +1122,9 @@ export const useTrendStore = create<TrendState>()(
               lastLiveFlowAt: now,
             });
           }
+        }
+        } finally {
+          _pollInFlight = false;
         }
       },
     }),

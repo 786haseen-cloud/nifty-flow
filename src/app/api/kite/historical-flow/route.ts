@@ -55,6 +55,8 @@ import { istTodayISO, extractTimeSecFromKiteTS } from '@/lib/ist';
 interface HistoricalFlowResponse {
   mode: 'live' | 'demo' | 'error';
   timestamp: string;
+  /** IST date the data was generated (server-side) — client FIFO stamping uses this. */
+  date?: string;
   flowTrend: Array<{
     time: string;
     NIFTY: number;
@@ -147,9 +149,10 @@ function bsDelta(isCall: boolean, S: number, K: number, T: number, r = 0.065, si
 function computeFlowBetweenCandles(
   prev: { ceOI: number; peOI: number; ceLTP: number; peLTP: number; ceDelta: number; peDelta: number },
   curr: { ceOI: number; peOI: number; ceLTP: number; peLTP: number; ceDelta: number; peDelta: number },
-  lotSize: number,
 ): { bullish: number; bearish: number } {
-  return classifyStrikeFlow(prev, curr, lotSize);
+  // FULL-AUDIT UNIT FIX: OI from Kite candles is unit-denominated
+  // (contracts × lot) — the lotSize argument double-counted the lot.
+  return classifyStrikeFlow(prev, curr);
 }
 
 // ─── Historical Flow Computation ───
@@ -249,7 +252,8 @@ async function fetchHistoricalFlow(): Promise<HistoricalFlowResponse> {
 
     if (opts.length === 0) continue;
 
-    const lotSize = opts[0].lotSize || 1;
+    // FULL-AUDIT UNIT FIX: lotSize no longer used for flow valuation —
+    // classifyStrikeFlow values unit-denominated OI lot-free.
 
     // Derive strike step
     const uniqueStrikes = [...new Set(opts.map(o => o.strike))].sort((a, b) => a - b);
@@ -367,7 +371,6 @@ async function fetchHistoricalFlow(): Promise<HistoricalFlowResponse> {
         const leg = computeFlowBetweenCandles(
           { ceOI: cePrev.oi, peOI: pePrev.oi, ceLTP: cePrev.close, peLTP: pePrev.close, ceDelta, peDelta },
           { ceOI: ceCurr.oi, peOI: peCurr.oi, ceLTP: ceCurr.close, peLTP: peCurr.close, ceDelta, peDelta },
-          lotSize,
         );
         intervalBull += leg.bullish;
         intervalBear += leg.bearish;
@@ -484,7 +487,11 @@ async function fetchHistoricalFlow(): Promise<HistoricalFlowResponse> {
 
   console.log(`[HistFlow] Done. ${apiCallCount} API calls, ${flowTrend.length} pts, ${results.length} symbols`);
 
-  return { mode: 'live', timestamp: new Date().toISOString(), flowTrend, prevSnapshots, cumulativeFlow, bullFlow, bearFlow, errorStage: results.length === 0 ? 'no-options' : 'none' };
+  // FULL-AUDIT FIX (Task 46 follow-up): carry the generation-side IST date so
+  // the client's FIFO stamp uses the date the DATA was built, not the client
+  // wall-clock at merge time — a backfill completing just after IST midnight
+  // can no longer legitimize yesterday's reconstructed curve as "today".
+  return { mode: 'live', date: istTodayISO(), timestamp: new Date().toISOString(), flowTrend, prevSnapshots, cumulativeFlow, bullFlow, bearFlow, errorStage: results.length === 0 ? 'no-options' : 'none' };
 }
 
 // ─── GET Handler ───

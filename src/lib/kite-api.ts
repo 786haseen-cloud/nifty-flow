@@ -19,7 +19,7 @@
 
 const KITE_BASE = 'https://api.kite.trade';
 
-import { toIST, istKiteDateFormat, istTodayISO, extractTimeSecFromKiteTS } from './ist';
+import { toIST, istKiteDateFormat, istTodayISO, extractTimeSecFromKiteTS, extractDateFromKiteTS } from './ist';
 import { getStoredCredsSync } from './kite-creds-store';
 
 // ─── Config ───
@@ -444,18 +444,30 @@ export async function getQuotes(instruments: string[]): Promise<Record<string, K
       }
 
       for (const [key, q] of Object.entries(data.data as Record<string, any>)) {
+        // FULL-AUDIT FIX (zero-quote storm): Kite returns an entry per requested
+        // key; a per-key error / suspended / expired instrument arrives as an
+        // object without last_price/volume/oi. The old mapping produced a
+        // legit-looking quote with lastPrice 0 / OI 0 — downstream flow math
+        // read a 0 LTP as a premium COLLAPSE and booked fake Write flow.
+        // Skip entries that carry no market data at all.
+        const lp = q.last_price ?? 0;
+        const vol = q.volume ?? 0;
+        const oi = q.oi ?? 0;
+        if (!lp && !vol && !oi) {
+          continue;
+        }
         const displayKey = tokenToKey[key] || key;
         allQuotes[displayKey] = {
           instrumentToken: q.instrument_token || 0,
-          lastPrice: q.last_price || 0,
+          lastPrice: lp,
           open: q.ohlc?.open || 0,
           high: q.ohlc?.high || 0,
           low: q.ohlc?.low || 0,
           close: q.ohlc?.close || 0,
-          volume: q.volume || 0,
+          volume: vol,
           netChange: q.net_change || 0,
           averagePrice: q.average_price || 0,
-          oi: q.oi || 0,
+          oi,
           oiDayHigh: q.oi_day_high || 0,
           oiDayLow: q.oi_day_low || 0,
           dayHigh: q.ohlc?.high || 0,
@@ -576,9 +588,13 @@ export async function getTodayCandles(
   // 24-hour and Kite timestamps are always IST ISO with +0530 offset
   // (verified — see extractTimeSecFromKiteTS docblock).
   const SESSION_OPEN = '09:15:00';
+  // FULL-AUDIT FIX (Task 46 follow-up): the time-of-day filter alone could
+  // admit a candle from ANOTHER day whose HH:MM:SS ≥ 09:15 (Kite returning
+  // out-of-window rows is documented above). Date + time are both string-
+  // compared from Kite's fixed-width IST timestamps — no Date parsing.
   const filtered = raw.filter(c => {
     const t = extractTimeSecFromKiteTS(c.timestamp);
-    return t >= SESSION_OPEN;
+    return t >= SESSION_OPEN && extractDateFromKiteTS(c.timestamp) === today;
   });
   return filtered;
 }
@@ -670,9 +686,14 @@ export async function getOptionInstruments(
   // Get unique expiries, sort by nearest
   const expiries = [...new Set(indexOptions.map(i => i.expiry))].sort();
 
-  // Use nearest expiry that's not expired
-  const today = new Date();
-  const nearestExpiry = expiries.find(e => new Date(e) >= new Date(today.toDateString())) || expiries[0];
+  // Use nearest expiry that's not expired.
+  // FULL-AUDIT FIX (TZ): expiry strings are 'YYYY-MM-DD'. The old compare
+  // (`new Date(e) >= new Date(today.toDateString())`) mixed a UTC-midnight
+  // parse with a HOST-LOCAL-midnight parse — on any negative-UTC-offset host
+  // today's expiry compared as past and the chain silently resolved to NEXT
+  // week's contracts on expiry day. Vercel (UTC) masked it. String comparison
+  // is exact for fixed-width ISO dates and IST is the trading calendar.
+  const nearestExpiry = expiries.find(e => e >= istTodayISO()) || expiries[0];
 
   // Filter to nearest expiry
   const expiryOptions = indexOptions.filter(i => i.expiry === nearestExpiry);
@@ -751,8 +772,9 @@ export async function getFutureInstrument(
 
   // Get unique expiries, sort by nearest
   const expiries = [...new Set(futures.map(i => i.expiry))].sort();
-  const today = new Date();
-  const nearestExpiry = expiries.find(e => new Date(e) >= new Date(today.toDateString())) || expiries[0];
+  // FULL-AUDIT FIX (TZ): string compare on 'YYYY-MM-DD' — see the matching
+  // fix in getOptionInstruments. Date-object parsing was host-TZ dependent.
+  const nearestExpiry = expiries.find(e => e >= istTodayISO()) || expiries[0];
 
   // Pick the future contract with nearest expiry
   const futureContract = futures.find(i => i.expiry === nearestExpiry);
@@ -801,7 +823,15 @@ export async function getOptionsFlow(symbol: string, spotPrice: number) {
     }
     const s = strikes.get(inst.strike)!;
 
-    // Flow = volume × lotSize (from CSV) × avgPrice (real money flow)
+    // Legacy heuristic (legacy /api/kite/options consumers only — the main
+    // engine uses the premium-aware classifyStrikeFlow since Task 44):
+    // a quote cannot decompose volume into buys vs writes, so the 60/40
+    // split below is a FIXED ASSUMPTION, not measured flow. It exists to
+    // keep the legacy shape populated. FULL-AUDIT: documented honestly
+    // instead of claiming "(real money flow)".
+    // Note: q.volume is in units (contracts × lot) — multiplying by lotSize
+    // here is also legacy; kept as-is so this legacy surface's shape stays
+    // unchanged until it is retired.
     const flow = q.volume * meta.lotSize * q.averagePrice;
 
     if (inst.tradingSymbol.endsWith('CE')) {
@@ -961,8 +991,9 @@ export async function getInstrumentMeta(
   const lotSize = symbolOpts[0].lotSize || 1;
 
   // Derive strike step from unique sorted strikes near ATM
+  // FULL-AUDIT FIX (TZ): string compare — see getOptionInstruments.
   const nearestExpiry = [...new Set(symbolOpts.map(i => i.expiry))].sort()
-    .find(e => new Date(e) >= new Date(new Date().toDateString()));
+    .find(e => e >= istTodayISO());
 
   const expiryOpts = nearestExpiry
     ? symbolOpts.filter(i => i.expiry === nearestExpiry)

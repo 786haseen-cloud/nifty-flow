@@ -15,6 +15,7 @@
  */
 
 import { PrismaClient } from '@prisma/client';
+import { toIST } from './ist';
 
 const prisma = new PrismaClient();
 
@@ -37,9 +38,19 @@ export interface MoneyFlowSnapshotInput {
 /**
  * Save a 15-second money flow snapshot during live market
  * This is the ONLY data available during live hours
+ *
+ * ⚠️ FULL-AUDIT NOTE (dead module): no caller exists for this service today
+ * (verified across src/ + scripts/). Before wiring it up, note the known
+ * defects that must be fixed first: F&O legs are in CONTRACTS while cash
+ * legs are ₹Cr (the rolling-window "net" aggregates mix units); day net
+ * flow must be last−first snapshot, not a sum of levels; portions can
+ * exceed [0,1] when participants cancel.
  */
 export async function saveLiveSnapshot(data: MoneyFlowSnapshotInput): Promise<void> {
-  const date = data.timestamp.toISOString().split('T')[0];
+  // FULL-AUDIT FIX (TZ): toISOString() is UTC — snapshots saved 00:00–05:30
+  // IST were bucketed to the PREVIOUS calendar date, mis-attaching them in
+  // the correlation/retention windows. Use the project's IST helper.
+  const date = toIST(data.timestamp).toISOString().split('T')[0];
   
   await prisma.liveMoneyFlowSnapshot.create({
     data: {

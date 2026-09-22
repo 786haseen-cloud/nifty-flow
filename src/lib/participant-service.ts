@@ -362,8 +362,14 @@ export function computeParticipantBias(entry: ParticipantFlow | null): Participa
   // Base score: smart money direction, scaled ±2.0 max
   const baseScore = smartDirection * Math.min(2.0, smartMag / 1250);
 
-  // Contrarian: fade retail at extremes
-  const contrarianAdj = -retail / 5000;
+  // Contrarian: fade retail at extremes.
+  // FULL-AUDIT FIX (was HIGH): the divisor produced the documented ±0.4 at
+  // |retail| = 2000 Cr but then kept growing linearly — at a +5000 Cr retail
+  // FOMO day the fade contributed −1.0 (spec says −0.4 max) and could single-
+  // handedly INVERT Factor 12's direction (smart +625 → base +0.50, fade −1.0
+  // → factor −0.50 'bear' while smart money was net BUYING). Capped at the
+  // documented ±0.4.
+  const contrarianAdj = -Math.sign(retail) * Math.min(0.4, Math.abs(retail) / 5000);
 
   // Dampener (Sep 2026 third calibration — user insight: "DII don't do or
   // rarely make position in options, they play in cash only").
@@ -408,7 +414,14 @@ export function computeParticipantBias(entry: ParticipantFlow | null): Participa
   // Build detail string — leads with the model: FII+Prop MOVE the market,
   // retail (Client) is the crowd they trade against, DII is the shock absorber.
   const smartLabel = smartDirection > 0 ? 'buying → market lifts' : smartDirection < 0 ? 'selling → market drops' : 'flat';
-  const retailLabel = retail > 200 ? 'buying (faded — crowd on wrong side)' : retail < -200 ? 'selling (faded — crowd on wrong side)' : 'balanced';
+  // FULL-AUDIT FIX: the "(faded…)" claim now aligns with the scoring model —
+  // the contrarian fade becomes material at ±2000 Cr (spec), not ±200. Below
+  // that the label states the direction without the fade narrative.
+  const retailLabel = retail > 2000 ? 'buying (faded — crowd on wrong side)'
+    : retail < -2000 ? 'selling (faded — crowd on wrong side)'
+    : retail > 200 ? 'buying'
+    : retail < -200 ? 'selling'
+    : 'balanced';
   const diiLabel = dii > 200 ? 'absorbing FII sells' : dii < -200 ? 'absorbing FII buys' : 'neutral';
   const detail =
     `${entry.date}: Smart money (FII+Prop) ${smart >= 0 ? '+' : ''}${smart.toFixed(0)} Cr ${smartLabel}; ` +

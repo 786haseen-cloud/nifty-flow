@@ -61,13 +61,15 @@ import {
   type KiteHistoricalCandle,
 } from '@/lib/kite-api';
 import { applyKiteCredsFromRequest } from '@/lib/kite-route-helper';
-import { extractTimeSecFromKiteTS } from '@/lib/ist';
+import { extractTimeSecFromKiteTS, istTodayISO } from '@/lib/ist';
 
 // ─── Types ───
 
 interface HistCashFlowResponse {
   mode: 'live' | 'demo' | 'error';
   timestamp: string;
+  /** IST date the data was generated (server-side) — client FIFO stamping uses this. */
+  date?: string;
   cashFlowTrend: Array<{
     time: string;     // "HH:MM:SS"
     nse: number;      // Cr
@@ -279,6 +281,9 @@ async function fetchHistoricalCashFlow(): Promise<HistCashFlowResponse> {
   return {
     mode: 'live',
     timestamp: new Date().toISOString(),
+    // FULL-AUDIT FIX (Task 46 follow-up): generation-side IST date for the
+    // client's FIFO stamp — data date, not merge-time wall clock.
+    date: istTodayISO(),
     cashFlowTrend,
     lastStockTotals: {
       nse: Math.round(lastNse),

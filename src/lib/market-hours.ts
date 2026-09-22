@@ -28,13 +28,19 @@ const SESSION_CLOSE_MIN = 15 * 60 + 40; // 15:40 — F&O close (cash closes 15:3
 
 const IST_OFFSET_MIN = 330; // +5:30 in minutes
 
-/** Convert a Date to minutes-since-midnight + weekday in IST. */
+/** Convert a Date to minutes-since-midnight + weekday in IST.
+ *  FULL-AUDIT FIX (DST): the old shift used LOCAL getters on the shifted
+ *  date — if a DST transition occurs inside the 5.5h shift window (US/EU
+ *  browsers, twice a year) the result drifts ±60 min and 09:15 IST gets
+ *  misclassified. UTC getters on the shifted epoch are DST-immune (same
+ *  pattern as ist.ts).
+ */
 function istNow(now: Date = new Date()): { mins: number; day: number } {
-  // Shift by IST offset relative to local timezone
-  const ist = new Date(now.getTime() + (IST_OFFSET_MIN + now.getTimezoneOffset()) * 60_000);
+  // Shift the epoch to IST, then read via UTC getters (no local TZ input)
+  const ist = new Date(now.getTime() + IST_OFFSET_MIN * 60_000);
   return {
-    mins: ist.getHours() * 60 + ist.getMinutes(),
-    day: ist.getDay(), // 0 = Sun, 6 = Sat
+    mins: ist.getUTCHours() * 60 + ist.getUTCMinutes(),
+    day: ist.getUTCDay(), // 0 = Sun, 6 = Sat
   };
 }
 

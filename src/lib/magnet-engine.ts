@@ -352,8 +352,8 @@ export function computeMaxPain(strikes: { strike: number; ceOI: number; peOI: nu
  * Per-strike dealer gamma exposure.
  *
  * Sign convention (standard dealer-flow assumption):
- *   - Dealers are SHORT calls  → their gamma = -1 × call Γ × call OI × 100 × lotSize
- *   - Dealers are SHORT puts   → their gamma = +1 × put  Γ × put  OI × 100 × lotSize
+ *   - Dealers are SHORT calls  → their gamma = -1 × call Γ × call OI
+ *   - Dealers are SHORT puts   → their gamma = +1 × put  Γ × put  OI
  *
  * Wait — that's the OPPOSITE of the naive sign. Why?
  *   When you SELL a call, you are SHORT gamma. So a dealer who sold calls is
@@ -362,19 +362,27 @@ export function computeMaxPain(strikes: { strike: number; ceOI: number; peOI: nu
  *   for longs; for the seller it flips to positive). So a dealer who sold puts
  *   is LONG gamma → positive GEX contribution. ✓
  *
+ * ─── FULL-AUDIT UNIT FIX (Sep 22 2026) ──────────────────────────────────
+ * OI arrives from Kite quotes in UNITS (= contracts × lot). Units are already
+ * share-equivalents (1 OI unit = 1 unit of underlying at delta 1), so the
+ * exposure is OI × gamma. The old code multiplied by lotSize × 100 — a US
+ * convention (1 contract = 100 shares) stacked on a double-counted lot —
+ * inflating NIFTY GEX ~7500×. zeroGamma/magnetZone are ratio-invariant and
+ * were unaffected, but every ABSOLUTE Cr threshold downstream (pinning
+ * gexFactor, GEX-wall noise filter, charm magnitude triggers) was calibrated
+ * against the inflated scale and has been re-derived in the same pass.
+ *
  * Per-strike GEX in ₹ Crore per 1% spot move:
- *   gex_cr = gex_shares × spot × 0.01 / 1e7
+ *   gex_cr = gex_units × spot × 0.01 / 1e7
  *
  * @param strikes  per-strike OI + LTP + (optional IV)
  * @param spot     current spot
  * @param T        time to expiry (years)
- * @param lotSize  contract lot size
  */
 export function computeGEX(
   strikes: StrikeOption[],
   spot: number,
   T: number,
-  lotSize: number,
 ): GEXStrike[] {
   return strikes.map((s) => {
     const sigmaCe = s.ceIV || approxIV(s.ceLTP, spot, T);
@@ -383,22 +391,19 @@ export function computeGEX(
     const gammaCe = bsGamma(spot, s.strike, T, sigmaCe);
     const gammaPe = bsGamma(spot, s.strike, T, sigmaPe);
 
-    // Dealer call GEX (shares) = -1 × call OI × lotSize × 100 × gamma
-    // (×100 because each option contract = 100 shares of underlying notionally
-    //  in standard Black-Scholes units; the lotSize already encodes India's
-    //  contract size, so we use that directly)
-    const callGexShares = -1 * s.ceOI * lotSize * 100 * gammaCe;
-    const putGexShares  = +1 * s.peOI * lotSize * 100 * gammaPe;
+    // Dealer call GEX (units) = -1 × call OI × gamma  (OI already in units)
+    const callGexUnits = -1 * s.ceOI * gammaCe;
+    const putGexUnits  = +1 * s.peOI * gammaPe;
 
-    const gexShares = callGexShares + putGexShares;
-    const gexCr = (gexShares * spot * 0.01) / 1e7;
+    const gexUnits = callGexUnits + putGexUnits;
+    const gexCr = (gexUnits * spot * 0.01) / 1e7;
 
     return {
       strike: s.strike,
-      gexShares,
+      gexShares: gexUnits,
       gexCr,
-      callGex: callGexShares,
-      putGex: putGexShares,
+      callGex: callGexUnits,
+      putGex: putGexUnits,
     };
   });
 }
@@ -438,13 +443,17 @@ export function findZeroGamma(gexStrikes: GEXStrike[], spot: number): number | n
 // ─── Charm (dDelta/dTime) ───
 
 /**
- * Per-strike dealer charm exposure (shares/day).
+ * Per-strike dealer charm exposure (units/day).
  *
  * Sign convention (dealers short both calls and puts):
- *   Dealer call charm = -1 × call OI × lotSize × 100 × charmCall
+ *   Dealer call charm = -1 × call OI × charmCall
  *     (because selling a call flips the sign of all Greeks for the seller)
- *   Dealer put charm  = +1 × put OI × lotSize × 100 × charmPut
+ *   Dealer put charm  = +1 × put OI × charmPut
  *     (selling a put: long-gamma for seller; charm sign also flips)
+ *
+ * FULL-AUDIT UNIT FIX: OI is unit-denominated (contracts × lot) — the old
+ * lotSize × 100 multiplier double-counted the lot and stacked a US-convention
+ * ×100 on top (~7500× inflation). Exposure is OI × charm directly.
  *
  * Net positive charm → dealers must BUY underlying over time (price drifts UP)
  * Net negative charm → dealers must SELL over time (price drifts DOWN)
@@ -453,7 +462,6 @@ export function computeCharm(
   strikes: StrikeOption[],
   spot: number,
   T: number,
-  lotSize: number,
 ): CharmStrike[] {
   // Use the existing T. Charm is "per unit time", and we express as per day
   // by multiplying by (1/365). The /365 factor converts the per-year derivative
@@ -467,13 +475,13 @@ export function computeCharm(
     const charmCall = bsCharmCall(spot, s.strike, T, sigmaCe);
     const charmPut  = bsCharmPut(spot, s.strike, T, sigmaPe);
 
-    const callCharmShares = -1 * s.ceOI * lotSize * 100 * charmCall * perDay;
-    const putCharmShares  = +1 * s.peOI * lotSize * 100 * charmPut  * perDay;
+    const callCharmUnits = -1 * s.ceOI * charmCall * perDay;
+    const putCharmUnits  = +1 * s.peOI * charmPut  * perDay;
 
-    const charmShares = callCharmShares + putCharmShares;
-    const charmCr = (charmShares * spot * 0.01) / 1e7; // ₹ Cr per 1% move per day — normalized for display
+    const charmUnits = callCharmUnits + putCharmUnits;
+    const charmCr = (charmUnits * spot * 0.01) / 1e7; // ₹ Cr per 1% move per day — normalized for display
 
-    return { strike: s.strike, charmShares, charmCr };
+    return { strike: s.strike, charmShares: charmUnits, charmCr };
   });
 }
 
@@ -577,7 +585,10 @@ export function computePinningProbability(
                      : 0.6;
 
   // 4. GEX concentration factor — scales with sqrt(|GEX|) so it doesn't dominate
-  const gexFactor = Math.max(0.2, Math.min(1, Math.sqrt(totalGexAbsCr) / 30));
+  // FULL-AUDIT recalibration: /30 was tuned when GEX carried a lotSize×100
+  // inflation (~7500× on NIFTY) and saturated at 1.0 every session. Real
+  // NIFTY chain |GEX| runs ~30–100 Cr → /10 gives a meaningful 0.55–1.0 band.
+  const gexFactor = Math.max(0.2, Math.min(1, Math.sqrt(totalGexAbsCr) / 10));
 
   // 5. Charm alignment — does charm push spot TOWARD magnet?
   let charmFactor = 0.5;
@@ -730,12 +741,12 @@ export function computeIVSkew(
  *
  * @param current    current per-strike OI snapshot
  * @param previous   previous per-strike OI snapshot (null on first poll)
- * @param lotSize    contract lot size (defaults to 1 if absent)
+ *                   FULL-AUDIT: OI is unit-denominated (contracts × lot) —
+ *                   the old lotSize parameter double-counted the lot.
  */
 export function computeOIBuildup(
   current: StrikeOption[],
   previous: StrikeOption[] | null,
-  lotSize: number = 1,
 ): {
   pattern: 'long_buildup' | 'short_buildup' | 'long_unwinding' | 'short_covering' | 'neutral';
   strength: number;
@@ -789,7 +800,6 @@ export function computeOIBuildup(
         ceDelta: s.ceDelta,
         peDelta: Math.abs(s.peDelta),
       },
-      lotSize,
     );
     bullishCr += flow.bullish;
     bearishCr += flow.bearish;
@@ -801,7 +811,11 @@ export function computeOIBuildup(
   const noiseThreshold = totalOI * 0.005;
   const ceSignificant = Math.abs(deltaCEOI) > noiseThreshold;
   const peSignificant = Math.abs(deltaPEOI) > noiseThreshold;
-  const flowSignificant = (bullishCr + bearishCr) > 0.01; // ₹ Cr — tiny = no real flow
+  // FULL-AUDIT recalibration: these absolute Cr floors were tuned when flows
+  // carried a ~75× lot inflation (NIFTY). True delta-weighted flow for a
+  // meaningful NIFTY poll (~2k units across strikes × ~0.5 delta) is
+  // ~1e-4–1e-3 Cr, so the floors drop accordingly (≈ ÷100–÷50).
+  const flowSignificant = (bullishCr + bearishCr) > 0.0002; // ₹ Cr — tiny = no real flow
 
   if (!ceSignificant && !peSignificant && !flowSignificant) {
     return {
@@ -815,14 +829,19 @@ export function computeOIBuildup(
   //   net = bullish - bearish  (in ₹ Cr)
   //   total = bullish + bearish (in ₹ Cr)
   //   strength = net / (total + 1)   clamped to [-1, +1]
+  // FULL-AUDIT: the +1 smoothing constant belongs to the old lot-inflated
+  // scale; in true units it flattened every strength to ~0. Rescaled to
+  // +0.01 (≈1 Cr inflated) so the strength ratio keeps its calibrated shape.
   const netFlow = bullishCr - bearishCr;
   const totalFlow = bullishCr + bearishCr;
-  const denom = totalFlow + 1;
+  const denom = totalFlow + 0.01;
   const strength = Math.max(-1, Math.min(1, netFlow / denom));
 
   let pattern: 'long_buildup' | 'short_buildup' | 'long_unwinding' | 'short_covering' | 'neutral';
   const STRENGTH_THRESHOLD = 0.25;  // |strength| > 0.25 → directional verdict
-  const FLOW_CHOP_THRESHOLD = 0.5;  // |strength| < 0.5 with meaningful totalFlow → "mixed"
+  // FULL-AUDIT recalibration (unit fix): absolute flow floors ÷100 from the
+  // lot-inflated scale (see flowSignificant note above).
+  const FLOW_CHOP_THRESHOLD = 0.005;  // |strength| < 0.5 with meaningful totalFlow → "mixed"
 
   if (strength > STRENGTH_THRESHOLD) {
     pattern = 'long_buildup';        // net bullish flow → BULL
@@ -830,7 +849,7 @@ export function computeOIBuildup(
     pattern = 'short_buildup';       // net bearish flow → BEAR
   } else if (totalFlow > FLOW_CHOP_THRESHOLD && Math.abs(strength) < STRENGTH_THRESHOLD) {
     pattern = 'long_unwinding';      // sizeable flow both ways → mixed/chop
-  } else if (totalFlow > 0.05 && Math.abs(strength) < 0.05) {
+  } else if (totalFlow > 0.0005 && Math.abs(strength) < 0.05) {
     pattern = 'short_covering';      // legacy label — both sides adding OI heavily with no net direction
   } else {
     pattern = 'neutral';
@@ -970,8 +989,8 @@ export function computeMagnet(
   const maxPainDist = spot - maxPain;
   const maxPainDistPct = (maxPainDist / spot) * 100;
 
-  // 2. GEX
-  const gexStrikes = computeGEX(strikes, spot, T, lotSize);
+  // 2. GEX (FULL-AUDIT: OI is unit-denominated — no lotSize multiplier)
+  const gexStrikes = computeGEX(strikes, spot, T);
   const totalGexShares = gexStrikes.reduce((s, g) => s + g.gexShares, 0);
   const totalGexCr = (totalGexShares * spot * 0.01) / 1e7;
   const zeroGamma = findZeroGamma(gexStrikes, spot);
@@ -986,10 +1005,11 @@ export function computeMagnet(
     gammaRegime = totalGexShares > 0 ? 'positive' : 'negative';
   }
 
-  // 3. Charm
-  const charmStrikes = computeCharm(strikes, spot, T, lotSize);
+  // 3. Charm (FULL-AUDIT: OI is unit-denominated — no lotSize multiplier)
+  const charmStrikes = computeCharm(strikes, spot, T);
   const totalCharmShares = charmStrikes.reduce((s, c) => s + c.charmShares, 0);
   const charmMagnitudeCr = Math.abs((totalCharmShares * spot * 0.01) / 1e7);
+  // Noise floor in unit-space: ~100 units/strike/day of net charm is tape noise
   const charmDirection: 'up' | 'down' | 'flat' =
     Math.abs(totalCharmShares) < charmStrikes.length * 100 // noise floor
       ? 'flat'
@@ -1009,7 +1029,7 @@ export function computeMagnet(
   // 6-9. Phase 1 enhancement factors (each is independent of the OI snapshot)
   const { basisPct } = computeBasis(spot, enhancements?.futurePrice ?? null);
   const { skewPct: ivSkewPct } = computeIVSkew(strikes, spot, T);
-  const oiBuildupResult = computeOIBuildup(strikes, enhancements?.prevStrikes ?? null, lotSize);
+  const oiBuildupResult = computeOIBuildup(strikes, enhancements?.prevStrikes ?? null);
   const vixVal = enhancements?.vix ?? null;
   const vixChangePct = enhancements?.vixChangePct ?? null;
 
@@ -1283,7 +1303,11 @@ export function computeSignal(m: MagnetResult): SignalResult {
   if (m.zeroGamma !== null && m.zeroGamma > 0) {
     const distToFlipPct = ((m.spot - m.zeroGamma) / m.spot) * 100;
     const absDist = Math.abs(distToFlipPct);
-    const charmStrong = m.charmMagnitudeCr >= 300;
+    // FULL-AUDIT recalibration: 300 Cr was set under the lot×100-inflated
+    // charm scale (it fired on nearly every session — see the gate history
+    // below). True NIFTY chain charm runs ~5–50 Cr/day → 3 Cr is the
+    // equivalent "genuinely strong" bar (÷100).
+    const charmStrong = m.charmMagnitudeCr >= 3;
 
     if (absDist < 0.3) {
       // Spot very close to flip — directional trigger
@@ -1432,7 +1456,7 @@ export function computeSignal(m: MagnetResult): SignalResult {
     // Strikes above spot
     for (const g of aboveSpot) {
       const absGex = Math.abs(g.gexCr);
-      if (absGex < 0.1) continue; // noise filter
+      if (absGex < 0.001) continue; // noise filter (unit-fixed scale)
       if (g.gexCr < 0) {
         // Red above = bullish (breakouts run)
         terrainScore += 0.75;
@@ -1447,7 +1471,7 @@ export function computeSignal(m: MagnetResult): SignalResult {
     // Strikes below spot
     for (const g of belowSpot) {
       const absGex = Math.abs(g.gexCr);
-      if (absGex < 0.1) continue;
+      if (absGex < 0.001) continue; // noise filter (unit-fixed scale)
       if (g.gexCr < 0) {
         // Red below = bearish (breaks run)
         terrainScore -= 0.75;

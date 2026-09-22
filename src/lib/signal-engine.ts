@@ -145,22 +145,43 @@ export function generateHolisticSignal(
   const step = instrument.symbol === 'NIFTY' || instrument.symbol === 'FINNIFTY' ? 50 : 100;
   const suggestedStrike = isCall ? atmStrike - step : atmStrike + step;
 
+  // Task 47-followup (full-audit fix): the premium shown / used for SL and
+  // target must belong to the SUGGESTED strike, not the ATM strike — the
+  // suggested strike is ±1 step ITM, whose premium differs materially from
+  // ATM (e.g. NIFTY 24350 CE ≈ ₹150 vs 24300 CE ≈ ₹220). Without this the
+  // displayed SL/target could not actually be placed on the suggested strike.
+  const suggestedStrikeData = instrument.strikes.find(s => s.strike === suggestedStrike);
   const atmStrikeData = instrument.strikes.find(s => s.isATM);
   const premium = isCall
-    ? (atmStrikeData?.callLTP ?? 150)
-    : (atmStrikeData?.putLTP ?? 150);
+    ? (suggestedStrikeData?.callLTP ?? atmStrikeData?.callLTP ?? 150)
+    : (suggestedStrikeData?.putLTP ?? atmStrikeData?.putLTP ?? 150);
 
-  const sl = round2(premium * (mode === 'aggressive' ? 1.8 : 1.5));
+  // ─── FULL-AUDIT FIX (was CRITICAL): stop-loss must sit BELOW the entry
+  // premium on a BUY signal. The old code multiplied the premium by 1.5/1.8
+  // — a WRITER's stop convention applied to a BUYER's trade — printing
+  // "SL ₹225 / Target ₹300" on a ₹150 long option: an SL above entry
+  // triggers instantly (LTP 150 < trigger 225) and the implied R:R was
+  // negative. Long-option convention: risk a fraction of the premium
+  // (decay stop), reward a multiple of it.
+  //   conservative: SL = 50% of premium, target = 2.0×  → R:R = 2.0
+  //   aggressive:   SL = 35% of premium, target = 2.5×  → R:R ≈ 2.3
+  const sl = round2(premium * (mode === 'aggressive' ? 0.35 : 0.5));
   const target = round2(premium * (mode === 'aggressive' ? 2.5 : 2.0));
   const confidence = Math.min(95, Math.max(15, Math.abs(totalScore) * 1.2));
 
   // Theta info (NOT in score)
-  const callTheta = instrument.strikes
-    .filter(s => s.isATM || Math.abs(s.strike - atmStrike) <= step)
-    .reduce((sum, s) => sum + s.callTheta, 0) / 3;
-  const putTheta = instrument.strikes
-    .filter(s => s.isATM || Math.abs(s.strike - atmStrike) <= step)
-    .reduce((sum, s) => sum + s.putTheta, 0) / 3;
+  // FULL-AUDIT FIX: divide by the number of MATCHED strikes, not a hardcoded
+  // /3. The 4 index callers happen to match exactly 3 strikes at their step
+  // spacing, but any stock instrument (2.5–10 step per STOCK_SPECS) matched
+  // ~all 11 strikes — overstating average theta ~3.7×.
+  const thetaStrikes = instrument.strikes
+    .filter(s => s.isATM || Math.abs(s.strike - atmStrike) <= step);
+  const callTheta = thetaStrikes.length > 0
+    ? thetaStrikes.reduce((sum, s) => sum + s.callTheta, 0) / thetaStrikes.length
+    : 0;
+  const putTheta = thetaStrikes.length > 0
+    ? thetaStrikes.reduce((sum, s) => sum + s.putTheta, 0) / thetaStrikes.length
+    : 0;
 
   const thetaInfo = {
     callMelting: round2(Math.abs(callTheta)),
@@ -221,8 +242,12 @@ function calcFIIFlowScore(dayComp: DayComparison[]): number {
   const latest = dayComp.find(d => d.label === 'Day-0');
   if (!latest) return 0;
   const total = latest.fii.cashNet + latest.fii.futNet + latest.fii.optCallNet + latest.fii.optPutNet;
-  // Scale: ₹1000 Cr net = score 50
-  return Math.max(-100, Math.min(100, (total / 10000) * 50));
+  // Scale: ₹1000 Cr net = score 50, saturating at ±100 (₹2000 Cr). Full-audit
+  // fix: the divisor said 10000 while this comment said 1000 — a 10× scale
+  // contradiction that muted the 25%-weight FII factor. Honored the documented
+  // intent (1000 Cr = 50). FII daily nets run ±500–5000 Cr, so ±2000 Cr now
+  // saturates as designed.
+  return Math.max(-100, Math.min(100, (total / 1000) * 50));
 }
 
 // PropDesk Flow: Their direction is smart money
@@ -336,10 +361,15 @@ function calcCashFutAlignScore(dayComp: DayComparison[]): number {
   const fiiCash = latest.fii.cashNet;
   const fiiFut = latest.fii.futNet;
 
+  // FULL-AUDIT FIX: the noise guard must run BEFORE the same-direction
+  // returns. Previously +5 Cr cash / +5 Cr futures (both far below the
+  // 100-Cr meaningfulness threshold) returned the full +60 alignment score
+  // because the sign check hit first — noise-level data was scoring as a
+  // strong alignment.
+  if (Math.abs(fiiCash) < 100 || Math.abs(fiiFut) < 100) return 0;
   // If both same direction = aligned = bullish/bearish confirmation
   if (fiiCash > 0 && fiiFut > 0) return 60;
   if (fiiCash < 0 && fiiFut < 0) return -60;
-  if (Math.abs(fiiCash) < 100 || Math.abs(fiiFut) < 100) return 0;
   // Divergent = weak signal
   return (fiiCash + fiiFut) > 0 ? 20 : -20;
 }
