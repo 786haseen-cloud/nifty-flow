@@ -1110,3 +1110,26 @@ Stage Summary:
 - All four trend cards now run explicit FIFO at the DAY boundary: yesterday OUT, new data IN — guaranteed at three layers (server candle filter → store ingest filter → boot eviction), each independently testable.
 - Card 1's cross-day curve-overlap bug (Tue–Fri) is fixed at the source; the other three cards gained a per-point date guarantee they previously lacked.
 - First real validation window: Tuesday Sep 22 session (the first Tue–Fri trading day after deploy).
+
+---
+Task ID: 47
+Agent: main (Super Z)
+Task: Fix PUT BUY / CALL BUY cards showing inverted targets & broken stops (user live report: INFY PUT tgt 1042 vs spot 1030; TITAN CALL tgt 4899 vs spot 4910)
+
+Work Log:
+- Traced display chain: max-probability-signals.tsx renders engine output verbatim; root cause in magnet-engine.ts plan builders
+- Root cause: BOTH computeSignal (line ~1979) and buildMaxProbPlan (line ~2302) emitted `magnetCenter` as target with NO direction check. Magnet center can sit on either side of spot; flow-driven candidates routinely fire OPPOSITE the magnet pull → target landed between entry and stop on the LOSS side (hitting "target" = losing on the option)
+- Same-class latent bug: magnetZone-edge stop could land at/beyond entry when the whole zone sat on the entry side of spot
+- Fix: shared helpers directionalTarget() + directionalStop() used by BOTH plan builders (makes the "both panels agree" docblock promise literal):
+  - CALL target always ABOVE spot; PUT target always BELOW spot
+  - Magnet on profit side ≥1 strikeStep → used as-is (legacy aligned plans byte-identical; existing test [8] unchanged)
+  - Magnet wrong side / inside entry → mirror structural distance to profit side, floored at 1 strikeStep
+  - No magnet → 1-step measured move; WAIT → atmStrike placeholder (unchanged)
+  - Stop side guard: zone-edge stop at/beyond entry → 2-step ATM fallback
+- Tests: added [10] A–F (14 checks) to scripts/test-max-probability.ts incl. exact INFY/TITAN live reproduction (INFY PUT now target 1010/stop 1085; TITAN CALL now target 4930/stop 4828)
+- Test D initially failed: mk() fixture coerces null zeroGamma→24800 via ??; fixed fixture to force zone branch (zeroGamma 25200)
+
+Stage Summary:
+- Deployed commit c708f6f (df37b48..c708f6f main), Vercel auto-deploy
+- 46/46 max-probability tests; full regression (magnet-engine, put-sign-fix, alignment-gate, composite-max-pain, smart-money-oi-flow, pcr-price-disambiguation, fifo-eviction 24/24) green; tsc (only pre-existing fix-settings.ts + known fixture errors), eslint, next build clean
+- User-visible effect: PUT BUY target below spot / stop above; CALL BUY target above spot / stop below; aligned plans unchanged; R:R honestly reflects when flow fires against the magnet pull
