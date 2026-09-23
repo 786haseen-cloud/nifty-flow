@@ -60,6 +60,21 @@ const OptionFlowTV = dynamic(
   ) },
 );
 
+// CombinedFlowCard — separate panel that shows the SUMMED whole-market
+// flow (4 indices + 15 F&O stocks = 19 symbols) as Bull/Bear histogram +
+// Cumulative Delta line. Always visible below the main chart, independent
+// of which symbol is selected in OptFlow TV above. Has its own market-hours
+// gate (09:00 → 15:40 IST) so it stops polling after close — the user
+// explicitly asked for both cards to run during market hours only.
+const CombinedFlowCard = dynamic(
+  () => import('@/components/dashboard/combined-flow-card'),
+  { ssr: false, loading: () => (
+    <div className="h-[280px] flex items-center justify-center text-xs text-muted-foreground">
+      Loading Combined Flow card…
+    </div>
+  ) },
+);
+
 // ─── Trading Session X-Axis Helpers ───
 // Charts display a fixed trading-session window 09:15 → 15:40 IST.
 // The x-axis is a numeric "minutes since midnight" axis with this fixed domain,
@@ -526,6 +541,15 @@ export default function TrendAnalysisTab() {
       <div className="rounded-xl border border-border/50 bg-card/50 overflow-hidden">
         <OptionFlowTV />
       </div>
+
+      {/* ── Combined Flow card — whole-market aggregate (4 indices + 15 F&O
+          stocks = 19 symbols) as Bull/Bear histogram + Cumulative Delta line.
+          Separate from the main OptFlow TV chart so the user can see both
+          the single-symbol candlestick view AND the combined whole-market
+          flow view simultaneously. Has its own market-hours gate so it stops
+          polling after 15:40 IST — the user explicitly asked for both cards
+          to run during market hours only. ── */}
+      <CombinedFlowCard />
 
       {/* Demo mode warning banner — shown prominently when user has no/expired creds */}
       {trendMode === 'demo' && (
