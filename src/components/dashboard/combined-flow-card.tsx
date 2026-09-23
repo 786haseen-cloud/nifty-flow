@@ -89,6 +89,12 @@ export default function CombinedFlowCard() {
   });
   const [pollCount, setPollCount] = useState(0);
 
+  // Has the time-scale's visible range (09:00 → 15:40 IST) been applied?
+  // lightweight-charts can't apply setVisibleRange when the chart has no
+  // data, so we set it in initChart (no-op if no data) AND re-apply it
+  // after the first bar lands in the flow-processing effect below.
+  const rangeSetRef = useRef(false);
+
   const { curr, prev } = useKiteSnapshot();
 
   // Track how many polls we've seen so the user can see the card is alive.
@@ -190,6 +196,7 @@ export default function CombinedFlowCard() {
     initChart();
     flowBarsRef.current = [];
     cumDeltaRef.current = 0;
+    rangeSetRef.current = false;  // reset on remount / re-init
 
     return () => {
       if (chartRef.current) {
@@ -215,6 +222,23 @@ export default function CombinedFlowCard() {
   // ─── Process flow data from snapshots ───
   // Sums 4-quadrant flow across NIFTY + BANKNIFTY + SENSEX + FINNIFTY per
   // 15s poll. Per-index missing data is tolerated — we just sum the others.
+  //
+  // FIFO time-axis logic (matches the main OptFlow TV chart above):
+  //   - Use series.update() to append each new bar to the right edge instead
+  //     of series.setData() every poll. setData() resets the time scale's
+  //     visible range every call (lightweight-charts calls fitContent()
+  //     internally), which would break the pinned 09:00 → 15:40 IST window
+  //     and let the time axis drift. update() preserves the visible range
+  //     the user set / scrolled to.
+  //   - On the FIRST bar, call timeScale().setVisibleRange() once to pin the
+  //     market session window. initChart tries this earlier but the chart
+  //     has no data yet so the call is a no-op; we retry here after the first
+  //     bar lands, then guard with rangeSetRef so we never call it again
+  //     (so subsequent user scrolls aren't overwritten).
+  //   - New bars auto-pin to the right edge via the chart's rightOffset: 5
+  //     + barSpacing: 8 (set in initChart). Older morning bars scroll off
+  //     the left as the session fills — FIFO behavior, identical to the
+  //     main chart.
   useEffect(() => {
     if (!curr || !prev || !bullSeriesRef.current) return;
 
@@ -236,24 +260,63 @@ export default function CombinedFlowCard() {
 
     flowBarsRef.current = [...flowBarsRef.current, bar];
 
-    const bullData = flowBarsRef.current.map((b) => ({
-      time: b.time as any,
-      value: b.bullish,
-      color: THEME.bullish,
-    }));
-    const bearData = flowBarsRef.current.map((b) => ({
-      time: b.time as any,
-      value: b.bearish,
-      color: THEME.bearish,
-    }));
-    const cumData = flowBarsRef.current.map((b) => ({
-      time: b.time as any,
-      value: b.cumDelta,
-    }));
+    // update() — append the latest bar. Preserves the visible range the
+    // main chart and this card share (09:00 → 15:40 IST). If the time went
+    // backwards (rare — clock skew) or the chart isn't ready, fall back to
+    // a one-shot setData() of the whole ref so the chart doesn't get stuck.
+    try {
+      bullSeriesRef.current.update({
+        time: now as any,
+        value: bullish,
+        color: THEME.bullish,
+      });
+      bearSeriesRef.current.update({
+        time: now as any,
+        value: -bearish,
+        color: THEME.bearish,
+      });
+      cumDeltaSeriesRef.current.update({
+        time: now as any,
+        value: cumDeltaRef.current,
+      });
+    } catch {
+      // Defensive fallback: rebuild the whole series from the ref.
+      const bullData = flowBarsRef.current.map((b) => ({
+        time: b.time as any,
+        value: b.bullish,
+        color: THEME.bullish,
+      }));
+      const bearData = flowBarsRef.current.map((b) => ({
+        time: b.time as any,
+        value: b.bearish,
+        color: THEME.bearish,
+      }));
+      const cumData = flowBarsRef.current.map((b) => ({
+        time: b.time as any,
+        value: b.cumDelta,
+      }));
+      bullSeriesRef.current?.setData(bullData);
+      bearSeriesRef.current?.setData(bearData);
+      cumDeltaSeriesRef.current?.setData(cumData);
+    }
 
-    bullSeriesRef.current?.setData(bullData);
-    bearSeriesRef.current?.setData(bearData);
-    cumDeltaSeriesRef.current?.setData(cumData);
+    // After the FIRST bar lands, pin the time scale's visible range to
+    // today's IST market session (09:00 pre-market → 15:40 close). This
+    // matches the main chart's time axis exactly. rangeSetRef guards so
+    // we only do this once — subsequent polls use update() which keeps
+    // the user's scroll position intact.
+    if (!rangeSetRef.current && chartRef.current && flowBarsRef.current.length === 1) {
+      try {
+        const range = getMarketSessionRange();
+        chartRef.current.timeScale().setVisibleRange({
+          from: range.from as any,
+          to: range.to as any,
+        });
+        rangeSetRef.current = true;
+      } catch {
+        chartRef.current?.timeScale().fitContent();
+      }
+    }
 
     // Always-visible legend (no hover needed) — latest bar's values.
     setLegend({
