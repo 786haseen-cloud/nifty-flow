@@ -1,6 +1,6 @@
 /**
  * Combined flow computation — shared between OptionFlowTV (single-symbol) and
- * CombinedFlowCard (4-index aggregate). Computes 4-quadrant ₹ Cr flow:
+ * CombinedFlowCard (whole-market aggregate). Computes 4-quadrant ₹ Cr flow:
  *   CE Buy    — OI up + LTP up  (call buyers lifting offers)
  *   CE Write  — OI up + LTP dn  (call writers hitting bids)
  *   PE Buy    — OI up + LTP up  (put buyers lifting offers — bearish)
@@ -8,13 +8,13 @@
  * Formula: ΔOI × LTP × lotSize per strike, summed across strikes.
  *
  * Defensive: returns zeros if the symbol is missing from either snapshot
- * (e.g. one index hasn't landed yet — the combined view just sums the others).
+ * (e.g. one stock hasn't landed yet — the combined view just sums the others).
  *
  * Pure function — safe for client bundle, no I/O.
  */
 
 import type { KiteSnapshot } from '@/hooks/use-kite-snapshot';
-import { INDEX_SPECS } from '@/lib/kite-api';
+import { INDEX_SPECS, STOCK_SPECS } from '@/lib/kite-api';
 
 export interface FlowQuadrant {
   ceBuy: number;
@@ -25,7 +25,17 @@ export interface FlowQuadrant {
 
 export const CROR = 10000000;
 
-export const FLOW_INDICES = ['NIFTY', 'BANKNIFTY', 'SENSEX', 'FINNIFTY'] as const;
+// All 19 symbols tracked by the dashboard: 4 indices + 15 F&O stocks.
+// The combined view sums flow across all of these for a "whole market"
+// summary in a single Bull/Bear histogram + cumulative delta line.
+export const ALL_MARKET_SYMBOLS = [
+  ...INDEX_SPECS.map((s) => s.symbol),
+  ...STOCK_SPECS.map((s) => s.symbol),
+] as readonly string[];
+
+// Back-compat alias — older code referenced FLOW_INDICES for the 4-index-only
+// view. Kept for any external callers; new code should use ALL_MARKET_SYMBOLS.
+export const FLOW_INDICES = INDEX_SPECS.map((s) => s.symbol) as readonly string[];
 
 /** Compute 4-quadrant flow (in ₹, NOT ₹ Cr — divide by CROR for display) for a
  *  single symbol between two consecutive snapshots. */
@@ -34,7 +44,8 @@ export function computeSymbolFlow(
   prev: KiteSnapshot,
   symbol: string,
 ): FlowQuadrant {
-  const spec = INDEX_SPECS.find(s => s.symbol === symbol);
+  const spec = INDEX_SPECS.find(s => s.symbol === symbol) ||
+               STOCK_SPECS.find(s => s.symbol === symbol);
   const lotSize = spec?.lotSize || 1;
   const currFlow = (curr.symbols || []).find((s) => s.symbol === symbol);
   const prevFlow = (prev.symbols || []).find((s) => s.symbol === symbol);
@@ -65,13 +76,15 @@ export function computeSymbolFlow(
   return { ceBuy, peWrite, peBuy, ceWrite };
 }
 
-/** Sum 4-quadrant flow across the 4 indices (the 'ALL' combined view). */
+/** Sum 4-quadrant flow across ALL 19 symbols — the whole-market combined view
+ *  (4 indices + 15 F&O stocks). Per-symbol missing data is tolerated; we just
+ *  sum the others. */
 export function computeCombinedFlow(
   curr: KiteSnapshot,
   prev: KiteSnapshot,
 ): FlowQuadrant {
   let ceBuy = 0, peWrite = 0, peBuy = 0, ceWrite = 0;
-  for (const sym of FLOW_INDICES) {
+  for (const sym of ALL_MARKET_SYMBOLS) {
     const f = computeSymbolFlow(curr, prev, sym);
     ceBuy += f.ceBuy; peWrite += f.peWrite; peBuy += f.peBuy; ceWrite += f.ceWrite;
   }

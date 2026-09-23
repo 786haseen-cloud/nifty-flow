@@ -2,23 +2,23 @@
 
 /**
  * CombinedFlowCard — separate TradingView Lightweight Charts panel that
- * shows the SUMMED 4-index flow (NIFTY + BANKNIFTY + SENSEX + FINNIFTY) as
- * a Bull/Bear histogram + Cumulative Delta line, always visible below the
+ * shows the SUMMED whole-market flow (4 indices + 15 F&O stocks = 19 symbols)
+ * as a Bull/Bear histogram + Cumulative Delta line, always visible below the
  * main OptFlow TV chart.
  *
  * Why a separate component (not an 'ALL' button in the main chart):
  *   The user wanted both views at the same time — the main candlestick chart
- *   for the selected single symbol AND the combined 4-index flow aggregate.
- *   Putting 'ALL' as a symbol-selector toggle wiped the candlestick chart
- *   every time the user clicked it; that's the bug this card fixes.
+ *   for the selected single symbol AND the combined whole-market flow
+ *   aggregate. Putting 'ALL' as a symbol-selector toggle wiped the candlestick
+ *   chart every time the user clicked it; that's the bug this card fixes.
  *
  * Architecture:
  *   - Owns its own lightweight-charts instance + container + ResizeObserver.
  *   - Shares the Kite snapshot via useKiteSnapshot() singleton (zero extra
  *     network — the snapshot is already polled for the main chart).
- *   - Each 15s poll computes 4-quadrant flow across the 4 indices, sums them,
- *     appends a bar to flowBarsRef, and re-sets the chart series (FIFO across
- *     the session, same as the main chart).
+ *   - Each 15s poll computes 4-quadrant flow across all 19 symbols, sums them,
+ *     appends a bar to flowBarsRef, and uses series.update() to preserve the
+ *     visible time range (FIFO across the session — same as the main chart).
  *   - Always-visible legend (Bull / Bear / Net / CumΔ) — no hover required.
  *
  * No candles here — there's no single underlying to chart. The card is a
@@ -28,7 +28,7 @@
 
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { useKiteSnapshot } from '@/hooks/use-kite-snapshot';
-import { computeCombinedFlow, CROR, FLOW_INDICES } from '@/lib/combined-flow';
+import { computeCombinedFlow, CROR, ALL_MARKET_SYMBOLS } from '@/lib/combined-flow';
 import { Layers, Wifi, WifiOff } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 
@@ -220,8 +220,11 @@ export default function CombinedFlowCard() {
   }, []);
 
   // ─── Process flow data from snapshots ───
-  // Sums 4-quadrant flow across NIFTY + BANKNIFTY + SENSEX + FINNIFTY per
-  // 15s poll. Per-index missing data is tolerated — we just sum the others.
+  // Sums 4-quadrant flow across ALL 19 symbols (4 indices + 15 F&O stocks)
+  // per 15s poll. Per-symbol missing data is tolerated — we just sum the
+  // others (e.g. if FINNIFTY snapshot hasn't landed yet, the bar reflects
+  // the other 18 symbols; once FINNIFTY lands on the next poll, the next
+  // bar includes it — no double-counting since each bar is a per-poll delta).
   //
   // FIFO time-axis logic (matches the main OptFlow TV chart above):
   //   - Use series.update() to append each new bar to the right edge instead
@@ -334,7 +337,7 @@ export default function CombinedFlowCard() {
         <Layers className="h-3.5 w-3.5 text-amber-400" />
         <span className="text-xs font-semibold text-amber-300 mr-2">Combined Flow</span>
         <span className="text-[10px] text-amber-300/70">
-          NIFTY + BANKNIFTY + SENSEX + FINNIFTY · ₹ Cr per 15s poll
+          Whole market · 4 indices + 15 F&amp;O stocks (19 symbols) · ₹ Cr per 15s poll
         </span>
 
         <div className="ml-auto flex items-center gap-1">
