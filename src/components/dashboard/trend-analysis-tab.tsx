@@ -19,6 +19,7 @@
  */
 
 import { useMemo, useEffect, useState } from 'react';
+import dynamic from 'next/dynamic';
 import { Badge } from '@/components/ui/badge';
 import {
   LineChart, Line, BarChart, Bar, Area,
@@ -44,6 +45,20 @@ import { MaxProbabilitySignals } from '@/components/dashboard/max-probability-si
 import { RecentSignalsCard } from '@/components/dashboard/recent-signals-card';
 import { ParticipantFlowCard } from '@/components/dashboard/participant-flow-card';
 import { SmartMoneyFootprintCard } from '@/components/dashboard/smart-money-footprint-card';
+
+// OptFlow TV — TradingView Lightweight Charts (candlesticks + bullish/bearish
+// OI histogram + cumulative delta). Mounted client-only via next/dynamic
+// because lightweight-charts uses canvas + ResizeObserver (browser-only).
+// Sits at the top of the Trends tab: live price + flow, before the analysis
+// sections below.
+const OptionFlowTV = dynamic(
+  () => import('@/components/dashboard/option-flow-tv'),
+  { ssr: false, loading: () => (
+    <div className="h-[400px] flex items-center justify-center text-xs text-muted-foreground">
+      Loading OptFlow TV chart…
+    </div>
+  ) },
+);
 
 // ─── Trading Session X-Axis Helpers ───
 // Charts display a fixed trading-session window 09:15 → 15:40 IST.
@@ -502,6 +517,16 @@ export default function TrendAnalysisTab() {
 
   return (
     <div className="space-y-4">
+      {/* ── OptFlow TV chart — TradingView Lightweight Charts (candlesticks +
+          bullish/bearish OI histogram + cumulative delta). Sits at the top of
+          the Trends tab as the live price + flow lens; everything below it
+          (max-probability signals, magnet, cash flow, participant flow) is
+          the slower analytical layer. Mounted client-only via dynamic import
+          because lightweight-charts uses canvas + ResizeObserver. ── */}
+      <div className="rounded-xl border border-border/50 bg-card/50 overflow-hidden">
+        <OptionFlowTV />
+      </div>
+
       {/* Demo mode warning banner — shown prominently when user has no/expired creds */}
       {trendMode === 'demo' && (
         <div className="rounded-lg border border-orange-500/40 bg-orange-500/10 p-3 text-xs text-orange-300">
