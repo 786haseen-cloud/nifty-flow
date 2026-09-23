@@ -4,6 +4,7 @@ import { useEffect, useRef, useState, useCallback } from 'react';
 import { withCreds } from '@/lib/kite-creds';
 import { useKiteSnapshot } from '@/hooks/use-kite-snapshot';
 import { INDEX_SPECS } from '@/lib/kite-api';
+import { computeSymbolFlow } from '@/lib/combined-flow';
 import { Badge } from '@/components/ui/badge';
 // Symbol type is just a string identifier
 import { Crosshair, Maximize2, Minimize2, RefreshCw, Wifi, WifiOff } from 'lucide-react';
@@ -45,9 +46,6 @@ const SYMBOLS: { value: SymbolId; label: string; token: number }[] = [
   { value: 'SENSEX', label: 'Sensex', token: 265 },
   { value: 'FINNIFTY', label: 'Fin Nifty', token: 257801 },
 ];
-
-// The 4 index symbols that get summed in the 'ALL' combined view.
-const ALL_INDICES = ['NIFTY', 'BANKNIFTY', 'SENSEX', 'FINNIFTY'] as const;
 
 const INTERVALS = [
   { value: 'minute', label: '1m' },
@@ -98,13 +96,11 @@ function getMarketSessionRange(): { from: number; to: number } {
 // User request: "spot 24000 → 24500 up / 23500 down" — i.e. ±500 for NIFTY.
 // Index step × 10 gives the same visual band per symbol (NIFTY 50×10=500,
 // BANKNIFTY 100×10=1000, SENSEX 100×10=1000, FINNIFTY 50×10=500).
-// 'ALL' view has no single spot, so it falls back to NIFTY's buffer (500).
 const PRICE_BUFFER: Record<string, number> = {
   NIFTY: 500,
   BANKNIFTY: 1000,
   SENSEX: 1000,
   FINNIFTY: 500,
-  ALL: 500,
 };
 
 const THEME = {
@@ -179,8 +175,6 @@ export default function OptionFlowTV() {
   const { curr, prev, pollCount, errorCount } = useKiteSnapshot();
 
   // Restore legend to the latest flow bar (called on mouse-out from chart).
-  // For the 'ALL' view there are no candles, so O/H/L/C/Vol stay '--' and
-  // only the flow fields (Bull / Bear / Net / CumΔ) populate.
   const restoreLatestLegend = useCallback(() => {
     const bar = lastBarRef.current;
     if (!bar) {
@@ -350,57 +344,46 @@ export default function OptionFlowTV() {
     });
 
     // ── Fetch candles ──
-    // Skip candle fetch entirely for 'ALL' — there's no single underlying to
-    // chart. The candlestick + volume series are emptied and the chart shows
-    // only the flow histogram + cumulative delta (the combined 4-index flow).
     setIsLoading(true);
     setError('');
 
-    const isAll = symbol === 'ALL';
-
     try {
-      if (isAll) {
-        // Clear candles + volume; the chart becomes a flow-only view.
-        candleSeries.setData([]);
-        volSeries.setData([]);
-      } else {
-        const symInfo = SYMBOLS.find(s => s.value === symbol);
-        const token = symInfo?.token || 256265;
-        const res = await fetch(withCreds(`/api/kite/candles?token=${token}&interval=${interval}&days=1`));
-        const data = await res.json();
+      const symInfo = SYMBOLS.find(s => s.value === symbol);
+      const token = symInfo?.token || 256265;
+      const res = await fetch(withCreds(`/api/kite/candles?token=${token}&interval=${interval}&days=1`));
+      const data = await res.json();
 
-        if (data.mode === 'demo' || data.count === 0) {
-          setError('No candle data available. Check Kite credentials.');
-          setIsLoading(false);
-          return;
-        }
-
-        // Kite returns timestamp as ISO string (e.g. "2024-08-15T09:15:00+05:30").
-        // Convert to UTCTimestamp (unix seconds) for lightweight-charts v5.
-        const candles: CandleData[] = data.candles.map((c: any) => {
-          const ts = typeof c.timestamp === 'number'
-            ? c.timestamp
-            : Math.floor(new Date(c.timestamp).getTime() / 1000);
-          return {
-            time: ts as any,
-            open: c.open,
-            high: c.high,
-            low: c.low,
-            close: c.close,
-            volume: c.volume,
-          };
-        });
-
-        candleSeries.setData(candles);
-
-        // Volume with color based on candle direction
-        const volData = candles.map(c => ({
-          time: c.time,
-          value: c.volume,
-          color: c.close >= c.open ? THEME.volumeUp : THEME.volumeDn,
-        }));
-        volSeries.setData(volData);
+      if (data.mode === 'demo' || data.count === 0) {
+        setError('No candle data available. Check Kite credentials.');
+        setIsLoading(false);
+        return;
       }
+
+      // Kite returns timestamp as ISO string (e.g. "2024-08-15T09:15:00+05:30").
+      // Convert to UTCTimestamp (unix seconds) for lightweight-charts v5.
+      const candles: CandleData[] = data.candles.map((c: any) => {
+        const ts = typeof c.timestamp === 'number'
+          ? c.timestamp
+          : Math.floor(new Date(c.timestamp).getTime() / 1000);
+        return {
+          time: ts as any,
+          open: c.open,
+          high: c.high,
+          low: c.low,
+          close: c.close,
+          volume: c.volume,
+        };
+      });
+
+      candleSeries.setData(candles);
+
+      // Volume with color based on candle direction
+      const volData = candles.map(c => ({
+        time: c.time,
+        value: c.volume,
+        color: c.close >= c.open ? THEME.volumeUp : THEME.volumeDn,
+      }));
+      volSeries.setData(volData);
 
       // ── Constrain the visible time axis to today's IST market session:
       //    pre-market 09:00 → close 15:40. FIFO: as new bars arrive during the
@@ -458,56 +441,16 @@ export default function OptionFlowTV() {
   }, []);
 
   // ─── Process flow data from snapshots ───
-  // Computes 4-color flow (CE Buy / PE Write / PE Buy / CE Write) per strike,
-  // summed across strikes, for either a single symbol or the 'ALL' combined
-  // view (sum of NIFTY + BANKNIFTY + SENSEX + FINNIFTY). Each poll produces a
-  // new FlowBar appended to flowBarsRef (FIFO across the session); the chart
-  // series re-set every poll. The latest bar also seeds the legend (no hover
-  // required) — restoreLatestLegend fires when the mouse leaves the chart.
+  // Computes 4-color flow (CE Buy / PE Write / PE Buy / CE Write) per strike
+  // for the SELECTED symbol only. The combined 4-index view lives in its
+  // own component (CombinedFlowCard) so the two never interfere. Each poll
+  // produces a new FlowBar appended to flowBarsRef (FIFO across the session);
+  // the chart series re-set every poll. The latest bar also seeds the legend
+  // (no hover required) — restoreLatestLegend fires when the mouse leaves.
   useEffect(() => {
     if (!curr || !prev || !bullSeriesRef.current) return;
 
-    // Compute flow for one symbol. Defensive: returns zeros if the symbol
-    // is missing from either snapshot (e.g. 'ALL' view where one index has
-    // no data yet — we just sum the others).
-    const computeForSymbol = (sym: string): { ceBuy: number; peWrite: number; peBuy: number; ceWrite: number } => {
-      const spec = INDEX_SPECS.find(s => s.symbol === sym);
-      const lotSize = spec?.lotSize || 1;
-      const currFlow = (curr.symbols || []).find((s: any) => s.symbol === sym);
-      const prevFlow = (prev.symbols || []).find((s: any) => s.symbol === sym);
-      if (!currFlow || !prevFlow) return { ceBuy: 0, peWrite: 0, peBuy: 0, ceWrite: 0 };
-
-      let ceBuy = 0, peWrite = 0, peBuy = 0, ceWrite = 0;
-      for (const cs of currFlow.strikes || []) {
-        const ps = (prevFlow.strikes || []).find((s: any) => s.strike === cs.strike);
-        if (!ps) continue;
-
-        const ceOiChg = (cs.ceOI || 0) - (ps.ceOI || 0);
-        const peOiChg = (cs.peOI || 0) - (ps.peOI || 0);
-        const ceLtpChg = (cs.ceLTP || 0) - (ps.ceLTP || 0);
-        const peLtpChg = (cs.peLTP || 0) - (ps.peLTP || 0);
-
-        // CE Buy: OI increased + LTP up (writers paying up = buyers aggressive)
-        if (ceOiChg > 0 && ceLtpChg >= 0) ceBuy += ceOiChg * (cs.ceLTP || 0) * lotSize;
-        // CE Write: OI increased + LTP down (writers adding at lower prices = selling)
-        else if (ceOiChg > 0 && ceLtpChg < 0) ceWrite += ceOiChg * (cs.ceLTP || 0) * lotSize;
-
-        // PE Buy: OI increased + LTP up (put buyers lifting offers — bearish)
-        // Sep 17 2026 FIX: these two buckets were mirrored before.
-        if (peOiChg > 0 && peLtpChg > 0) peBuy += peOiChg * (cs.peLTP || 0) * lotSize;
-        // PE Write: OI increased + LTP down (writers hitting bids — bullish)
-        else if (peOiChg > 0 && peLtpChg <= 0) peWrite += peOiChg * (cs.peLTP || 0) * lotSize;
-      }
-      return { ceBuy, peWrite, peBuy, ceWrite };
-    };
-
-    // For 'ALL' — sum across the 4 indices. For single symbol — just that one.
-    const targetSymbols = symbol === 'ALL' ? ALL_INDICES : [symbol as string];
-    let ceBuy = 0, peWrite = 0, peBuy = 0, ceWrite = 0;
-    for (const sym of targetSymbols) {
-      const f = computeForSymbol(sym);
-      ceBuy += f.ceBuy; peWrite += f.peWrite; peBuy += f.peBuy; ceWrite += f.ceWrite;
-    }
+    const { ceBuy, peWrite, peBuy, ceWrite } = computeSymbolFlow(curr, prev, symbol);
 
     const bullish = ceBuy + peWrite;
     const bearish = peBuy + ceWrite;
@@ -525,9 +468,8 @@ export default function OptionFlowTV() {
     };
 
     flowBarsRef.current = [...flowBarsRef.current, bar];
-    lastBarRef.current = bar;  // seed the no-hover legend
+    lastBarRef.current = bar;
 
-    // Update chart series
     const bullData = flowBarsRef.current.map(b => ({ time: b.time as any, value: b.bullish, color: THEME.bullish }));
     const bearData = flowBarsRef.current.map(b => ({ time: b.time as any, value: b.bearish, color: THEME.bearish }));
     const cumData = flowBarsRef.current.map(b => ({ time: b.time as any, value: b.cumDelta }));
@@ -536,9 +478,6 @@ export default function OptionFlowTV() {
     bearSeriesRef.current?.setData(bearData);
     cumDeltaSeriesRef.current?.setData(cumData);
 
-    // If the user isn't hovering, update the legend to show this latest bar
-    // (always-visible legend). When they ARE hovering, the crosshair handler
-    // is in charge and we leave it alone.
     if (!isHoveringRef.current) {
       restoreLatestLegend();
     }
@@ -550,17 +489,6 @@ export default function OptionFlowTV() {
   //      bands are always on screen. ───
   useEffect(() => {
     if (!curr || !candleSeriesRef.current) return;
-    // 'ALL' view has no single underlying — no candle to update, no spot
-    // price lines. The combined flow bars still render via the other effect.
-    if (symbol === 'ALL') {
-      // Clear any leftover price lines from a previous single-symbol view.
-      for (const line of priceLinesRef.current) {
-        try { candleSeriesRef.current.removePriceLine(line); } catch { /* noop */ }
-      }
-      priceLinesRef.current = [];
-      lastSpotRef.current = null;
-      return;
-    }
     const symData = curr.symbols?.find((s: any) => s.symbol === symbol);
     if (!symData?.spotPrice) return;
 
@@ -676,19 +604,8 @@ export default function OptionFlowTV() {
         <Crosshair className="h-3.5 w-3.5 text-purple-400" />
         <span className="text-xs font-semibold text-purple-300 mr-2">OptFlow TV</span>
 
-        {/* Symbol selector — includes ALL (combined 4-index flow view) */}
+        {/* Symbol selector */}
         <div className="flex gap-0.5">
-          <button
-            onClick={() => setSymbol('ALL' as SymbolId)}
-            className={`px-2 py-0.5 rounded text-[10px] font-bold transition-colors ${
-              symbol === 'ALL'
-                ? 'bg-amber-500/25 text-amber-300'
-                : 'text-amber-500/70 hover:text-amber-300 hover:bg-amber-500/10'
-            }`}
-            title="Combined flow: NIFTY + BANKNIFTY + SENSEX + FINNIFTY. No candles — flow histogram + cumulative delta only."
-          >
-            ALL
-          </button>
           {SYMBOLS.map(s => (
             <button
               key={s.value}
@@ -723,8 +640,8 @@ export default function OptionFlowTV() {
           ))}
         </div>
 
-        {/* Spot price — hidden in 'ALL' view (no single underlying) */}
-        {symbol !== 'ALL' && spotPrice && (
+        {/* Spot price */}
+        {spotPrice && (
           <div className="ml-auto flex items-center gap-2">
             <span className={`text-xs font-mono font-bold ${isUp ? 'text-emerald-400' : 'text-red-400'}`}>
               {currentSymbolInfo?.label} {spotPrice.toFixed(0)}
@@ -732,12 +649,6 @@ export default function OptionFlowTV() {
             <span className={`text-[10px] font-mono ${isUp ? 'text-emerald-400/70' : 'text-red-400/70'}`}>
               {isUp ? '+' : ''}{priceChg.toFixed(0)} ({isUp ? '+' : ''}{priceChgPct.toFixed(2)}%)
             </span>
-          </div>
-        )}
-        {symbol === 'ALL' && (
-          <div className="ml-auto flex items-center gap-1 text-[10px] text-amber-300/80 font-mono">
-            <span className="inline-block w-1.5 h-1.5 rounded-full bg-amber-400" />
-            ALL INDICES · combined flow view
           </div>
         )}
 
@@ -754,26 +665,15 @@ export default function OptionFlowTV() {
         </button>
       </div>
 
-      {/* ── Legend bar ──
-          In 'ALL' view the O/H/L/C/Vol fields are hidden (no single underlying);
-          only the flow fields (Bull / Bear / Net / CumΔ) populate. */}
+      {/* ── Legend bar ── */}
       <div ref={legendRef} className="flex items-center gap-3 px-3 py-1 bg-[#0b0f18] border-b border-[#1e293b] text-[10px] font-mono flex-shrink-0">
-        {symbol !== 'ALL' && (
-          <>
-            <span className="text-slate-500">O <span className="text-slate-300">{legend.o}</span></span>
-            <span className="text-slate-500">H <span className="text-slate-300">{legend.h}</span></span>
-            <span className="text-slate-500">L <span className="text-slate-300">{legend.l}</span></span>
-            <span className="text-slate-500">C <span className="text-slate-300">{legend.c}</span></span>
-            <span className="text-slate-500">Vol <span className="text-slate-300">{legend.v}</span></span>
-            <div className="w-px h-3 bg-[#1e293b]" />
-          </>
-        )}
-        {symbol === 'ALL' && (
-          <>
-            <span className="text-amber-300/80 font-semibold">FLOW ONLY · 4 indices summed</span>
-            <div className="w-px h-3 bg-[#1e293b]" />
-          </>
-        )}
+        <span className="text-slate-500">O <span className="text-slate-300">{legend.o}</span></span>
+        <span className="text-slate-500">H <span className="text-slate-300">{legend.h}</span></span>
+        <span className="text-slate-500">L <span className="text-slate-300">{legend.l}</span></span>
+        <span className="text-slate-500">C <span className="text-slate-300">{legend.c}</span></span>
+        <span className="text-slate-500">Vol <span className="text-slate-300">{legend.v}</span></span>
+
+        <div className="w-px h-3 bg-[#1e293b]" />
 
         <span className="flex items-center gap-0.5">
           <span className="inline-block w-2 h-2 rounded-sm" style={{ background: THEME.bullish }} />

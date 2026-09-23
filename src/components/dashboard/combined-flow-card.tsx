@@ -1,0 +1,326 @@
+'use client';
+
+/**
+ * CombinedFlowCard — separate TradingView Lightweight Charts panel that
+ * shows the SUMMED 4-index flow (NIFTY + BANKNIFTY + SENSEX + FINNIFTY) as
+ * a Bull/Bear histogram + Cumulative Delta line, always visible below the
+ * main OptFlow TV chart.
+ *
+ * Why a separate component (not an 'ALL' button in the main chart):
+ *   The user wanted both views at the same time — the main candlestick chart
+ *   for the selected single symbol AND the combined 4-index flow aggregate.
+ *   Putting 'ALL' as a symbol-selector toggle wiped the candlestick chart
+ *   every time the user clicked it; that's the bug this card fixes.
+ *
+ * Architecture:
+ *   - Owns its own lightweight-charts instance + container + ResizeObserver.
+ *   - Shares the Kite snapshot via useKiteSnapshot() singleton (zero extra
+ *     network — the snapshot is already polled for the main chart).
+ *   - Each 15s poll computes 4-quadrant flow across the 4 indices, sums them,
+ *     appends a bar to flowBarsRef, and re-sets the chart series (FIFO across
+ *     the session, same as the main chart).
+ *   - Always-visible legend (Bull / Bear / Net / CumΔ) — no hover required.
+ *
+ * No candles here — there's no single underlying to chart. The card is a
+ * pure flow view: the histogram shows per-15s ₹ Cr flow, the line shows the
+ * running cumulative delta.
+ */
+
+import { useEffect, useRef, useState, useCallback } from 'react';
+import { useKiteSnapshot } from '@/hooks/use-kite-snapshot';
+import { computeCombinedFlow, CROR, FLOW_INDICES } from '@/lib/combined-flow';
+import { Layers, Wifi, WifiOff } from 'lucide-react';
+import { Badge } from '@/components/ui/badge';
+
+interface FlowBar {
+  time: number;
+  bullish: number;     // CE Buy + PE Write (positive)
+  bearish: number;     // PE Buy + CE Write (negative for histogram)
+  netFlow: number;
+  cumDelta: number;
+}
+
+// Same IST session window as the main chart (09:00 pre-market → 15:40 close).
+const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
+
+function fmtIST(unixSec: number, withSeconds = false): string {
+  const ist = new Date(unixSec * 1000 + IST_OFFSET_MS);
+  const hh = ist.getUTCHours().toString().padStart(2, '0');
+  const mm = ist.getUTCMinutes().toString().padStart(2, '0');
+  if (withSeconds) {
+    const ss = ist.getUTCSeconds().toString().padStart(2, '0');
+    return `${hh}:${mm}:${ss}`;
+  }
+  return `${hh}:${mm}`;
+}
+
+function getMarketSessionRange(): { from: number; to: number } {
+  const istNow = new Date(Date.now() + IST_OFFSET_MS);
+  const y = istNow.getUTCFullYear();
+  const m = istNow.getUTCMonth();
+  const d = istNow.getUTCDate();
+  const fromMs = Date.UTC(y, m, d, 9, 0, 0) - IST_OFFSET_MS;
+  const toMs = Date.UTC(y, m, d, 15, 40, 0) - IST_OFFSET_MS;
+  return { from: Math.floor(fromMs / 1000), to: Math.floor(toMs / 1000) };
+}
+
+const THEME = {
+  bg: '#0a0e17',
+  gridColor: '#1a1f2e',
+  textColor: '#64748b',
+  borderColor: '#1e293b',
+  crosshairColor: '#475569',
+  bullish: '#22c55e',
+  bearish: '#ef4444',
+  cumDelta: '#fbbf24',
+};
+
+export default function CombinedFlowCard() {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const chartRef = useRef<any>(null);
+  const bullSeriesRef = useRef<any>(null);
+  const bearSeriesRef = useRef<any>(null);
+  const cumDeltaSeriesRef = useRef<any>(null);
+  const flowBarsRef = useRef<FlowBar[]>([]);
+  const cumDeltaRef = useRef(0);
+
+  const [legend, setLegend] = useState({
+    bull: '--', bear: '--', net: '--', cum: '--',
+  });
+  const [pollCount, setPollCount] = useState(0);
+
+  const { curr, prev } = useKiteSnapshot();
+
+  // Track how many polls we've seen so the user can see the card is alive.
+  useEffect(() => {
+    if (curr) setPollCount((p) => p + 1);
+  }, [curr]);
+
+  // ─── Initialize chart ───
+  const initChart = useCallback(async () => {
+    if (!containerRef.current) return;
+
+    if (chartRef.current) {
+      chartRef.current.remove();
+      chartRef.current = null;
+    }
+
+    const { createChart, HistogramSeries, LineSeries } = await import('lightweight-charts');
+
+    const chart = createChart(containerRef.current, {
+      layout: {
+        background: { type: 'solid', color: THEME.bg },
+        textColor: THEME.textColor,
+        fontSize: 11,
+        fontFamily: 'ui-monospace, monospace',
+      },
+      grid: {
+        vertLines: { color: THEME.gridColor },
+        horzLines: { color: THEME.gridColor },
+      },
+      crosshair: {
+        mode: 0,
+        vertLine: { color: THEME.crosshairColor, width: 1, style: 2, labelBackgroundColor: '#1e293b' },
+        horzLine: { color: THEME.crosshairColor, width: 1, style: 2, labelBackgroundColor: '#1e293b' },
+      },
+      localization: {
+        timeFormatter: (time: number) => fmtIST(time, true),
+        dateFormat: 'yyyy-MM-dd',
+      },
+      rightPriceScale: {
+        borderColor: THEME.borderColor,
+        scaleMargins: { top: 0.08, bottom: 0.08 },
+        autoScale: true,
+      },
+      timeScale: {
+        borderColor: THEME.borderColor,
+        timeVisible: true,
+        secondsVisible: false,
+        rightOffset: 5,
+        barSpacing: 8,
+        tickMarkFormatter: (time: number, tickMarkType: number) => {
+          if (tickMarkType <= 2) {
+            const ist = new Date(time * 1000 + IST_OFFSET_MS);
+            const dd = ist.getUTCDate().toString().padStart(2, '0');
+            const mon = (ist.getUTCMonth() + 1).toString().padStart(2, '0');
+            return `${dd}/${mon}`;
+          }
+          return fmtIST(time, false);
+        },
+      },
+      handleScroll: { vertTouchDrag: false },
+    });
+
+    const bullSeries = chart.addSeries(HistogramSeries, {
+      priceFormat: { type: 'custom', formatter: (v: number) => (v / CROR).toFixed(2) + ' Cr' },
+      color: THEME.bullish,
+    });
+
+    const bearSeries = chart.addSeries(HistogramSeries, {
+      priceFormat: { type: 'custom', formatter: (v: number) => (v / CROR).toFixed(2) + ' Cr' },
+      color: THEME.bearish,
+    });
+
+    const cumDeltaSeries = chart.addSeries(LineSeries, {
+      color: THEME.cumDelta,
+      lineWidth: 1.5,
+      priceFormat: { type: 'custom', formatter: (v: number) => (v / CROR).toFixed(2) + ' Cr' },
+      lastValueVisible: false,
+      priceLineVisible: false,
+    });
+
+    chartRef.current = chart;
+    bullSeriesRef.current = bullSeries;
+    bearSeriesRef.current = bearSeries;
+    cumDeltaSeriesRef.current = cumDeltaSeries;
+
+    try {
+      const range = getMarketSessionRange();
+      chart.timeScale().setVisibleRange({
+        from: range.from as any,
+        to: range.to as any,
+      });
+    } catch {
+      chart.timeScale().fitContent();
+    }
+  }, []);
+
+  // ─── Init chart on mount ───
+  useEffect(() => {
+    initChart();
+    flowBarsRef.current = [];
+    cumDeltaRef.current = 0;
+
+    return () => {
+      if (chartRef.current) {
+        chartRef.current.remove();
+        chartRef.current = null;
+      }
+    };
+  }, [initChart]);
+
+  // ─── Resize observer ───
+  useEffect(() => {
+    if (!containerRef.current || !chartRef.current) return;
+    const ro = new ResizeObserver(() => {
+      chartRef.current?.applyOptions({
+        width: containerRef.current!.clientWidth,
+        height: containerRef.current!.clientHeight,
+      });
+    });
+    ro.observe(containerRef.current);
+    return () => ro.disconnect();
+  }, []);
+
+  // ─── Process flow data from snapshots ───
+  // Sums 4-quadrant flow across NIFTY + BANKNIFTY + SENSEX + FINNIFTY per
+  // 15s poll. Per-index missing data is tolerated — we just sum the others.
+  useEffect(() => {
+    if (!curr || !prev || !bullSeriesRef.current) return;
+
+    const { ceBuy, peWrite, peBuy, ceWrite } = computeCombinedFlow(curr, prev);
+
+    const bullish = ceBuy + peWrite;
+    const bearish = peBuy + ceWrite;
+    const net = bullish - bearish;
+    cumDeltaRef.current += net;
+
+    const now = Math.floor(Date.now() / 1000);
+    const bar: FlowBar = {
+      time: now,
+      bullish,
+      bearish: -bearish,
+      netFlow: net,
+      cumDelta: cumDeltaRef.current,
+    };
+
+    flowBarsRef.current = [...flowBarsRef.current, bar];
+
+    const bullData = flowBarsRef.current.map((b) => ({
+      time: b.time as any,
+      value: b.bullish,
+      color: THEME.bullish,
+    }));
+    const bearData = flowBarsRef.current.map((b) => ({
+      time: b.time as any,
+      value: b.bearish,
+      color: THEME.bearish,
+    }));
+    const cumData = flowBarsRef.current.map((b) => ({
+      time: b.time as any,
+      value: b.cumDelta,
+    }));
+
+    bullSeriesRef.current?.setData(bullData);
+    bearSeriesRef.current?.setData(bearData);
+    cumDeltaSeriesRef.current?.setData(cumData);
+
+    // Always-visible legend (no hover needed) — latest bar's values.
+    setLegend({
+      bull: (bullish / CROR).toFixed(2) + ' Cr',
+      bear: (bearish / CROR).toFixed(2) + ' Cr',
+      net: (net / CROR).toFixed(2) + ' Cr',
+      cum: (cumDeltaRef.current / CROR).toFixed(2) + ' Cr',
+    });
+  }, [curr, prev]);
+
+  return (
+    <div className="rounded-xl border border-amber-500/30 bg-card/50 overflow-hidden">
+      {/* ── Toolbar ── */}
+      <div className="flex items-center gap-2 px-2 py-1.5 bg-[#0d1117] border-b border-[#1e293b] flex-shrink-0">
+        <Layers className="h-3.5 w-3.5 text-amber-400" />
+        <span className="text-xs font-semibold text-amber-300 mr-2">Combined Flow</span>
+        <span className="text-[10px] text-amber-300/70">
+          NIFTY + BANKNIFTY + SENSEX + FINNIFTY · ₹ Cr per 15s poll
+        </span>
+
+        <div className="ml-auto flex items-center gap-1">
+          {pollCount > 0 && (
+            <Badge variant="outline" className="text-[8px] px-1 py-0 h-4 text-slate-500">
+              {pollCount} polls
+            </Badge>
+          )}
+          {curr ? (
+            <Wifi className="h-3 w-3 text-emerald-400" />
+          ) : (
+            <WifiOff className="h-3 w-3 text-red-400" />
+          )}
+        </div>
+      </div>
+
+      {/* ── Legend bar ── */}
+      <div className="flex items-center gap-3 px-3 py-1 bg-[#0b0f18] border-b border-[#1e293b] text-[10px] font-mono flex-shrink-0">
+        <span className="flex items-center gap-0.5">
+          <span
+            className="inline-block w-2 h-2 rounded-sm"
+            style={{ background: THEME.bullish }}
+          />
+          <span className="text-emerald-400">Bull {legend.bull}</span>
+        </span>
+        <span className="flex items-center gap-0.5">
+          <span
+            className="inline-block w-2 h-2 rounded-sm"
+            style={{ background: THEME.bearish }}
+          />
+          <span className="text-red-400">Bear {legend.bear}</span>
+        </span>
+        <span className="text-slate-500">
+          Net{' '}
+          <span className={legend.net.startsWith('-') ? 'text-red-400' : 'text-emerald-400'}>
+            {legend.net}
+          </span>
+        </span>
+        <span className="text-slate-500">
+          CumΔ <span className="text-amber-400">{legend.cum}</span>
+        </span>
+      </div>
+
+      {/* ── Chart container — fixed modest height; the main chart above stays the primary view. ── */}
+      <div
+        ref={containerRef}
+        className="min-h-[260px] rounded-b-lg"
+        style={{ height: 280 }}
+      />
+    </div>
+  );
+}
