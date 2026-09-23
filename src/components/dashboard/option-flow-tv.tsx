@@ -56,6 +56,52 @@ const INTERVALS = [
 
 const CROR = 10000000;
 
+// ── IST time helpers ──
+// Kite returns timestamps with +05:30 offset (e.g. "2024-08-15T09:15:00+05:30").
+// lightweight-charts treats them as UTC seconds; the chart's default tick formatter
+// prints them as UTC, so the user sees 03:45 instead of 09:15. We override the
+// tick formatter + crosshair formatter to print in IST.
+// Market session visible window: pre-market 09:00 → close 15:40 IST.
+const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
+const PRE_MARKET_MIN = 9 * 60;        // 09:00 IST
+const MARKET_OPEN_MIN = 9 * 60 + 15;   // 09:15 IST
+const MARKET_CLOSE_MIN = 15 * 60 + 40; // 15:40 IST
+
+function fmtIST(unixSec: number, withSeconds = false): string {
+  const ist = new Date(unixSec * 1000 + IST_OFFSET_MS);
+  const hh = ist.getUTCHours().toString().padStart(2, '0');
+  const mm = ist.getUTCMinutes().toString().padStart(2, '0');
+  if (withSeconds) {
+    const ss = ist.getUTCSeconds().toString().padStart(2, '0');
+    return `${hh}:${mm}:${ss}`;
+  }
+  return `${hh}:${mm}`;
+}
+
+/** Compute today's IST market session as UTC epoch seconds for the chart's
+ *  visible time range. Returns { from: 09:00 IST, to: 15:40 IST } in UTC epoch. */
+function getMarketSessionRange(): { from: number; to: number } {
+  const istNow = new Date(Date.now() + IST_OFFSET_MS);
+  const y = istNow.getUTCFullYear();
+  const m = istNow.getUTCMonth();
+  const d = istNow.getUTCDate();
+  // Build IST epoch milliseconds, then subtract IST offset to get UTC epoch.
+  const fromMs = Date.UTC(y, m, d, 9, 0, 0) - IST_OFFSET_MS;
+  const toMs = Date.UTC(y, m, d, 15, 40, 0) - IST_OFFSET_MS;
+  return { from: Math.floor(fromMs / 1000), to: Math.floor(toMs / 1000) };
+}
+
+// ── Price-level buffer per symbol (visible band above/below spot) ──
+// User request: "spot 24000 → 24500 up / 23500 down" — i.e. ±500 for NIFTY.
+// Index step × 10 gives the same visual band per symbol (NIFTY 50×10=500,
+// BANKNIFTY 100×10=1000, SENSEX 100×10=1000, FINNIFTY 50×10=500).
+const PRICE_BUFFER: Record<SymbolId, number> = {
+  NIFTY: 500,
+  BANKNIFTY: 1000,
+  SENSEX: 1000,
+  FINNIFTY: 500,
+};
+
 const THEME = {
   bg: '#0a0e17',
   paneBg: '#0a0e17',
@@ -64,6 +110,10 @@ const THEME = {
   textMuted: '#475569',
   borderColor: '#1e293b',
   crosshairColor: '#475569',
+  // Price-line colors (spot / upper / lower)
+  spotLine: '#e2e8f0',
+  upperLine: '#22c55e',
+  lowerLine: '#ef4444',
   // Candle colors
   bullCandle: '#22c55e',
   bearCandle: '#ef4444',
@@ -97,6 +147,10 @@ export default function OptionFlowTV() {
   const cumDeltaRef = useRef(0);
   const prevFlowRef = useRef<any>(null);
   const legendRef = useRef<HTMLDivElement>(null);
+  // Price-line handles — recreated each time spot moves so the upper / lower
+  // bands follow the live price (user: "should follow the spot price").
+  const priceLinesRef = useRef<any[]>([]);
+  const lastSpotRef = useRef<number | null>(null);
 
   const [symbol, setSymbol] = useState<SymbolId>('NIFTY');
   const [interval, setInterval] = useState('5minute');
@@ -142,13 +196,37 @@ export default function OptionFlowTV() {
         vertLine: { color: THEME.crosshairColor, width: 1, style: 2, labelBackgroundColor: '#1e293b' },
         horzLine: { color: THEME.crosshairColor, width: 1, style: 2, labelBackgroundColor: '#1e293b' },
       },
-      rightPriceScale: { borderColor: THEME.borderColor, scaleMargins: { top: 0.05, bottom: 0.25 } },
+      // Localization: print IST on axis + crosshair. Kite returns ISO+05:30
+      // timestamps; lightweight-charts stores them as UTC seconds, so we
+      // add IST offset when formatting to recover the original IST clock time.
+      localization: {
+        timeFormatter: (time: number) => fmtIST(time, true),
+        dateFormat: 'yyyy-MM-dd',
+      },
+      rightPriceScale: {
+        borderColor: THEME.borderColor,
+        scaleMargins: { top: 0.05, bottom: 0.25 },
+        autoScale: true,
+      },
       timeScale: {
         borderColor: THEME.borderColor,
         timeVisible: true,
         secondsVisible: false,
         rightOffset: 5,
         barSpacing: 8,
+        // IST tick mark formatter — replaces the default UTC labels (e.g.
+        // 03:45 → 09:15). tickMarkType is from lightweight-charts enum:
+        //   0=Year, 1=Month, 2=DayOfMonth, 3=Time, 4=TimeWithSeconds.
+        // We render hours:minutes for intraday ticks; date for boundary ticks.
+        tickMarkFormatter: (time: number, tickMarkType: number) => {
+          if (tickMarkType <= 2) {
+            const ist = new Date(time * 1000 + IST_OFFSET_MS);
+            const dd = ist.getUTCDate().toString().padStart(2, '0');
+            const mon = (ist.getUTCMonth() + 1).toString().padStart(2, '0');
+            return `${dd}/${mon}`;
+          }
+          return fmtIST(time, false);
+        },
       },
       handleScroll: { vertTouchDrag: false },
     });
@@ -267,7 +345,22 @@ export default function OptionFlowTV() {
       }));
       volSeries.setData(volData);
 
-      chart.timeScale().fitContent();
+      // ── Constrain the visible time axis to today's IST market session:
+      //    pre-market 09:00 → close 15:40. FIFO: as new bars arrive during the
+      //    session, the right edge follows them; the morning bars scroll off
+      //    the left once the session fills beyond the chart width. We set the
+      //    visible range once after the initial fetch; the chart's auto-scroll
+      //    (rightOffset + barSpacing above) keeps the latest bar pinned.
+      try {
+        const range = getMarketSessionRange();
+        chart.timeScale().setVisibleRange({
+          from: range.from as any,
+          to: range.to as any,
+        });
+      } catch {
+        // setVisibleRange can throw if no data — fall back to fitContent
+        chart.timeScale().fitContent();
+      }
     } catch (e: any) {
       setError('Failed to load candles: ' + e.message);
     }
@@ -364,7 +457,10 @@ export default function OptionFlowTV() {
 
   }, [curr, symbol]);
 
-  // ─── Update last candle with live price ───
+  // ─── Update last candle with live price + refresh spot/upper/lower price
+  //      lines so they follow the spot (user: "should follow the spot price").
+  //      Also nudges the right price-scale's visible range so the upper / lower
+  //      bands are always on screen. ───
   useEffect(() => {
     if (!curr || !candleSeriesRef.current) return;
     const symData = curr.symbols?.find((s: any) => s.symbol === symbol);
@@ -384,6 +480,75 @@ export default function OptionFlowTV() {
     } catch {
       // ignore if time doesn't match
     }
+
+    // Refresh price lines only when spot actually moves (avoid spamming
+    // removePriceLine / createPriceLine on every 15s poll when spot is flat).
+    if (lastSpotRef.current !== null && Math.abs(spot - lastSpotRef.current) < 1) {
+      return;
+    }
+    lastSpotRef.current = spot;
+
+    // Clear previous price lines
+    for (const line of priceLinesRef.current) {
+      try { candleSeriesRef.current.removePriceLine(line); } catch { /* noop */ }
+    }
+    priceLinesRef.current = [];
+
+    const buffer = PRICE_BUFFER[symbol] ?? 500;
+    const upper = spot + buffer;
+    const lower = spot - buffer;
+
+    // Spot price line — solid white
+    try {
+      const spotLine = candleSeriesRef.current.createPriceLine({
+        price: spot,
+        color: THEME.spotLine,
+        lineWidth: 1,
+        lineStyle: 0,        // Solid
+        axisLabelVisible: true,
+        title: `Spot ${spot.toFixed(0)}`,
+      });
+      priceLinesRef.current.push(spotLine);
+    } catch { /* noop */ }
+
+    // Upper level — dashed green
+    try {
+      const upLine = candleSeriesRef.current.createPriceLine({
+        price: upper,
+        color: THEME.upperLine,
+        lineWidth: 1,
+        lineStyle: 2,        // Dashed
+        axisLabelVisible: true,
+        title: `+${buffer}`,
+      });
+      priceLinesRef.current.push(upLine);
+    } catch { /* noop */ }
+
+    // Lower level — dashed red
+    try {
+      const dnLine = candleSeriesRef.current.createPriceLine({
+        price: lower,
+        color: THEME.lowerLine,
+        lineWidth: 1,
+        lineStyle: 2,        // Dashed
+        axisLabelVisible: true,
+        title: `-${buffer}`,
+      });
+      priceLinesRef.current.push(dnLine);
+    } catch { /* noop */ }
+
+    // Pin the right price scale's visible range to [lower, upper] so the
+    // upper / lower bands always sit on screen (auto-scale alone collapses
+    // to the candle range, hiding the bands when price compresses).
+    try {
+      chartRef.current?.priceScale('right').applyOptions({
+        autoScale: false,
+      });
+      chartRef.current?.priceScale('right').setVisibleRange({
+        from: lower - buffer * 0.1,
+        to: upper + buffer * 0.1,
+      });
+    } catch { /* noop */ }
   }, [curr, symbol]);
 
   // ─── Fullscreen toggle ───
