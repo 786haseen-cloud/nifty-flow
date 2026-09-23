@@ -415,6 +415,7 @@ export default function TrendAnalysisTab() {
   // WHY a card is empty (retrying / sparse re-run pending) instead of a
   // silent blank.
   const backfillStatus = useTrendStore((s) => s.backfillStatus);
+  const scheduleBackfillTrigger = useTrendStore((s) => s.scheduleBackfillTrigger);
   const flowFeedLabel =
     flowFeedMode === 'live' ? null
     : flowFeedMode === 'demo' ? 'DEMO FEED — token expired? Flow chart frozen at last live point'
@@ -757,8 +758,22 @@ export default function TrendAnalysisTab() {
             </div>
           )}
           {backfillLabel && (
-            <div className="mb-2 rounded-md border border-sky-500/40 bg-sky-500/10 px-2 py-1 text-[10px] font-semibold text-sky-300">
-              ⟳ {backfillLabel}
+            <div className="mb-2 rounded-md border border-sky-500/40 bg-sky-500/10 px-2 py-1 text-[10px] font-semibold text-sky-300 flex items-center justify-between gap-2 flex-wrap">
+              <span>⟳ {backfillLabel}</span>
+              {/* Manual retry button — lets the user re-trigger the backfill
+                  immediately instead of waiting for the 45s/5min auto-retry.
+                  Common case: the auto-retry keeps timing out on Vercel's
+                  default function timeout, and the user wants to force another
+                  attempt (which may now succeed because the server-side 60s
+                  in-memory cache holds a fresh 'live' response from another
+                  device's successful run). */}
+              <button
+                onClick={() => scheduleBackfillTrigger({ force: true })}
+                className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-sky-500/30 hover:bg-sky-500/50 text-sky-200 border border-sky-400/50 transition-colors"
+                title="Re-trigger the historical flow backfill (bypasses the 60s debounce)"
+              >
+                Retry now
+              </button>
             </div>
           )}
           <div className="flex items-start justify-between gap-2 mb-2 min-h-[52px] flex-wrap">
@@ -841,8 +856,15 @@ export default function TrendAnalysisTab() {
             </div>
           )}
           {backfillLabel && (
-            <div className="mb-2 rounded-md border border-sky-500/40 bg-sky-500/10 px-2 py-1 text-[10px] font-semibold text-sky-300">
-              ⟳ {backfillLabel}
+            <div className="mb-2 rounded-md border border-sky-500/40 bg-sky-500/10 px-2 py-1 text-[10px] font-semibold text-sky-300 flex items-center justify-between gap-2 flex-wrap">
+              <span>⟳ {backfillLabel}</span>
+              <button
+                onClick={() => scheduleBackfillTrigger({ force: true })}
+                className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-sky-500/30 hover:bg-sky-500/50 text-sky-200 border border-sky-400/50 transition-colors"
+                title="Re-trigger the historical flow backfill (bypasses the 60s debounce)"
+              >
+                Retry now
+              </button>
             </div>
           )}
           <div className="flex items-start justify-between gap-2 mb-2 min-h-[52px] flex-wrap">

@@ -35,6 +35,24 @@
  * included. This is inherent to the approach — fixing it would require fetching
  * ALL strikes (hundreds) which would exceed rate limits.
  */
+
+// Vercel function timeout — the backfill makes ~358 sequential rate-limited
+// API calls (~78 seconds total). The default Vercel timeout (10s Hobby / 60s
+// Pro) cuts this off mid-run, causing the client to see an error and retry
+// — but every retry also times out, so the options-flow cards never get
+// their 09:15→now history. The user reported this as "Index Options Money
+// Flow + Stock Options Money Flow cards start data from pasting time"
+// while the cash-flow card (only ~30 API calls, fits in default timeout)
+// backfills correctly.
+//
+// Setting maxDuration to 300s (Pro plan max) gives the backfill enough
+// headroom to complete. On Hobby plan, Vercel caps this at 60s — still
+// better than the 10s default, but the backfill may still time out. The
+// in-memory cache (60s TTL) means a successful run pays forward to all
+// subsequent calls within the window, so even a single successful run
+// per Vercel warm instance is enough to populate every device.
+export const maxDuration = 300;
+
 import { NextRequest, NextResponse } from 'next/server';
 import {
   getInstruments,
@@ -321,9 +339,13 @@ async function fetchHistoricalFlow(): Promise<HistoricalFlowResponse> {
           if (isCE) ceCandlesByToken.set(strike, candles);
           else peCandlesByToken.set(strike, candles);
         }
-        // Rate limit: sleep every 3 calls (~350ms between, under 3/s limit)
+        // Rate limit: sleep every 3 calls. Kite's historical API limit is 3/s.
+        // 200ms × 119 sleeps = ~24s of pure sleep (was 350ms × 119 = ~42s).
+        // Combined with ~36s of API calls = ~60s total, fits within Pro's
+        // 60s default and is well under our maxDuration=300 cap. Removing the
+        // sleep entirely risks 429s — Kite enforces the limit strictly.
         if (apiCallCount % 3 === 0) {
-          await new Promise(r => setTimeout(r, 350));
+          await new Promise(r => setTimeout(r, 200));
         }
       } catch (e) {
         console.warn(`[HistFlow] ${spec.symbol} ${strike} ${isCE ? 'CE' : 'PE'}:`, e);

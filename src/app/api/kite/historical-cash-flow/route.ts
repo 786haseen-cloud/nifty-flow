@@ -53,6 +53,15 @@
  *     can occur if a trade straddles a bar boundary.
  * The discrepancy is typically <0.1% and doesn't affect the chart visually.
  */
+
+// Vercel function timeout — the cash-flow backfill makes ~30 API calls
+// (15 stocks × 2 exchanges) at 3/s rate limit = ~10s. Fits within Vercel's
+// default 10s Hobby timeout, but we set maxDuration explicitly so it never
+// gets silently capped if Vercel changes defaults or the project moves to
+// a different plan. The heavier historical-flow route (358 calls, ~78s)
+// has its own maxDuration=300 — see that route for the timeout bug context.
+export const maxDuration = 60;
+
 import { NextRequest, NextResponse } from 'next/server';
 import {
   getInstruments,
