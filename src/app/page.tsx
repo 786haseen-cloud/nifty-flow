@@ -25,7 +25,7 @@ export default function DashboardPage() {
   const [jeddahTime, setJeddahTime] = useState('');
   const [marketStatus, setMarketStatus] = useState<string>('closed');
   const [nseSession, setNseSession] = useState<NSESessionInfo | null>(null);
-  const { curr: snapshot } = useKiteSnapshot(15000);
+  const { curr: snapshot } = useKiteSnapshot(30000);
 
   // Paste-once-per-day: pull the newest token from the server store at boot
   // (laptop paste → office device auto-adopts; no re-pasting across devices).
@@ -214,7 +214,7 @@ export default function DashboardPage() {
             <span className="text-teal-400 ml-1">Trends</span> — Price + Cash + Options Flow |
             <span className="text-orange-400 ml-1">CAS: Cash PAUSED, F&O Continues</span>
           </span>
-          <span className="font-mono">Auto-refresh: 15s</span>
+          <span className="font-mono">Auto-refresh: 30s</span>
         </div>
       </footer>
     </div>

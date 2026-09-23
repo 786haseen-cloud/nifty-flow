@@ -332,7 +332,7 @@ function CashFlowTrendTooltip({ active, payload, label }: any) {
         Net Cum: {d?.net?.toFixed(1)} Cr
       </div>
       <div className="text-muted-foreground mt-1">
-        This 15s:{' '}
+        This 30s:{' '}
         <span className={d?.interval >= 0 ? 'text-emerald-300' : 'text-red-300'}>
           {d?.interval >= 0 ? '+' : ''}{d?.interval?.toFixed(1)} Cr
         </span>
@@ -695,7 +695,7 @@ export default function TrendAnalysisTab() {
                 Net: {cumNetCr >= 0 ? '+' : ''}{cumNetCr.toFixed(1)} Cr
               </div>
               <div className={`text-[10px] font-mono ${currentIntervalCashFlow >= 0 ? 'text-emerald-300' : 'text-red-300'}`}>
-                15s: {currentIntervalCashFlow >= 0 ? '+' : ''}{fmtRaw(currentIntervalCashFlow)} Cr
+                30s: {currentIntervalCashFlow >= 0 ? '+' : ''}{fmtRaw(currentIntervalCashFlow)} Cr
               </div>
             </div>
           </div>

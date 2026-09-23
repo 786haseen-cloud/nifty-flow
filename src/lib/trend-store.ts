@@ -141,11 +141,13 @@ interface TrendState {
 
 // ─── Constants ───
 
-const POLL_INTERVAL_MS = 15000;
-// 9:15 → 15:40 IST = 6h25m = 385min = 1540 × 15s polls. Round up to 1600 for headroom.
-// Previously 600 (2.5h) was too small — the chart would lose its morning data
+const POLL_INTERVAL_MS = 30000;
+// 9:15 → 15:40 IST = 6h25m = 385min = 770 × 30s polls. Round up to 800 for headroom.
+// Previously 600 (2.5h @ 15s) was too small — the chart would lose its morning data
 // once the user kept the page open past ~11:45. Now it holds the full session.
-const MAX_TREND_POINTS = 1600;
+// Halved from 1600 to 800 when poll interval went 15s → 30s (same session
+// coverage, half the points per session).
+const MAX_TREND_POINTS = 800;
 const STALE_GAP_MS = 4 * 60 * 60 * 1000;  // 4h gap = treat as new session
 
 const INITIAL_FLOW: Record<string, number> = {

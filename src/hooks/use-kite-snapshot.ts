@@ -68,7 +68,7 @@ let globalCurr: KiteSnapshot | null = null;
 let globalPrev: KiteSnapshot | null = null;
 const listeners = new Set<() => void>();
 let globalTimer: ReturnType<typeof setInterval> | null = null;
-let currentIntervalMs = 15000;
+let currentIntervalMs = 30000;
 let globalPollCount = 0;
 
 let _consecutiveErrors = 0;
@@ -132,7 +132,7 @@ function stopPolling() {
   }
 }
 
-export function useKiteSnapshot(intervalMs = 15000) {
+export function useKiteSnapshot(intervalMs = 30000) {
   const [, setTick] = useState(0);
   const tick = useCallback(() => setTick(t => t + 1), []);
 
