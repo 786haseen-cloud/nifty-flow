@@ -68,6 +68,20 @@ const PRE_MARKET_MIN = 9 * 60;        // 09:00 IST
 const MARKET_OPEN_MIN = 9 * 60 + 15;   // 09:15 IST
 const MARKET_CLOSE_MIN = 15 * 60 + 40; // 15:40 IST
 
+/** True if current IST time is within the 09:00 → 15:40 trading session
+ *  window, Monday–Friday. Used to gate the live-candle update + flow bar
+ *  append so the chart stops shifting left after the market closes
+ *  (without this, every 15s poll adds a synthetic candle at `now` past
+ *  15:40 IST, which auto-scrolls the visible window leftward — bug the
+ *  user reported as "OptFlow TV card moving on left side"). */
+function isMarketActive(now: Date = new Date()): boolean {
+  const ist = new Date(now.getTime() + IST_OFFSET_MS);
+  const day = ist.getUTCDay();           // 0 = Sun, 6 = Sat
+  if (day === 0 || day === 6) return false;
+  const mins = ist.getUTCHours() * 60 + ist.getUTCMinutes();
+  return mins >= PRE_MARKET_MIN && mins <= MARKET_CLOSE_MIN;
+}
+
 function fmtIST(unixSec: number, withSeconds = false): string {
   const ist = new Date(unixSec * 1000 + IST_OFFSET_MS);
   const hh = ist.getUTCHours().toString().padStart(2, '0');
@@ -163,6 +177,11 @@ export default function OptionFlowTV() {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
 
+  // Market-active state — re-evaluated every 30s. Drives the LIVE/PAUSED
+  // badge in the toolbar AND gates the candle-update + flow-processing
+  // effects so the chart stops shifting left after 15:40 IST.
+  const [marketActive, setMarketActive] = useState(isMarketActive());
+
   // Latest bar reference — used to populate the legend by default (no hover
   // required). When the user hovers, the crosshair handler takes over and
   // shows the hovered bar's values; when the mouse leaves the chart, the
@@ -173,6 +192,15 @@ export default function OptionFlowTV() {
 
   // Get snapshot for real-time data (uses singleton — no symbol filter needed)
   const { curr, prev, pollCount, errorCount } = useKiteSnapshot();
+
+  // Re-evaluate market-active every 30s (reactivates promptly at 09:00 IST
+  // if the user left the tab open overnight).
+  useEffect(() => {
+    const check = () => setMarketActive(isMarketActive());
+    check();
+    const t = setInterval(check, 30_000);
+    return () => clearInterval(t);
+  }, []);
 
   // Restore legend to the latest flow bar (called on mouse-out from chart).
   const restoreLatestLegend = useCallback(() => {
@@ -447,8 +475,16 @@ export default function OptionFlowTV() {
   // produces a new FlowBar appended to flowBarsRef (FIFO across the session);
   // the chart series re-set every poll. The latest bar also seeds the legend
   // (no hover required) — restoreLatestLegend fires when the mouse leaves.
+  //
+  // Market-hours gate: skip appending new flow bars when IST clock is outside
+  // 09:00 → 15:40 (Mon–Fri). Same gate as the candle-update effect above —
+  // without it, the chart keeps shifting left after close (the user's
+  // "OptFlow TV card moving on left side" bug). Existing bars stay on the
+  // chart so the user can scroll back through the closed session.
   useEffect(() => {
     if (!curr || !prev || !bullSeriesRef.current) return;
+    // Market-hours gate.
+    if (!marketActive) return;
 
     const { ceBuy, peWrite, peBuy, ceWrite } = computeSymbolFlow(curr, prev, symbol);
 
@@ -481,14 +517,24 @@ export default function OptionFlowTV() {
     if (!isHoveringRef.current) {
       restoreLatestLegend();
     }
-  }, [curr, symbol, restoreLatestLegend]);
+  }, [curr, symbol, restoreLatestLegend, marketActive]);
 
   // ─── Update last candle with live price + refresh spot/upper/lower price
   //      lines so they follow the spot (user: "should follow the spot price").
   //      Also nudges the right price-scale's visible range so the upper / lower
-  //      bands are always on screen. ───
+  //      bands are always on screen.
+  //
+  //      Market-hours gate: skip the synthetic-candle update when IST clock
+  //      is outside 09:00 → 15:40 (Mon–Fri). Without this, every 15s poll
+  //      after market close appends a new candle at `now` (past 15:40 IST)
+  //      which auto-scrolls the visible window leftward — the "OptFlow TV
+  //      card moving on left side" bug. The spot price bands still update
+  //      so they follow the latest spot during the live session; outside
+  //      market hours we skip the bands too (no spot moving). ───
   useEffect(() => {
     if (!curr || !candleSeriesRef.current) return;
+    // Market-hours gate — don't append synthetic candles after 15:40 IST.
+    if (!marketActive) return;
     const symData = curr.symbols?.find((s: any) => s.symbol === symbol);
     if (!symData?.spotPrice) return;
 
@@ -575,7 +621,7 @@ export default function OptionFlowTV() {
         to: upper + buffer * 0.1,
       });
     } catch { /* noop */ }
-  }, [curr, symbol]);
+  }, [curr, symbol, marketActive]);
 
   // ─── Fullscreen toggle ───
   const toggleFullscreen = () => {
@@ -654,6 +700,19 @@ export default function OptionFlowTV() {
 
         {/* Status indicators */}
         <div className="flex items-center gap-1 ml-2">
+          {/* Market-hours badge: green LIVE 09:00→15:40 when active,
+              amber PAUSED when outside market hours. */}
+          <Badge
+            variant="outline"
+            className={`text-[8px] px-1 py-0 h-4 font-mono ${
+              marketActive
+                ? 'border-emerald-500/40 text-emerald-300'
+                : 'border-amber-500/40 text-amber-300'
+            }`}
+            title={marketActive ? 'Market is open — live' : 'Outside 09:00 → 15:40 IST — polling paused'}
+          >
+            {marketActive ? 'LIVE 09→15:40' : 'PAUSED'}
+          </Badge>
           {errorCount > 0 && <Badge variant="destructive" className="text-[8px] px-1 py-0 h-4">{errorCount} err</Badge>}
           {pollCount > 0 && <Badge variant="outline" className="text-[8px] px-1 py-0 h-4 text-slate-500">{pollCount}</Badge>}
           {curr ? <Wifi className="h-3 w-3 text-emerald-400" /> : <WifiOff className="h-3 w-3 text-red-400" />}
