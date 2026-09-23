@@ -4,11 +4,32 @@
  * to all dashboard components via module-level singleton.
  *
  * OPTIMIZED: Timer auto-stops when no listeners remain (saves Vercel CPU).
+ *
+ * MARKET HOURS GATE (added per user request — "all chart and card should
+ * run during market hours only"): the poller skips API calls when IST is
+ * outside the live trading session (pre-09:15, post-15:40, weekend). This
+ * automatically stops every consumer of the snapshot — OptFlow TV,
+ * CombinedFlowCard, MaxProbabilitySignals, SmartMoneyFootprint, Cash Flow,
+ * Participant Flow, etc. — from receiving fresh data after market close.
+ * Existing data in each chart/card stays so the user can scroll back
+ * through the closed session. The gate uses the same getMarketPhase()
+ * helper as useMagnetScan for consistency.
+ *
+ * Note: the user explicitly asked for the 09:00 → 15:40 window in the chart
+ * components (CombinedFlowCard + OptFlow TV) so they include pre-market.
+ * This poller-level gate uses the stricter 09:15 → 15:40 from
+ * market-hours.ts because the snapshot fetches live spot prices + OI —
+ * nothing useful to fetch during 09:00–09:15 pre-market (auction window,
+ * quotes are stale). The two are compatible: chart components keep their
+ * wider 09:00 visible window; the poller just stops feeding them outside
+ * the live session. If the user wants the chart's gate widened to 09:15
+ * too, that's a one-line change.
  */
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
 import { withCreds } from '@/lib/kite-creds';
+import { getMarketPhase } from '@/lib/market-hours';
 import type { StrikeFlowData } from '@/lib/kite-api';
 
 export interface SnapshotSymbol {
@@ -53,6 +74,18 @@ let globalPollCount = 0;
 let _consecutiveErrors = 0;
 
 async function pollOnce() {
+  // ─── MARKET HOURS GATE ───
+  // Skip the API call entirely outside the live trading session
+  // (pre-09:15, post-15:40, weekend). This saves Vercel function
+  // invocations + Kite API quota. Existing globalCurr stays in place
+  // so chart components keep showing the last-known data.
+  if (getMarketPhase() !== 'open') {
+    // Still notify listeners so UI badges (LIVE/PAUSED) update promptly
+    // when the market transitions from 'open' → 'post' on the 15s tick.
+    listeners.forEach(fn => fn());
+    return;
+  }
+
   try {
     const url = withCreds('/api/kite/highest-bet');
     const res = await fetch(url);
