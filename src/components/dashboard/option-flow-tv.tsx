@@ -383,6 +383,12 @@ export default function OptionFlowTV() {
 
       if (data.mode === 'demo' || data.count === 0) {
         setError('No candle data available. Check Kite credentials.');
+        // Clear any stale candles from a previous successful fetch so the
+        // chart doesn't show outdated data after the token expires (user
+        // reported this as "stale demo candles" making it look like a
+        // second chart was rendering).
+        candleSeries.setData([]);
+        volSeries.setData([]);
         setIsLoading(false);
         return;
       }
@@ -746,27 +752,34 @@ export default function OptionFlowTV() {
         <span className="text-slate-500">CumΔ <span className="text-amber-400">{legend.cum}</span></span>
       </div>
 
-      {/* ── Chart container ── */}
-      <div
-        ref={containerRef}
-        className={`flex-1 min-h-[400px] ${isFullscreen ? '' : 'rounded-b-lg'}`}
-        style={{ height: isFullscreen ? undefined : 'calc(100vh - 200px)' }}
-      />
+      {/* ── Chart container — wrapped in a relative parent so the error
+          overlay can sit INSIDE the chart area, matching CombinedFlowCard.
+          Previously the error was a sibling below the chart, leaving stale
+          candles visible above. Now when there's an error the chart is
+          cleared AND the error sits as an overlay so it's visually obvious
+          the chart is empty. ── */}
+      <div className="relative flex-1 min-h-[400px]">
+        <div
+          ref={containerRef}
+          className={`flex-1 min-h-[400px] ${isFullscreen ? '' : 'rounded-b-lg'}`}
+          style={{ height: isFullscreen ? undefined : 'calc(100vh - 200px)' }}
+        />
 
-      {/* ── Loading / Error overlay ── */}
-      {isLoading && (
-        <div className="absolute inset-0 flex items-center justify-center bg-black/50 z-10">
-          <div className="flex items-center gap-2 text-slate-400 text-sm">
-            <RefreshCw className="h-4 w-4 animate-spin" />
-            Loading chart...
+        {/* ── Loading / Error overlay ── */}
+        {isLoading && (
+          <div className="absolute inset-0 flex items-center justify-center bg-black/50 z-10">
+            <div className="flex items-center gap-2 text-slate-400 text-sm">
+              <RefreshCw className="h-4 w-4 animate-spin" />
+              Loading chart...
+            </div>
           </div>
-        </div>
-      )}
-      {error && (
-        <div className="px-3 py-2 bg-red-500/10 border border-red-500/30 text-red-400 text-xs rounded mx-2 mt-1">
-          {error}
-        </div>
-      )}
+        )}
+        {error && (
+          <div className="absolute inset-x-0 bottom-0 px-3 py-2 bg-red-500/10 border-t border-red-500/30 text-red-400 text-xs rounded-b-lg z-10">
+            <strong>✗ {error}</strong>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
