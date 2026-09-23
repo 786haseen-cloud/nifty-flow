@@ -123,6 +123,13 @@ export default function CombinedFlowCard() {
   // the chart so the user can scroll back through the closed session.
   const [marketActive, setMarketActive] = useState(isMarketActive());
 
+  // Snapshot mode — 'live' | 'demo' | 'error' | null (no poll yet).
+  // Drives the error/warning overlay so the user sees WHY the chart is empty
+  // (expired Kite token = demo mode, network/API failure = error mode, etc.).
+  // Same pattern as the OptFlow TV card's "No candle data available. Check
+  // Kite credentials." banner — the user explicitly asked for this consistency.
+  const [snapshotMode, setSnapshotMode] = useState<'live' | 'demo' | 'error' | null>(null);
+
   // Has the time-scale's visible range (09:00 → 15:40 IST) been applied?
   // lightweight-charts can't apply setVisibleRange when the chart has no
   // data, so we set it in initChart (no-op if no data) AND re-apply it
@@ -142,8 +149,14 @@ export default function CombinedFlowCard() {
   }, []);
 
   // Track how many polls we've seen so the user can see the card is alive.
+  // Also capture the snapshot mode (live/demo/error) so the overlay can
+  // show a clear error/warning when the Kite token is expired or the API
+  // fails — same UX as the OptFlow TV card's red banner.
   useEffect(() => {
-    if (curr) setPollCount((p) => p + 1);
+    if (curr) {
+      setPollCount((p) => p + 1);
+      setSnapshotMode(curr.mode);
+    }
   }, [curr]);
 
   // ─── Initialize chart ───
@@ -504,11 +517,33 @@ export default function CombinedFlowCard() {
       </div>
 
       {/* ── Chart container — fixed modest height; the main chart above stays the primary view. ── */}
-      <div
-        ref={containerRef}
-        className="min-h-[260px] rounded-b-lg"
-        style={{ height: 280 }}
-      />
+      <div className="relative">
+        <div
+          ref={containerRef}
+          className="min-h-[260px] rounded-b-lg"
+          style={{ height: 280 }}
+        />
+
+        {/* ── Overlay: error / warning banner shown when snapshot mode is
+            'demo' (Kite token expired) or 'error' (API failed). Matches the
+            OptFlow TV card's red banner UX so the user knows why the chart
+            is empty. Hidden in 'live' mode (chart has data to show). ── */}
+        {snapshotMode === 'demo' && (
+          <div className="absolute inset-x-0 bottom-0 px-3 py-2 text-[11px] text-amber-300 bg-amber-500/10 border-t border-amber-500/30 rounded-b-lg">
+            <strong>⚠ No flow data available.</strong> Kite credentials expired or not configured — flow bars will appear once a valid access token is set in <strong>Settings</strong>.
+          </div>
+        )}
+        {snapshotMode === 'error' && (
+          <div className="absolute inset-x-0 bottom-0 px-3 py-2 text-[11px] text-red-400 bg-red-500/10 border-t border-red-500/30 rounded-b-lg">
+            <strong>✗ Snapshot error.</strong> The Kite API rejected the request (likely expired token). Refresh credentials in <strong>Settings</strong> → Generate Access Token.
+          </div>
+        )}
+        {snapshotMode === null && (
+          <div className="absolute inset-0 flex items-center justify-center text-xs text-amber-300/70">
+            Connecting to Kite snapshot…
+          </div>
+        )}
+      </div>
     </div>
   );
 }
