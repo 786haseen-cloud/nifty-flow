@@ -1,11 +1,12 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import dynamic from 'next/dynamic';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Badge } from '@/components/ui/badge';
 import { useTrendStore } from '@/lib/trend-store';
 import {
-  Activity, Shield, BarChart3, LineChart, Settings,
+  Activity, Shield, BarChart3, LineChart, CandlestickChart, Settings,
   Wifi, WifiOff, Clock,
 } from 'lucide-react';
 import OIWallsTab from '@/components/dashboard/oi-walls-tab';
@@ -18,6 +19,18 @@ import { getNSESession } from '@/lib/nse-sessions';
 import { hasKiteCreds } from '@/lib/kite-creds';
 import { useKiteSnapshot } from '@/hooks/use-kite-snapshot';
 import { useServerCredsSync } from '@/hooks/use-server-creds-sync';
+
+// OptFlow TV chart uses `lightweight-charts` + browser-only APIs (ResizeObserver,
+// clientWidth/Height). Mount it client-only so the chart never tries to render
+// during SSR (where containerRef.current is null and createChart would no-op).
+const OptionFlowTV = dynamic(
+  () => import('@/components/dashboard/option-flow-tv'),
+  { ssr: false, loading: () => (
+    <div className="h-[400px] flex items-center justify-center text-xs text-muted-foreground">
+      Loading OptFlow TV chart…
+    </div>
+  ) },
+);
 
 export default function DashboardPage() {
   const [activeTab, setActiveTab] = useState('oi-walls');
@@ -181,6 +194,11 @@ export default function DashboardPage() {
               <span className="hidden sm:inline">Trends</span>
               <span className="sm:hidden">📈</span>
             </TabsTrigger>
+            <TabsTrigger value="optflow-tv" className="flex-1 text-xs gap-1.5 data-[state=active]:bg-purple-500/20 data-[state=active]:text-purple-300">
+              <CandlestickChart className="h-3.5 w-3.5" />
+              <span className="hidden sm:inline">OptFlow TV</span>
+              <span className="sm:hidden">📉</span>
+            </TabsTrigger>
             <TabsTrigger value="settings" className="flex-1 text-xs gap-1.5 data-[state=active]:bg-gray-500/20 data-[state=active]:text-gray-300">
               <Settings className="h-3.5 w-3.5" />
               <span className="hidden sm:inline">Settings</span>
@@ -198,6 +216,12 @@ export default function DashboardPage() {
 
           <TabsContent value="trends" className="mt-0">
             <TrendAnalysisTab />
+          </TabsContent>
+
+          <TabsContent value="optflow-tv" className="mt-0">
+            <div className="rounded-xl border border-border/50 bg-card/50 overflow-hidden">
+              <OptionFlowTV />
+            </div>
           </TabsContent>
 
           <TabsContent value="settings" className="mt-0">
