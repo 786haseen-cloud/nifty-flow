@@ -499,7 +499,7 @@ export default function OptionFlowTV() {
       {/* ── Chart container ── */}
       <div
         ref={containerRef}
-        className={`flex-1 min-h-0 ${isFullscreen ? '' : 'rounded-b-lg'}`}
+        className={`flex-1 min-h-[400px] ${isFullscreen ? '' : 'rounded-b-lg'}`}
         style={{ height: isFullscreen ? undefined : 'calc(100vh - 200px)' }}
       />
 
