@@ -60,19 +60,6 @@ const OptionFlowTV = dynamic(
   ) },
 );
 
-// CombinedFlowCard — separate panel that shows the SUMMED 4-index flow
-// (NIFTY + BANKNIFTY + SENSEX + FINNIFTY) as Bull/Bear histogram + Cumulative
-// Delta line. Always visible below the main chart (the user asked for a
-// separate card so clicking ALL no longer wipes the main chart).
-const CombinedFlowCard = dynamic(
-  () => import('@/components/dashboard/combined-flow-card'),
-  { ssr: false, loading: () => (
-    <div className="h-[280px] flex items-center justify-center text-xs text-muted-foreground">
-      Loading Combined Flow card…
-    </div>
-  ) },
-);
-
 // ─── Trading Session X-Axis Helpers ───
 // Charts display a fixed trading-session window 09:15 → 15:40 IST.
 // The x-axis is a numeric "minutes since midnight" axis with this fixed domain,
@@ -539,13 +526,6 @@ export default function TrendAnalysisTab() {
       <div className="rounded-xl border border-border/50 bg-card/50 overflow-hidden">
         <OptionFlowTV />
       </div>
-
-      {/* ── Combined Flow card — separate panel that aggregates the 4-index
-          flow (NIFTY + BANKNIFTY + SENSEX + FINNIFTY) as Bull/Bear histogram
-          + Cumulative Delta. Always visible — independent of which symbol is
-          selected in the main chart above. User asked for a separate card so
-          the combined view no longer wipes the main candlestick chart. ── */}
-      <CombinedFlowCard />
 
       {/* Demo mode warning banner — shown prominently when user has no/expired creds */}
       {trendMode === 'demo' && (
