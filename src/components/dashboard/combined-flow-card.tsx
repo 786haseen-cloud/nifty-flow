@@ -28,8 +28,8 @@
 
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { useKiteSnapshot } from '@/hooks/use-kite-snapshot';
-import { computeCombinedFlow, CROR, ALL_MARKET_SYMBOLS } from '@/lib/combined-flow';
-import { Layers, Wifi, WifiOff } from 'lucide-react';
+import { computeCombinedFlow, computeSymbolFlow, CROR, ALL_MARKET_SYMBOLS, FLOW_INDICES } from '@/lib/combined-flow';
+import { Layers, Wifi, WifiOff, Clock } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 
 interface FlowBar {
@@ -42,6 +42,8 @@ interface FlowBar {
 
 // Same IST session window as the main chart (09:00 pre-market → 15:40 close).
 const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
+const SESSION_START_MIN_IST = 9 * 60;        // 09:00
+const SESSION_END_MIN_IST = 15 * 60 + 40;   // 15:40
 
 function fmtIST(unixSec: number, withSeconds = false): string {
   const ist = new Date(unixSec * 1000 + IST_OFFSET_MS);
@@ -52,6 +54,26 @@ function fmtIST(unixSec: number, withSeconds = false): string {
     return `${hh}:${mm}:${ss}`;
   }
   return `${hh}:${mm}`;
+}
+
+/** True if current IST time is within the 09:00 → 15:40 trading session
+ *  window, Monday–Friday. Outside this window (pre-09:00, post-15:40, or
+ *  weekend) the card stops processing polls and appending bars — the user
+ *  explicitly asked for this so the card doesn't "keep running" after the
+ *  market closes. */
+function isMarketActive(now: Date = new Date()): boolean {
+  const ist = new Date(now.getTime() + IST_OFFSET_MS);
+  const day = ist.getUTCDay();           // 0 = Sun, 6 = Sat
+  if (day === 0 || day === 6) return false;
+  const mins = ist.getUTCHours() * 60 + ist.getUTCMinutes();
+  return mins >= SESSION_START_MIN_IST && mins <= SESSION_END_MIN_IST;
+}
+
+/** "HH:MM IST" for the toolbar — shows current IST clock so the user can
+ *  see why the card is paused (e.g. "15:45 IST → market closed"). */
+function istClock(now: Date = new Date()): string {
+  const ist = new Date(now.getTime() + IST_OFFSET_MS);
+  return `${ist.getUTCHours().toString().padStart(2, '0')}:${ist.getUTCMinutes().toString().padStart(2, '0')} IST`;
 }
 
 function getMarketSessionRange(): { from: number; to: number } {
@@ -89,6 +111,18 @@ export default function CombinedFlowCard() {
   });
   const [pollCount, setPollCount] = useState(0);
 
+  // Toggle: 'all' = whole market (4 indices + 15 F&O stocks = 19 symbols),
+  // 'indices' = 4 indices only. Default 'all' per the user's last request.
+  // Switching clears the chart + resets cumulative delta so the two views
+  // don't mix data — each view has its own clean cumulative sum.
+  const [viewMode, setViewMode] = useState<'all' | 'indices'>('all');
+
+  // Market-active state — re-evaluated every 30s. When false (outside
+  // 09:00 → 15:40 IST, or weekend), the flow-processing effect early-returns
+  // so we don't append new bars or update the legend. Existing bars stay on
+  // the chart so the user can scroll back through the closed session.
+  const [marketActive, setMarketActive] = useState(isMarketActive());
+
   // Has the time-scale's visible range (09:00 → 15:40 IST) been applied?
   // lightweight-charts can't apply setVisibleRange when the chart has no
   // data, so we set it in initChart (no-op if no data) AND re-apply it
@@ -96,6 +130,16 @@ export default function CombinedFlowCard() {
   const rangeSetRef = useRef(false);
 
   const { curr, prev } = useKiteSnapshot();
+
+  // Re-evaluate market-active every 30s. The toggle uses local time so it
+  // reactivates promptly when 09:00 IST rolls around (e.g. user left the
+  // tab open overnight).
+  useEffect(() => {
+    const check = () => setMarketActive(isMarketActive());
+    check();
+    const t = setInterval(check, 30_000);
+    return () => clearInterval(t);
+  }, []);
 
   // Track how many polls we've seen so the user can see the card is alive.
   useEffect(() => {
@@ -220,11 +264,17 @@ export default function CombinedFlowCard() {
   }, []);
 
   // ─── Process flow data from snapshots ───
-  // Sums 4-quadrant flow across ALL 19 symbols (4 indices + 15 F&O stocks)
-  // per 15s poll. Per-symbol missing data is tolerated — we just sum the
-  // others (e.g. if FINNIFTY snapshot hasn't landed yet, the bar reflects
-  // the other 18 symbols; once FINNIFTY lands on the next poll, the next
-  // bar includes it — no double-counting since each bar is a per-poll delta).
+  // Sums 4-quadrant flow per 15s poll, across either ALL 19 symbols
+  // (viewMode='all') or the 4 indices only (viewMode='indices'). Per-symbol
+  // missing data is tolerated — we just sum the others.
+  //
+  // Market-hours gate:
+  //   The card only processes polls when the IST clock is within 09:00 →
+  //   15:40, Mon–Fri (isMarketActive()). Outside that window we early-return:
+  //   no new bar, no legend update, no cumulative-delta change. Existing
+  //   bars stay on the chart so the user can scroll back through the closed
+  //   session — the user explicitly asked for this so the card doesn't "keep
+  //   running" after the market closes.
   //
   // FIFO time-axis logic (matches the main OptFlow TV chart above):
   //   - Use series.update() to append each new bar to the right edge instead
@@ -244,8 +294,21 @@ export default function CombinedFlowCard() {
   //     main chart.
   useEffect(() => {
     if (!curr || !prev || !bullSeriesRef.current) return;
+    // Market-hours gate — stop processing outside 09:00 → 15:40 IST.
+    if (!marketActive) return;
 
-    const { ceBuy, peWrite, peBuy, ceWrite } = computeCombinedFlow(curr, prev);
+    // Compute flow across the chosen symbol set.
+    let ceBuy = 0, peWrite = 0, peBuy = 0, ceWrite = 0;
+    if (viewMode === 'all') {
+      const f = computeCombinedFlow(curr, prev);
+      ceBuy = f.ceBuy; peWrite = f.peWrite; peBuy = f.peBuy; ceWrite = f.ceWrite;
+    } else {
+      // 'indices' — sum only the 4 indices.
+      for (const sym of FLOW_INDICES) {
+        const f = computeSymbolFlow(curr, prev, sym);
+        ceBuy += f.ceBuy; peWrite += f.peWrite; peBuy += f.peBuy; ceWrite += f.ceWrite;
+      }
+    }
 
     const bullish = ceBuy + peWrite;
     const bearish = peBuy + ceWrite;
@@ -328,19 +391,78 @@ export default function CombinedFlowCard() {
       net: (net / CROR).toFixed(2) + ' Cr',
       cum: (cumDeltaRef.current / CROR).toFixed(2) + ' Cr',
     });
-  }, [curr, prev]);
+  }, [curr, prev, viewMode, marketActive]);
+
+  // ─── Clear the chart when viewMode changes ───
+  // Switching between 'all' (19 symbols) and 'indices' (4) changes the
+  // scale of every bar by an order of magnitude. Mixing them in the same
+  // cumulative delta would be meaningless, so we wipe the chart + reset
+  // the cumulative delta + reset rangeSetRef so the next first-bar pin
+  // runs again. Also resets on the initial mount (rangeSetRef default
+  // false is already set above, but the effect still needs to clear the
+  // series data so a remount doesn't show stale bars from a previous
+  // session).
+  useEffect(() => {
+    flowBarsRef.current = [];
+    cumDeltaRef.current = 0;
+    rangeSetRef.current = false;
+    if (bullSeriesRef.current) bullSeriesRef.current.setData([]);
+    if (bearSeriesRef.current) bearSeriesRef.current.setData([]);
+    if (cumDeltaSeriesRef.current) cumDeltaSeriesRef.current.setData([]);
+    setLegend({ bull: '--', bear: '--', net: '--', cum: '--' });
+  }, [viewMode]);
 
   return (
     <div className="rounded-xl border border-amber-500/30 bg-card/50 overflow-hidden">
       {/* ── Toolbar ── */}
-      <div className="flex items-center gap-2 px-2 py-1.5 bg-[#0d1117] border-b border-[#1e293b] flex-shrink-0">
+      <div className="flex items-center gap-2 px-2 py-1.5 bg-[#0d1117] border-b border-[#1e293b] flex-shrink-0 flex-wrap">
         <Layers className="h-3.5 w-3.5 text-amber-400" />
         <span className="text-xs font-semibold text-amber-300 mr-2">Combined Flow</span>
-        <span className="text-[10px] text-amber-300/70">
-          Whole market · 4 indices + 15 F&amp;O stocks (19 symbols) · ₹ Cr per 15s poll
+
+        {/* View-mode toggle — 'all' (19 symbols) vs 'indices' (4) */}
+        <div className="flex gap-0.5">
+          <button
+            onClick={() => setViewMode('all')}
+            className={`px-2 py-0.5 rounded text-[10px] font-bold transition-colors ${
+              viewMode === 'all'
+                ? 'bg-amber-500/25 text-amber-300'
+                : 'text-amber-500/60 hover:text-amber-300 hover:bg-amber-500/10'
+            }`}
+            title="Aggregate across 4 indices + 15 F&O stocks (19 symbols)"
+          >
+            All 19
+          </button>
+          <button
+            onClick={() => setViewMode('indices')}
+            className={`px-2 py-0.5 rounded text-[10px] font-bold transition-colors ${
+              viewMode === 'indices'
+                ? 'bg-amber-500/25 text-amber-300'
+                : 'text-amber-500/60 hover:text-amber-300 hover:bg-amber-500/10'
+            }`}
+            title="Aggregate across the 4 indices only (NIFTY + BANKNIFTY + SENSEX + FINNIFTY)"
+          >
+            4 Indices
+          </button>
+        </div>
+
+        <span className="text-[10px] text-amber-300/60 hidden sm:inline">
+          {viewMode === 'all'
+            ? 'Whole market · 19 symbols · ₹ Cr per 15s poll'
+            : '4 indices only · ₹ Cr per 15s poll'}
         </span>
 
-        <div className="ml-auto flex items-center gap-1">
+        {/* Market-status indicator: green when active, amber when paused */}
+        <div
+          className={`ml-auto flex items-center gap-1 text-[10px] font-mono ${
+            marketActive ? 'text-emerald-400' : 'text-amber-400/80'
+          }`}
+          title={marketActive ? 'Market is open — polling live' : 'Outside 09:00 → 15:40 IST — polling paused'}
+        >
+          <Clock className="h-3 w-3" />
+          <span>{marketActive ? 'LIVE 09:00→15:40' : `PAUSED · ${istClock()}`}</span>
+        </div>
+
+        <div className="flex items-center gap-1 ml-2">
           {pollCount > 0 && (
             <Badge variant="outline" className="text-[8px] px-1 py-0 h-4 text-slate-500">
               {pollCount} polls
