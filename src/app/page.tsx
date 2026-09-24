@@ -18,6 +18,7 @@ import { getNSESession } from '@/lib/nse-sessions';
 import { hasKiteCreds } from '@/lib/kite-creds';
 import { useKiteSnapshot } from '@/hooks/use-kite-snapshot';
 import { useServerCredsSync } from '@/hooks/use-server-creds-sync';
+import { istNow } from '@/lib/ist';
 
 export default function DashboardPage() {
   const [activeTab, setActiveTab] = useState('oi-walls');
@@ -39,11 +40,28 @@ export default function DashboardPage() {
 
   useEffect(() => {
     function updateTime() {
-      const now = new Date();
-      const ist = new Date(now.getTime() + 5.5 * 60 * 60 * 1000);
-      setIstTime(ist.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit', timeZone: 'UTC', hour12: false }));
-      const jeddah = new Date(now.getTime() + 3 * 60 * 60 * 1000);
-      setJeddahTime(jeddah.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit', timeZone: 'UTC', hour12: false }));
+      // EXCHANGE TIME GATE: all times displayed use IST-shifted epoch + UTC
+      // getters (DST-immune). The user may be in any timezone (e.g. Jeddah
+      // AST UTC+3) but the exchange operates in IST UTC+5:30 — the header
+      // always shows IST + the user's local equivalent (Jeddah AST for the
+      // current user). Never use new Date().getHours() — that silently uses
+      // the browser's local timezone.
+      const ist = istNow();
+      const hh = ist.getUTCHours().toString().padStart(2, '0');
+      const mm = ist.getUTCMinutes().toString().padStart(2, '0');
+      const ss = ist.getUTCSeconds().toString().padStart(2, '0');
+      setIstTime(`${hh}:${mm}:${ss}`);
+
+      // Jeddah AST = UTC+3. IST - 2:30 = AST. We display the user's local
+      // timezone (currently hardcoded to AST for the Jeddah user) so they
+      // can see the market hours in their own clock.
+      const jeddahOffsetMs = 3 * 60 * 60 * 1000; // UTC+3
+      const jeddah = new Date(Date.now() + jeddahOffsetMs);
+      const jh = jeddah.getUTCHours().toString().padStart(2, '0');
+      const jm = jeddah.getUTCMinutes().toString().padStart(2, '0');
+      const js = jeddah.getUTCSeconds().toString().padStart(2, '0');
+      setJeddahTime(`${jh}:${jm}:${js}`);
+
       setMarketStatus(getMarketStatus());
       setNseSession(getNSESession());
     }

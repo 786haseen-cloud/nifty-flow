@@ -67,9 +67,12 @@ export async function saveLiveSnapshot(data: MoneyFlowSnapshotInput): Promise<vo
     },
   });
 
-  // Cleanup: Keep only last 2 days of live snapshots to prevent DB bloat
+  // Cleanup: Keep only last 2 days of live snapshots to prevent DB bloat.
+  // Snapshots are stored with `new Date().toISOString()` (UTC), so the
+  // comparison should also be UTC. Using UTC getters to be TZ-immune (the
+  // server is UTC on Vercel, but other hosts could differ).
   const twoDaysAgo = new Date();
-  twoDaysAgo.setDate(twoDaysAgo.getDate() - 2);
+  twoDaysAgo.setUTCDate(twoDaysAgo.getUTCDate() - 2);
   await prisma.liveMoneyFlowSnapshot.deleteMany({
     where: {
       timestamp: { lt: twoDaysAgo },

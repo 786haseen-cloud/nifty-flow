@@ -29,6 +29,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { useKiteSnapshot } from '@/hooks/use-kite-snapshot';
 import { computeCombinedFlow, computeSymbolFlow, CROR, ALL_MARKET_SYMBOLS, FLOW_INDICES } from '@/lib/combined-flow';
+import { isChartSessionActive, getMarketSessionRange } from '@/lib/market-hours';
 import { Layers, Wifi, WifiOff, Clock } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 
@@ -40,10 +41,12 @@ interface FlowBar {
   cumDelta: number;
 }
 
-// Same IST session window as the main chart (09:00 pre-market → 15:40 close).
+// EXCHANGE TIME GATE: IST_OFFSET_MS is kept here for the lightweight-charts
+// tickMarkFormatter + crosshair formatter (which need the offset to shift
+// the displayed time). All gating + session-range logic now delegates to
+// market-hours.ts (isChartSessionActive + getMarketSessionRange) so every
+// chart + poller in the app shares the same source of truth.
 const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
-const SESSION_START_MIN_IST = 9 * 60;        // 09:00
-const SESSION_END_MIN_IST = 15 * 60 + 40;   // 15:40
 
 function fmtIST(unixSec: number, withSeconds = false): string {
   const ist = new Date(unixSec * 1000 + IST_OFFSET_MS);
@@ -56,34 +59,11 @@ function fmtIST(unixSec: number, withSeconds = false): string {
   return `${hh}:${mm}`;
 }
 
-/** True if current IST time is within the 09:00 → 15:40 trading session
- *  window, Monday–Friday. Outside this window (pre-09:00, post-15:40, or
- *  weekend) the card stops processing polls and appending bars — the user
- *  explicitly asked for this so the card doesn't "keep running" after the
- *  market closes. */
-function isMarketActive(now: Date = new Date()): boolean {
-  const ist = new Date(now.getTime() + IST_OFFSET_MS);
-  const day = ist.getUTCDay();           // 0 = Sun, 6 = Sat
-  if (day === 0 || day === 6) return false;
-  const mins = ist.getUTCHours() * 60 + ist.getUTCMinutes();
-  return mins >= SESSION_START_MIN_IST && mins <= SESSION_END_MIN_IST;
-}
-
 /** "HH:MM IST" for the toolbar — shows current IST clock so the user can
  *  see why the card is paused (e.g. "15:45 IST → market closed"). */
 function istClock(now: Date = new Date()): string {
   const ist = new Date(now.getTime() + IST_OFFSET_MS);
   return `${ist.getUTCHours().toString().padStart(2, '0')}:${ist.getUTCMinutes().toString().padStart(2, '0')} IST`;
-}
-
-function getMarketSessionRange(): { from: number; to: number } {
-  const istNow = new Date(Date.now() + IST_OFFSET_MS);
-  const y = istNow.getUTCFullYear();
-  const m = istNow.getUTCMonth();
-  const d = istNow.getUTCDate();
-  const fromMs = Date.UTC(y, m, d, 9, 0, 0) - IST_OFFSET_MS;
-  const toMs = Date.UTC(y, m, d, 15, 40, 0) - IST_OFFSET_MS;
-  return { from: Math.floor(fromMs / 1000), to: Math.floor(toMs / 1000) };
 }
 
 const THEME = {
@@ -121,7 +101,10 @@ export default function CombinedFlowCard() {
   // 09:00 → 15:40 IST, or weekend), the flow-processing effect early-returns
   // so we don't append new bars or update the legend. Existing bars stay on
   // the chart so the user can scroll back through the closed session.
-  const [marketActive, setMarketActive] = useState(isMarketActive());
+  // EXCHANGE TIME GATE: delegates to isChartSessionActive() from
+  // market-hours.ts (09:00 → 15:40 IST, Mon–Fri) — single source of truth,
+  // same gate as the OptFlow TV chart.
+  const [marketActive, setMarketActive] = useState(isChartSessionActive());
 
   // Snapshot mode — 'live' | 'demo' | 'error' | null (no poll yet).
   // Drives the error/warning overlay so the user sees WHY the chart is empty
@@ -142,7 +125,7 @@ export default function CombinedFlowCard() {
   // reactivates promptly when 09:00 IST rolls around (e.g. user left the
   // tab open overnight).
   useEffect(() => {
-    const check = () => setMarketActive(isMarketActive());
+    const check = () => setMarketActive(isChartSessionActive());
     check();
     const t = setInterval(check, 30_000);
     return () => clearInterval(t);
@@ -283,7 +266,7 @@ export default function CombinedFlowCard() {
   //
   // Market-hours gate:
   //   The card only processes polls when the IST clock is within 09:00 →
-  //   15:40, Mon–Fri (isMarketActive()). Outside that window we early-return:
+  //   15:40, Mon–Fri (isChartSessionActive() from market-hours.ts). Outside that window we early-return:
   //   no new bar, no legend update, no cumulative-delta change. Existing
   //   bars stay on the chart so the user can scroll back through the closed
   //   session — the user explicitly asked for this so the card doesn't "keep

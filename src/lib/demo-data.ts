@@ -187,7 +187,7 @@ export function generateDemoExpiryInfo(): ExpiryInfo[] {
     } else {
       const result = getNextExpiry(idx.expiryDay, idx.expiryType);
       daysToExpiry = result.daysToExpiry;
-      nextExpiryDate = result.date.toLocaleDateString('en-IN', { weekday: 'short', month: 'short', day: 'numeric' });
+      nextExpiryDate = result.date.toLocaleDateString('en-IN', { weekday: 'short', month: 'short', day: 'numeric', timeZone: 'Asia/Kolkata' });
     }
 
     return {
@@ -226,7 +226,7 @@ function getLastWeekdayOfMonth(weekday: number): { dateStr: string; daysToExpiry
 
   const diffMs = expiryDate.getTime() - istNow.getTime();
   const daysToExpiry = Math.max(1, Math.ceil(diffMs / (24 * 60 * 60 * 1000)));
-  const dateStr = expiryDate.toLocaleDateString('en-IN', { weekday: 'short', month: 'short', day: 'numeric' });
+  const dateStr = expiryDate.toLocaleDateString('en-IN', { weekday: 'short', month: 'short', day: 'numeric', timeZone: 'Asia/Kolkata' });
   return { dateStr, daysToExpiry };
 }
 
@@ -413,7 +413,7 @@ export function generateDemoInstrument(
 // --- Institutional Flow ---
 export function generateDemoInstitutionalFlow(): DayComparison {
   const today = new Date();
-  const dateStr = today.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+  const dateStr = today.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', timeZone: 'Asia/Kolkata' });
 
   const fii: PlayerFlow = {
     player: 'FII',
@@ -466,7 +466,7 @@ export function generateDemo3DayComparison(): DayComparison[] {
   for (let d = 2; d >= 0; d--) {
     const date = new Date(today);
     date.setDate(date.getDate() - d);
-    const dateStr = date.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+    const dateStr = date.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', timeZone: 'Asia/Kolkata' });
     const label = `Day-${2 - d}`;
 
     const decay = 1 + (2 - d) * 0.3;
@@ -558,7 +558,7 @@ export function generateDemoNiftyDivergence(): NiftyDivergencePoint[] {
     fiiFlow += rand(-500, 400);
 
     data.push({
-      date: date.toLocaleDateString('en-IN', { day: '2-digit', month: 'short' }),
+      date: date.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', timeZone: 'Asia/Kolkata' }),
       niftyPrice: round2(niftyPrice),
       fiiNetFlow: roundN(fiiFlow, 0),
     });

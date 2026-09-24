@@ -5,6 +5,7 @@ import { withCreds } from '@/lib/kite-creds';
 import { useKiteSnapshot } from '@/hooks/use-kite-snapshot';
 import { INDEX_SPECS } from '@/lib/kite-api';
 import { computeSymbolFlow } from '@/lib/combined-flow';
+import { isChartSessionActive, getMarketSessionRange } from '@/lib/market-hours';
 import { Badge } from '@/components/ui/badge';
 // Symbol type is just a string identifier
 import { Crosshair, Maximize2, Minimize2, RefreshCw, Wifi, WifiOff } from 'lucide-react';
@@ -63,24 +64,14 @@ const CROR = 10000000;
 // prints them as UTC, so the user sees 03:45 instead of 09:15. We override the
 // tick formatter + crosshair formatter to print in IST.
 // Market session visible window: pre-market 09:00 → close 15:40 IST.
+//
+// EXCHANGE TIME GATE: chart market-active gate + session range now come
+// from market-hours.ts (isChartSessionActive + getMarketSessionRange) so
+// every chart + poller in the app shares the same source of truth. The
+// IST_OFFSET_MS here is only for the lightweight-charts tickMarkFormatter
+// + crosshair formatter, which need the offset to shift the displayed
+// time (not for gating logic).
 const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
-const PRE_MARKET_MIN = 9 * 60;        // 09:00 IST
-const MARKET_OPEN_MIN = 9 * 60 + 15;   // 09:15 IST
-const MARKET_CLOSE_MIN = 15 * 60 + 40; // 15:40 IST
-
-/** True if current IST time is within the 09:00 → 15:40 trading session
- *  window, Monday–Friday. Used to gate the live-candle update + flow bar
- *  append so the chart stops shifting left after the market closes
- *  (without this, every 15s poll adds a synthetic candle at `now` past
- *  15:40 IST, which auto-scrolls the visible window leftward — bug the
- *  user reported as "OptFlow TV card moving on left side"). */
-function isMarketActive(now: Date = new Date()): boolean {
-  const ist = new Date(now.getTime() + IST_OFFSET_MS);
-  const day = ist.getUTCDay();           // 0 = Sun, 6 = Sat
-  if (day === 0 || day === 6) return false;
-  const mins = ist.getUTCHours() * 60 + ist.getUTCMinutes();
-  return mins >= PRE_MARKET_MIN && mins <= MARKET_CLOSE_MIN;
-}
 
 function fmtIST(unixSec: number, withSeconds = false): string {
   const ist = new Date(unixSec * 1000 + IST_OFFSET_MS);
@@ -91,19 +82,6 @@ function fmtIST(unixSec: number, withSeconds = false): string {
     return `${hh}:${mm}:${ss}`;
   }
   return `${hh}:${mm}`;
-}
-
-/** Compute today's IST market session as UTC epoch seconds for the chart's
- *  visible time range. Returns { from: 09:00 IST, to: 15:40 IST } in UTC epoch. */
-function getMarketSessionRange(): { from: number; to: number } {
-  const istNow = new Date(Date.now() + IST_OFFSET_MS);
-  const y = istNow.getUTCFullYear();
-  const m = istNow.getUTCMonth();
-  const d = istNow.getUTCDate();
-  // Build IST epoch milliseconds, then subtract IST offset to get UTC epoch.
-  const fromMs = Date.UTC(y, m, d, 9, 0, 0) - IST_OFFSET_MS;
-  const toMs = Date.UTC(y, m, d, 15, 40, 0) - IST_OFFSET_MS;
-  return { from: Math.floor(fromMs / 1000), to: Math.floor(toMs / 1000) };
 }
 
 // ── Price-level buffer per symbol (visible band above/below spot) ──
@@ -180,7 +158,9 @@ export default function OptionFlowTV() {
   // Market-active state — re-evaluated every 30s. Drives the LIVE/PAUSED
   // badge in the toolbar AND gates the candle-update + flow-processing
   // effects so the chart stops shifting left after 15:40 IST.
-  const [marketActive, setMarketActive] = useState(isMarketActive());
+  // EXCHANGE TIME GATE: delegates to isChartSessionActive() from
+  // market-hours.ts (09:00 → 15:40 IST, Mon–Fri) — single source of truth.
+  const [marketActive, setMarketActive] = useState(isChartSessionActive());
 
   // Latest bar reference — used to populate the legend by default (no hover
   // required). When the user hovers, the crosshair handler takes over and
@@ -196,7 +176,7 @@ export default function OptionFlowTV() {
   // Re-evaluate market-active every 30s (reactivates promptly at 09:00 IST
   // if the user left the tab open overnight).
   useEffect(() => {
-    const check = () => setMarketActive(isMarketActive());
+    const check = () => setMarketActive(isChartSessionActive());
     check();
     const t = setInterval(check, 30_000);
     return () => clearInterval(t);

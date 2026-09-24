@@ -37,6 +37,7 @@ import {
 } from 'recharts';
 import { Users, Save, RefreshCw, AlertCircle, CheckCircle2, Upload, FileText } from 'lucide-react';
 import { withCreds } from '@/lib/kite-creds';
+import { istNow, IST_OFFSET_MS } from '@/lib/ist';
 
 // ─── Types (mirror participant-service.ts) ───
 
@@ -100,10 +101,21 @@ export function ParticipantFlowCard() {
   const [error, setError] = useState<string | null>(null);
   const [saveOk, setSaveOk] = useState<string | null>(null);
 
-  // Form state — defaults to yesterday IST
-  const today = new Date();
-  const yesterday = new Date(today.getTime() - 24 * 60 * 60 * 1000);
-  const yesterdayStr = `${yesterday.getFullYear()}-${String(yesterday.getMonth() + 1).padStart(2, '0')}-${String(yesterday.getDate()).padStart(2, '0')}`;
+  // Form state — defaults to yesterday IST.
+  // EXCHANGE TIME GATE: the user is in Jeddah (AST UTC+3) but the FII/DII
+  // data is published daily for the IST trading day. The previous code
+  //   const yesterday = new Date(today.getTime() - 24 * 60 * 60 * 1000)
+  //   `${yesterday.getFullYear()}-${...}-${...}`
+  // used LOCAL getters which on a Jeddah browser returned Jeddah's
+  // yesterday, not IST's yesterday. If the user opened the form at 23:30
+  // IST (which is 02:00 next day in Jeddah), the local "yesterday" would
+  // be 2 days ago in IST, missing the most recent FII/DII report.
+  // Fix: use istNow() + UTC getters to compute IST's yesterday.
+  const istToday = istNow();
+  const istYesterdayMs = istToday.getTime() - 24 * 60 * 60 * 1000;
+  const istYesterday = new Date(istYesterdayMs);
+  const yesterdayStr =
+    `${istYesterday.getUTCFullYear()}-${String(istYesterday.getUTCMonth() + 1).padStart(2, '0')}-${String(istYesterday.getUTCDate()).padStart(2, '0')}`;
 
   const [formDate, setFormDate] = useState(yesterdayStr);
   const [fii, setFii] = useState('');

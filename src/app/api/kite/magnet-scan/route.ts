@@ -38,7 +38,7 @@ import {
 } from '@/lib/magnet-engine';
 import { persistSignal, patternMatch } from '@/lib/signal-history';
 import { getCachedParticipantBias, saveOptionChainSnapshot } from '@/lib/participant-service';
-import { istDateStr } from '@/lib/ist';
+import { istDateStr, istNow as istNowHelper } from '@/lib/ist';
 import {
   computeSymbolFootprint,
   makeBaseline,
@@ -342,8 +342,15 @@ export async function GET(req: NextRequest) {
     const footprintStrikes = new Map<string, StrikeFoot[]>();
 
     // ── Compute IST date early (needed for footprint + EOD snapshot) ──
-    const istNow = new Date(Date.now() + (5.5 * 60 + new Date().getTimezoneOffset()) * 60_000);
-    const istMinutes = istNow.getHours() * 60 + istNow.getMinutes();
+    // EXCHANGE TIME GATE: uses centralized istNow() helper (IST-shifted epoch
+    // + UTC getters). The previous inline formula
+    //   new Date(Date.now() + (5.5*60 + new Date().getTimezoneOffset()) * 60_000)
+    // worked but was hard to read and used local getters (getHours/getMinutes)
+    // which silently use the browser timezone. Replaced with the canonical
+    // pattern so this code is correct regardless of server timezone (Vercel
+    // runs UTC, but the helper is DST-immune so it also works on any host).
+    const istNowDate = istNowHelper();
+    const istMinutes = istNowDate.getUTCHours() * 60 + istNowDate.getUTCMinutes();
     const istDate = istDateStr();
     const isEodWindow = istMinutes >= 15 * 60 + 25; // 15:25 IST onwards
 
@@ -618,7 +625,7 @@ export async function GET(req: NextRequest) {
     // flush them to Redis in parallel. saveOptionChainSnapshot has built-
     // in idempotency (one snapshot per symbol per IST date) so it's safe
     // to call on every poll after 15:25.
-    // NOTE: istNow / istDate / isEodWindow computed earlier (before PASS 1)
+    // NOTE: istNowDate / istDate / isEodWindow computed earlier (before PASS 1)
     // so the footprint pre-pass could use istDate. EOD snapshot flush below.
 
     if (isEodWindow && eodSnapshots.size > 0) {
@@ -628,7 +635,10 @@ export async function GET(req: NextRequest) {
           await saveOptionChainSnapshot({
             symbol,
             date: istDate,
-            time: istNow.toLocaleTimeString('en-IN', { hour12: false, timeZone: 'Asia/Kolkata' }),
+            // Use istTimeStr() for a clean IST HH:MM:SS — was
+            // istNow.toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata' })
+            // which worked but referenced the old istNow variable name.
+            time: `${istNowDate.getUTCHours().toString().padStart(2, '0')}:${istNowDate.getUTCMinutes().toString().padStart(2, '0')}:${istNowDate.getUTCSeconds().toString().padStart(2, '0')}`,
             spot: snap.spot,
             atmStrike: Math.round(snap.spot / snap.strikeStep) * snap.strikeStep,
             strikeStep: snap.strikeStep,

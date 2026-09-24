@@ -542,9 +542,14 @@ export async function getCandles(
   if (!isKiteConfigured()) return [];
 
   // Kite historical API expects IST dates. Use centralized IST helpers.
+  // EXCHANGE TIME GATE: toIST() returns an IST-shifted epoch so UTC getters
+  // read IST values. We use UTC getters (getUTCDate/setUTCDate) explicitly
+  // to avoid the local-getter bug — `getDate()` and `setDate()` would
+  // silently use the SERVER's local timezone, which is UTC on Vercel but
+  // could be anything on other hosts. UTC getters are TZ-immune.
   const toDate = toIST(new Date());
   const fromDate = toIST(new Date());
-  fromDate.setDate(fromDate.getDate() - days);
+  fromDate.setUTCDate(fromDate.getUTCDate() - days);
 
   return fetchCandleRange(
     instrumentToken,
