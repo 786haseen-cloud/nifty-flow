@@ -18,13 +18,21 @@ import { getNSESession } from '@/lib/nse-sessions';
 import { hasKiteCreds } from '@/lib/kite-creds';
 import { useKiteSnapshot } from '@/hooks/use-kite-snapshot';
 import { useServerCredsSync } from '@/hooks/use-server-creds-sync';
-import { istNow } from '@/lib/ist';
+import { istNow, istTimeStr } from '@/lib/ist';
+import { getMarketPhase } from '@/lib/market-hours';
 
 export default function DashboardPage() {
   const [activeTab, setActiveTab] = useState('oi-walls');
   const [istTime, setIstTime] = useState('');
-  const [jeddahTime, setJeddahTime] = useState('');
+  const [localTime, setLocalTime] = useState('');
+  const [localTzLabel, setLocalTzLabel] = useState('LOCAL');
   const [marketStatus, setMarketStatus] = useState<string>('closed');
+  // Market phase for the footer — re-evaluated every 15s so the dashboard
+  // transitions from 'closed' → 'live' promptly when IST hits 09:15 (or
+  // 'live' → 'paused' at 15:40) without needing a full page refresh.
+  // EXCHANGE TIME GATE: this is what drives the footer's "Auto-refresh:
+  // 30s · LIVE" vs "Paused · Market closed" label.
+  const [marketPhase, setMarketPhase] = useState<'pre' | 'open' | 'post' | 'closed'>('closed');
   const [nseSession, setNseSession] = useState<NSESessionInfo | null>(null);
   const { curr: snapshot } = useKiteSnapshot(30000);
 
@@ -39,30 +47,62 @@ export default function DashboardPage() {
   }, [startTrendPolling]);
 
   useEffect(() => {
-    function updateTime() {
-      // EXCHANGE TIME GATE: all times displayed use IST-shifted epoch + UTC
-      // getters (DST-immune). The user may be in any timezone (e.g. Jeddah
-      // AST UTC+3) but the exchange operates in IST UTC+5:30 — the header
-      // always shows IST + the user's local equivalent (Jeddah AST for the
-      // current user). Never use new Date().getHours() — that silently uses
-      // the browser's local timezone.
-      const ist = istNow();
-      const hh = ist.getUTCHours().toString().padStart(2, '0');
-      const mm = ist.getUTCMinutes().toString().padStart(2, '0');
-      const ss = ist.getUTCSeconds().toString().padStart(2, '0');
-      setIstTime(`${hh}:${mm}:${ss}`);
+    // EXCHANGE TIME GATE: all dashboard behavior is driven by IST exchange
+    // time via market-hours.ts. The header shows BOTH:
+    //   - IST (always, as the authoritative exchange clock)
+    //   - User's local time (auto-detected via Intl API — works for any
+    //     viewer worldwide, not just Jeddah)
+    // The local time is informational only — no behavior depends on it.
+    // All poller/chart gates use the IST helpers (isTradingSessionActive /
+    // isChartSessionActive from market-hours.ts), so the dashboard behaves
+    // identically no matter where the viewer is.
 
-      // Jeddah AST = UTC+3. IST - 2:30 = AST. We display the user's local
-      // timezone (currently hardcoded to AST for the Jeddah user) so they
-      // can see the market hours in their own clock.
-      const jeddahOffsetMs = 3 * 60 * 60 * 1000; // UTC+3
-      const jeddah = new Date(Date.now() + jeddahOffsetMs);
-      const jh = jeddah.getUTCHours().toString().padStart(2, '0');
-      const jm = jeddah.getUTCMinutes().toString().padStart(2, '0');
-      const js = jeddah.getUTCSeconds().toString().padStart(2, '0');
-      setJeddahTime(`${jh}:${jm}:${js}`);
+    // Detect the user's actual local timezone ONCE (not on every tick —
+    // Intl.DateTimeFormat().resolvedOptions() is consistent for a tab's
+    // lifetime). Falls back to 'LOCAL' if detection fails.
+    let userTz = 'UTC';
+    try {
+      userTz = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+    } catch {
+      userTz = 'UTC';
+    }
+    // Convert IANA tz name to a short label: 'Asia/Riyadh' → 'AST',
+    // 'Asia/Kolkata' → 'IST', 'America/New_York' → 'EST/EDT', etc.
+    // Use the browser's own formatter for the abbreviation when available,
+    // fall back to the IANA name if not (some browsers don't expose tzAbbr).
+    const tzAbbr = (() => {
+      // Format with hourCycle + timeZoneName: 'short' to get e.g. 'GMT+3'
+      // or 'AST' depending on browser support. Most browsers return
+      // 'GMT+3' style; we use it as-is.
+      try {
+        const fmt = new Intl.DateTimeFormat('en-US', { timeZone: userTz, timeZoneName: 'short' });
+        const parts = fmt.formatToParts(new Date());
+        const tzPart = parts.find(p => p.type === 'timeZoneName');
+        return tzPart?.value || userTz.split('/').pop() || 'LOCAL';
+      } catch {
+        return userTz.split('/').pop() || 'LOCAL';
+      }
+    })();
+    setLocalTzLabel(tzAbbr);
+
+    function updateTime() {
+      // IST time via the centralized helper (DST-immune)
+      setIstTime(istTimeStr());
+
+      // User's local time via their browser's timezone — works anywhere
+      // in the world, not just Jeddah. Updated every second.
+      try {
+        const local = new Date();
+        const lh = local.getHours().toString().padStart(2, '0');
+        const lm = local.getMinutes().toString().padStart(2, '0');
+        const ls = local.getSeconds().toString().padStart(2, '0');
+        setLocalTime(`${lh}:${lm}:${ls}`);
+      } catch {
+        setLocalTime('--:--:--');
+      }
 
       setMarketStatus(getMarketStatus());
+      setMarketPhase(getMarketPhase());
       setNseSession(getNSESession());
     }
 
@@ -144,15 +184,16 @@ export default function DashboardPage() {
 
             {/* Right: Times + VIX + Connection */}
             <div className="flex items-center gap-3 flex-wrap">
-              {/* IST Time */}
+              {/* IST Time — authoritative exchange clock (always shown) */}
               <div className="flex items-center gap-1 text-xs text-muted-foreground">
                 <Clock className="h-3 w-3" />
                 <span className="font-mono">IST {istTime}</span>
               </div>
 
-              {/* Jeddah Time */}
+              {/* User's local time — auto-detected, informational only.
+                  No dashboard behavior depends on this — all gates use IST. */}
               <div className="flex items-center gap-1 text-xs text-muted-foreground">
-                <span className="font-mono">AST {jeddahTime}</span>
+                <span className="font-mono">{localTzLabel} {localTime}</span>
               </div>
 
               {/* VIX Quick View */}
@@ -225,14 +266,37 @@ export default function DashboardPage() {
       </main>
 
       <footer className="border-t border-border/30 bg-card/50 mt-auto">
-        <div className="px-4 py-2 flex items-center justify-between text-[10px] text-muted-foreground">
+        <div className="px-4 py-2 flex items-center justify-between text-[10px] text-muted-foreground flex-wrap gap-2">
           <span>
             <span className="text-blue-400 font-semibold">OI Walls</span> — Max Pain + OI + PCR |
             <span className="text-sky-400 ml-1">Basis</span> — Futures Basis Spread |
             <span className="text-teal-400 ml-1">Trends</span> — Price + Cash + Options Flow |
             <span className="text-orange-400 ml-1">CAS: Cash PAUSED, F&O Continues</span>
           </span>
-          <span className="font-mono">Auto-refresh: 30s</span>
+          {/* EXCHANGE TIME GATE status: when the exchange is open, show the
+              polling cadence. When closed (pre-market / post-market / weekend),
+              show that polling is paused + the next open time, so the user
+              knows data will resume at 09:15 IST. This label updates every
+              second via the time updater effect, so the dashboard transitions
+              automatically at 09:15 / 15:40 IST without a page refresh. */}
+          {marketPhase === 'open' ? (
+            <span className="font-mono text-emerald-400">
+              <span className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-400 mr-1 animate-pulse" />
+              Live · Auto-refresh: 30s
+            </span>
+          ) : marketPhase === 'pre' ? (
+            <span className="font-mono text-amber-400">
+              ⏸ Paused · pre-market · next open 09:15 IST
+            </span>
+          ) : marketPhase === 'post' ? (
+            <span className="font-mono text-amber-400">
+              ⏸ Paused · market closed at 15:40 IST
+            </span>
+          ) : (
+            <span className="font-mono text-red-400">
+              ⏸ Paused · weekend · next open Mon 09:15 IST
+            </span>
+          )}
         </div>
       </footer>
     </div>
