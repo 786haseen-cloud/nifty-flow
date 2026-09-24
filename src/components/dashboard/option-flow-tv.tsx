@@ -49,6 +49,10 @@ const SYMBOLS: { value: SymbolId; label: string; token: number }[] = [
 ];
 
 const INTERVALS = [
+  // Kite's smallest candle interval is 1-minute (no 30s option). With our
+  // 30s poll cadence, each 1m candle updates twice per candle (every 30s),
+  // giving a real-time feel without exceeding Kite's API limits.
+  // Order is by granularity: finest first.
   { value: 'minute', label: '1m' },
   { value: '3minute', label: '3m' },
   { value: '5minute', label: '5m' },
@@ -146,7 +150,10 @@ export default function OptionFlowTV() {
   const lastSpotRef = useRef<number | null>(null);
 
   const [symbol, setSymbol] = useState<SymbolId>('NIFTY');
-  const [interval, setInterval] = useState('5minute');
+  // Default to 1-minute candles — syncs with the 30s poll cadence (each 1m
+  // candle updates twice before closing, giving a real-time feel). User can
+  // still pick 3m / 5m / 15m / 1h via the interval selector.
+  const [interval, setInterval] = useState('minute');
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [legend, setLegend] = useState({
     o: '--', h: '--', l: '--', c: '--', v: '--',
